@@ -20,6 +20,16 @@ def _local_session_logs_dir(local_mount_point: str, session_name: str) -> str:
     return os.path.join(local_mount_point, "artifacts", "logs", session_name)
 
 
+def _remote_sync_session_logs_dir(remote_sync_dir: str, session_name: str) -> str:
+    """Where command logs live on the sync-visible remote path."""
+    return posixpath.join(remote_sync_dir, "artifacts", "logs", session_name)
+
+
+def _remote_work_logs_dir(remote_work_dir: str, session_name: str) -> str:
+    """Where command logs would live inside the remote workdir on the VM."""
+    return posixpath.join(remote_work_dir, "logs", session_name)
+
+
 def _read_exit_code(log_file: str) -> Optional[int]:
     """Read the trailing exit code marker from a completed command log."""
     if not os.path.exists(log_file):
@@ -332,9 +342,9 @@ class SessionManager:
         execute_ssh_command(
             machine_id,
             (
-                f"mkdir -p {escape_shell_arg(os.path.join(remote_work_dir, 'logs', session_name))} "
-                f"{escape_shell_arg(os.path.join(remote_work_dir, 'artifacts'))} "
-                f"{escape_shell_arg(posixpath.join(remote_sync_dir, 'artifacts', 'logs', session_name))} && "
+                f"mkdir -p {escape_shell_arg(_remote_work_logs_dir(remote_work_dir, session_name))} "
+                f"{escape_shell_arg(posixpath.join(remote_work_dir, 'artifacts'))} "
+                f"{escape_shell_arg(_remote_sync_session_logs_dir(remote_sync_dir, session_name))} && "
                 f"tmux new-session -d -s {escape_shell_arg(tmux_session)} "
                 f"-c {escape_shell_arg(remote_work_dir)}"
             ),
@@ -465,8 +475,11 @@ class SessionManager:
             log_filename = f"cmd_{command_index:03d}.log"
             local_log_dir = _local_session_logs_dir(local_mount_point, session_name)
             local_log_file = os.path.join(local_log_dir, log_filename)
-            remote_log_dir = posixpath.join(remote_sync_dir, "artifacts", "logs", session_name)
-            remote_log_file = os.path.join(remote_log_dir, log_filename)
+            # Command logs intentionally stay on the sync-visible path instead of the staged
+            # remote workdir. exec() polls the local mirror for the trailing exit_code marker,
+            # so the log must be readable locally before the final artifact sync completes.
+            remote_log_dir = _remote_sync_session_logs_dir(remote_sync_dir, session_name)
+            remote_log_file = posixpath.join(remote_log_dir, log_filename)
 
             session_info["command_count"] = command_index
             session_info["busy"] = True

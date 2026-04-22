@@ -13,7 +13,7 @@ import seed_runner.config as config_module
 from seed_runner.cli import cmd_status
 from seed_runner.config import MachineConfig
 from seed_runner.mount import MountManager
-from seed_runner.session import SessionManager
+from seed_runner.session import SessionManager, _remote_sync_session_logs_dir, _remote_work_logs_dir
 from seed_runner.state import load_state, save_state
 
 
@@ -675,3 +675,14 @@ def test_sync_outputs_command_writes_results_to_reserved_artifacts_dir():
     assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/logs" in script
     assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/" in script
     assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/artifacts" not in script
+
+
+def test_remote_log_helpers_use_posix_paths_and_distinguish_sync_from_workdir():
+    """Remote log helpers should keep sync-visible logs separate from staged workdir logs."""
+    sync_dir = "/home/seed/.seed-runner/mounts/mnt_test/sync"
+    work_dir = "/home/seed/seed-experiment"
+
+    assert _remote_sync_session_logs_dir(sync_dir, "exp-web-01") == (
+        "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/logs/exp-web-01"
+    )
+    assert _remote_work_logs_dir(work_dir, "exp-web-01") == "/home/seed/seed-experiment/logs/exp-web-01"
