@@ -1,6 +1,7 @@
 """Session management for seed-runner."""
 
 import os
+import posixpath
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -12,6 +13,21 @@ from seed_runner.utils import ensure_dir, escape_shell_arg, generate_id, get_tim
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _local_session_logs_dir(local_mount_point: str, session_name: str) -> str:
+    """Where command logs land under the local mount root (mirrors remote_sync_dir/artifacts/logs/)."""
+    return os.path.join(local_mount_point, "artifacts", "logs", session_name)
+
+
+def _remote_sync_session_logs_dir(remote_sync_dir: str, session_name: str) -> str:
+    """Where command logs live on the sync-visible remote path."""
+    return posixpath.join(remote_sync_dir, "artifacts", "logs", session_name)
+
+
+def _remote_work_logs_dir(remote_work_dir: str, session_name: str) -> str:
+    """Where command logs would live inside the remote workdir on the VM."""
+    return posixpath.join(remote_work_dir, "logs", session_name)
 
 
 def _read_exit_code(log_file: str) -> Optional[int]:
@@ -36,6 +52,62 @@ def _read_exit_code(log_file: str) -> Optional[int]:
 class SessionManager:
     """Manage tmux-backed remote execution sessions."""
 
+    def _sync_inputs_command(self, remote_sync_dir: str, remote_work_dir: str) -> str:
+        quoted_sync_dir = escape_shell_arg(remote_sync_dir)
+        quoted_work_dir = escape_shell_arg(remote_work_dir)
+        return "\n".join(
+            [
+                f"mkdir -p {quoted_work_dir}",
+                "if command -v rsync >/dev/null 2>&1; then",
+                f"  rsync -a --delete --exclude 'artifacts/' {quoted_sync_dir}/ {quoted_work_dir}/",
+                "else",
+                (
+                    f"  find {quoted_work_dir} -mindepth 1 -maxdepth 1 "
+                    "! -name artifacts ! -name logs -exec rm -rf {} +"
+                ),
+                (
+                    f"  cd {quoted_sync_dir} && tar --exclude='./artifacts' -cf - . | "
+                    f"(cd {quoted_work_dir} && tar -xf -)"
+                ),
+                "fi",
+                f"mkdir -p {escape_shell_arg(posixpath.join(remote_work_dir, 'artifacts'))}",
+                f"mkdir -p {escape_shell_arg(posixpath.join(remote_work_dir, 'logs'))}",
+            ]
+        )
+
+    def _sync_outputs_command(self, remote_work_dir: str, remote_sync_dir: str) -> str:
+        sync_artifacts_dir = posixpath.join(remote_sync_dir, "artifacts")
+        work_artifacts_dir = posixpath.join(remote_work_dir, "artifacts")
+        work_logs_dir = posixpath.join(remote_work_dir, "logs")
+        return "\n".join(
+            [
+                f"mkdir -p {escape_shell_arg(sync_artifacts_dir)}",
+                "if command -v rsync >/dev/null 2>&1; then",
+                (
+                    f"  rsync -a {escape_shell_arg(work_logs_dir)}/ "
+                    f"{escape_shell_arg(posixpath.join(sync_artifacts_dir, 'logs'))}/"
+                ),
+                (
+                    f"  rsync -a {escape_shell_arg(work_artifacts_dir)}/ "
+                    f"{escape_shell_arg(sync_artifacts_dir)}/"
+                ),
+                "else",
+                (
+                    f"  mkdir -p {escape_shell_arg(posixpath.join(sync_artifacts_dir, 'logs'))} "
+                    f"{escape_shell_arg(sync_artifacts_dir)}"
+                ),
+                (
+                    f"  cp -a {escape_shell_arg(work_logs_dir)}/. "
+                    f"{escape_shell_arg(posixpath.join(sync_artifacts_dir, 'logs'))}/ 2>/dev/null || true"
+                ),
+                (
+                    f"  cp -a {escape_shell_arg(work_artifacts_dir)}/. "
+                    f"{escape_shell_arg(sync_artifacts_dir)}/ 2>/dev/null || true"
+                ),
+                "fi",
+            ]
+        )
+
     def _get_state(self) -> Dict[str, Any]:
         return load_state()
 
@@ -50,6 +122,22 @@ class SessionManager:
             state = self._get_state()
             state["sessions"][session_info["session_id"]] = session_info
             save_state(state)
+
+    def _persist_runtime_status(self, session_id: str, status: str) -> Optional[Dict[str, Any]]:
+        """Persist a runtime-derived session status so stale records get reconciled."""
+        with state_lock():
+            state = self._get_state()
+            session_info = state["sessions"].get(session_id)
+            if not session_info:
+                return None
+            if session_info.get("status") == "destroyed":
+                return session_info.copy()
+            if session_info.get("status") == status:
+                return session_info.copy()
+            session_info["status"] = status
+            state["sessions"][session_id] = session_info
+            save_state(state)
+            return session_info.copy()
 
     def _compute_status(
         self,
@@ -71,7 +159,7 @@ class SessionManager:
         if mount is None:
             state = self._get_state()
             mount = state["mounts"].get(session_info["mount_id"])
-        if not mount or mount.get("status") == "unmounted":
+        if not mount or mount.get("status") != "mounted":
             return "error"
 
         result = run_ssh_command(
@@ -247,14 +335,16 @@ class SessionManager:
         tmux_session = f"seed_{session_id}"
         local_mount_point = mount["local_path"]
         remote_work_dir = mount["remote_path"]
+        remote_sync_dir = mount["remote_sync_dir"]
 
-        ensure_dir(os.path.join(local_mount_point, "logs", session_name))
+        ensure_dir(_local_session_logs_dir(local_mount_point, session_name))
 
         execute_ssh_command(
             machine_id,
             (
-                f"mkdir -p {escape_shell_arg(os.path.join(remote_work_dir, 'logs', session_name))} "
-                f"{escape_shell_arg(os.path.join(remote_work_dir, 'artifacts'))} && "
+                f"mkdir -p {escape_shell_arg(_remote_work_logs_dir(remote_work_dir, session_name))} "
+                f"{escape_shell_arg(posixpath.join(remote_work_dir, 'artifacts'))} "
+                f"{escape_shell_arg(_remote_sync_session_logs_dir(remote_sync_dir, session_name))} && "
                 f"tmux new-session -d -s {escape_shell_arg(tmux_session)} "
                 f"-c {escape_shell_arg(remote_work_dir)}"
             ),
@@ -378,14 +468,18 @@ class SessionManager:
             session_name = session_info["session_name"]
             local_mount_point = session_info["local_mount_point"]
             remote_work_dir = session_info["remote_work_dir"]
+            remote_sync_dir = mount["remote_sync_dir"]
             tmux_session = session_info["tmux_session"]
 
             command_index = session_info.get("command_count", 0) + 1
             log_filename = f"cmd_{command_index:03d}.log"
-            local_log_dir = os.path.join(local_mount_point, "logs", session_name)
+            local_log_dir = _local_session_logs_dir(local_mount_point, session_name)
             local_log_file = os.path.join(local_log_dir, log_filename)
-            remote_log_dir = os.path.join(remote_work_dir, "logs", session_name)
-            remote_log_file = os.path.join(remote_log_dir, log_filename)
+            # Command logs intentionally stay on the sync-visible path instead of the staged
+            # remote workdir. exec() polls the local mirror for the trailing exit_code marker,
+            # so the log must be readable locally before the final artifact sync completes.
+            remote_log_dir = _remote_sync_session_logs_dir(remote_sync_dir, session_name)
+            remote_log_file = posixpath.join(remote_log_dir, log_filename)
 
             session_info["command_count"] = command_index
             session_info["busy"] = True
@@ -405,6 +499,7 @@ class SessionManager:
 
         script = "\n".join(
             [
+                self._sync_inputs_command(remote_sync_dir, remote_work_dir),
                 f"mkdir -p {escape_shell_arg(remote_log_dir)}",
                 f"cd {escape_shell_arg(remote_work_dir)}",
                 (
@@ -414,6 +509,7 @@ class SessionManager:
                 ),
                 f"({cmd}) >> {escape_shell_arg(remote_log_file)} 2>&1",
                 "exit_code=$?",
+                self._sync_outputs_command(remote_work_dir, remote_sync_dir),
                 (
                     "printf '[%s] $ exit_code: %s\\n' "
                     "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" "
@@ -492,6 +588,7 @@ class SessionManager:
         session_info = state["sessions"][session_id].copy()
         mount = state["mounts"].get(session_info["mount_id"])
         session_info["status"] = self._compute_status(session_info, mount)
+        self._persist_runtime_status(session_id, session_info["status"])
 
         created_at = parse_timestamp(session_info["created_at"])
         elapsed_seconds = int((_now_utc() - created_at).total_seconds())
@@ -516,9 +613,8 @@ class SessionManager:
                 check=False,
             )
 
-        logs_location = os.path.join(
+        logs_location = _local_session_logs_dir(
             session_info["local_mount_point"],
-            "logs",
             session_info["session_name"],
         )
         destroyed_at = get_timestamp()
@@ -526,14 +622,15 @@ class SessionManager:
             state = self._get_state()
             if session_id not in state["sessions"]:
                 raise KeyError(f"Session '{session_id}' not found")
-            session_info = state["sessions"][session_id]
-            session_info["status"] = "destroyed"
-            session_info["destroyed_at"] = destroyed_at
-            session_info["logs_preserved"] = True
-            session_info["logs_location"] = logs_location
-            session_info["busy"] = False
-            session_info.pop("active_command", None)
-            state["sessions"][session_id] = session_info
+            session_info = state["sessions"].pop(session_id)
+            mount = state["mounts"].get(session_info["mount_id"])
+            if mount:
+                mount["session_ids"] = [
+                    existing_id
+                    for existing_id in mount.get("session_ids", [])
+                    if existing_id != session_id
+                ]
+                state["mounts"][session_info["mount_id"]] = mount
             save_state(state)
 
         return {

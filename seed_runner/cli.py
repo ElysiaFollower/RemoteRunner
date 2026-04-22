@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 from seed_runner.mount import get_mount_manager
 from seed_runner.session import get_session_manager
+from seed_runner.state import load_state, prune_terminal_state, save_state, state_lock
 from seed_runner.utils import json_response
 
 
@@ -126,6 +127,67 @@ def cmd_session_destroy(args: argparse.Namespace) -> None:
         handle_error(e, 2005)
 
 
+def cmd_status(args: argparse.Namespace) -> None:
+    """Handle top-level 'status' command."""
+    try:
+        with state_lock():
+            state = prune_terminal_state(load_state())
+            save_state(state)
+
+        mount_manager = get_mount_manager()
+        session_manager = get_session_manager()
+
+        mounts = []
+        for mount_id in sorted(state.get("mounts", {}).keys()):
+            mount = mount_manager.status(mount_id)
+            mounts.append(
+                {
+                    "mount_id": mount.get("mount_id", mount_id),
+                    "machine": mount.get("machine"),
+                    "local_path": mount.get("local_path"),
+                    "remote_path": mount.get("remote_path"),
+                    "status": mount.get("status"),
+                    "mounted_at": mount.get("mounted_at"),
+                    "session_count": mount.get("session_count", 0),
+                }
+            )
+
+        with state_lock():
+            state = prune_terminal_state(load_state())
+            save_state(state)
+
+        sessions = []
+        for session_id in sorted(state.get("sessions", {}).keys()):
+            session = session_manager.status(session_id)
+            sessions.append(
+                {
+                    "session_id": session.get("session_id", session_id),
+                    "session_name": session.get("session_name"),
+                    "machine": session.get("machine"),
+                    "mount_id": session.get("mount_id"),
+                    "status": session.get("status"),
+                    "busy": session.get("busy", False),
+                    "command_count": session.get("command_count", 0),
+                    "created_at": session.get("created_at"),
+                }
+            )
+
+        print(
+            json_response(
+                {
+                    "mounts": mounts,
+                    "sessions": sessions,
+                    "summary": {
+                        "mount_count": len(mounts),
+                        "session_count": len(sessions),
+                    },
+                }
+            )
+        )
+    except Exception as e:
+        handle_error(e, 2010)
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -186,6 +248,13 @@ def main() -> None:
     session_destroy = session_subparsers.add_parser("destroy", help="Destroy a session")
     session_destroy.add_argument("--session", required=True, help="Session ID")
     session_destroy.set_defaults(func=cmd_session_destroy)
+
+    # Parse arguments
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Get global status summary (all mounts and sessions)",
+    )
+    status_parser.set_defaults(func=cmd_status)
 
     # Parse arguments
     args = parser.parse_args()

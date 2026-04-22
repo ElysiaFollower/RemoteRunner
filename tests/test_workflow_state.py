@@ -6,12 +6,14 @@ import subprocess
 import sys
 import threading
 import time
+from argparse import Namespace
 
 import pytest
 import seed_runner.config as config_module
+from seed_runner.cli import cmd_status
 from seed_runner.config import MachineConfig
 from seed_runner.mount import MountManager
-from seed_runner.session import SessionManager
+from seed_runner.session import SessionManager, _remote_sync_session_logs_dir, _remote_work_logs_dir
 from seed_runner.state import load_state, save_state
 
 
@@ -102,6 +104,8 @@ def test_mount_manager_reads_runtime_settings_from_env_file(env_file, temp_dir, 
     assert mount_info["local_ssh_port"] == 2200
     assert mount_info["local_user"] == "ely"
     assert mount_info["remote_to_local_key"] == "~/.ssh/id_ed25519"
+    assert mount_info["local_path"] == os.path.join(temp_dir, "artifacts")
+    assert mount_info["remote_sync_dir"].endswith("/sync")
 
 
 def test_mount_create_reuses_existing_remote_mount_for_same_source(temp_dir, monkeypatch):
@@ -154,6 +158,7 @@ def test_mount_destroy_kills_tmux_sessions_discovered_by_remote_path(temp_dir, m
         "mount_id": "mnt_test",
         "machine": "vm-seed-01",
         "local_path": local_dir,
+        "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
         "remote_path": "/home/seed/seed-experiment",
         "status": "mounted",
         "mounted_at": "2026-04-08T11:00:00Z",
@@ -168,7 +173,10 @@ def test_mount_destroy_kills_tmux_sessions_discovered_by_remote_path(temp_dir, m
         if "tmux list-panes" in cmd:
             return FakeCompletedProcess(
                 returncode=0,
-                stdout="stale_session\t/home/seed/seed-experiment\n",
+                stdout=(
+                    "stale_session\t/home/seed/seed-experiment\n"
+                    "sync_stale\t/home/seed/.seed-runner/mounts/mnt_test/sync\n"
+                ),
             )
         if "mountpoint -q" in cmd:
             return FakeCompletedProcess(returncode=1)
@@ -180,6 +188,9 @@ def test_mount_destroy_kills_tmux_sessions_discovered_by_remote_path(temp_dir, m
 
     assert result["status"] == "unmounted"
     assert any("tmux kill-session -t 'stale_session'" in cmd for cmd in remote_commands)
+    assert any("tmux kill-session -t 'sync_stale'" in cmd for cmd in remote_commands)
+    state = load_state()
+    assert "mnt_test" not in state["mounts"]
 
 
 def test_mount_destroy_raises_when_remote_mount_is_still_active(temp_dir, monkeypatch):
@@ -193,6 +204,7 @@ def test_mount_destroy_raises_when_remote_mount_is_still_active(temp_dir, monkey
         "mount_id": "mnt_test",
         "machine": "vm-seed-01",
         "local_path": local_dir,
+        "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
         "remote_path": "/home/seed/seed-experiment",
         "status": "mounted",
         "mounted_at": "2026-04-08T11:00:00Z",
@@ -214,6 +226,35 @@ def test_mount_destroy_raises_when_remote_mount_is_still_active(temp_dir, monkey
 
     state = load_state()
     assert state["mounts"]["mnt_test"]["status"] == "mounted"
+
+
+def test_mount_status_persists_runtime_error(temp_dir, monkeypatch):
+    """Mount status should reconcile stale persisted records when the remote mount is gone."""
+    monkeypatch.setenv("SEED_RUNNER_STATE_DIR", os.path.join(temp_dir, "state"))
+
+    state = load_state()
+    state["mounts"]["mnt_test"] = {
+        "mount_id": "mnt_test",
+        "machine": "vm-seed-01",
+        "local_path": os.path.join(temp_dir, "artifacts"),
+        "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
+        "remote_path": "/home/seed/seed-experiment",
+        "status": "mounted",
+        "mounted_at": "2026-04-08T11:00:00Z",
+        "session_ids": [],
+    }
+    save_state(state)
+
+    monkeypatch.setattr(
+        "seed_runner.mount.run_ssh_command",
+        lambda *args, **kwargs: FakeCompletedProcess(returncode=1),
+    )
+
+    result = MountManager().status("mnt_test")
+
+    assert result["status"] == "error"
+    state = load_state()
+    assert state["mounts"]["mnt_test"]["status"] == "error"
 
 
 def test_session_lifecycle_updates_state_and_metadata(temp_dir, monkeypatch):
@@ -241,7 +282,7 @@ def test_session_lifecycle_updates_state_and_metadata(temp_dir, monkeypatch):
 
     def fake_session_execute(machine_id, cmd, timeout=30):
         if "tmux new-window" in cmd:
-            log_file = os.path.join(local_dir, "logs", "exp-web-01", "cmd_001.log")
+            log_file = os.path.join(local_dir, "artifacts", "logs", "exp-web-01", "cmd_001.log")
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
             with open(log_file, "w") as f:
                 f.write("[2026-04-07T10:30:15Z] $ echo hello\n")
@@ -262,6 +303,7 @@ def test_session_lifecycle_updates_state_and_metadata(temp_dir, monkeypatch):
     status = status_manager.status(created_session["session_id"])
     assert status["status"] == "active"
     assert status["local_mount_point"] == local_dir
+    assert created_session["remote_work_dir"] == "/home/seed/seed-experiment"
 
     exec_result = SessionManager().exec(created_session["session_id"], "echo hello")
     assert exec_result["exit_code"] == 0
@@ -269,11 +311,16 @@ def test_session_lifecycle_updates_state_and_metadata(temp_dir, monkeypatch):
 
     destroy_result = SessionManager().destroy(created_session["session_id"])
     assert destroy_result["status"] == "destroyed"
-    assert destroy_result["logs_location"] == os.path.join(local_dir, "logs", "exp-web-01")
+    assert destroy_result["logs_location"] == os.path.join(
+        local_dir, "artifacts", "logs", "exp-web-01"
+    )
 
-    final_status = SessionManager().status(created_session["session_id"])
-    assert final_status["status"] == "destroyed"
-    assert final_status["command_count"] == 1
+    with pytest.raises(KeyError, match="not found"):
+        SessionManager().status(created_session["session_id"])
+
+    state = load_state()
+    assert created_session["session_id"] not in state["sessions"]
+    assert state["mounts"][mount["mount_id"]]["session_ids"] == []
 
     with open(os.path.join(local_dir, "metadata.json"), "r") as f:
         metadata = json.load(f)
@@ -366,7 +413,7 @@ def test_session_exec_rejects_concurrent_commands_on_same_session(temp_dir, monk
 
         def write_log():
             time.sleep(0.25)
-            log_file = os.path.join(local_dir, "logs", "exp-web-01", "cmd_001.log")
+            log_file = os.path.join(local_dir, "artifacts", "logs", "exp-web-01", "cmd_001.log")
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
             with open(log_file, "w") as f:
                 f.write("[2026-04-08T10:30:15Z] $ echo first\n")
@@ -409,3 +456,233 @@ def test_session_exec_rejects_concurrent_commands_on_same_session(temp_dir, monk
     assert len(commands) == 1
     assert commands[0]["index"] == 1
     assert commands[0]["cmd"] == "echo first"
+
+
+def test_session_status_persists_timeout(temp_dir, monkeypatch):
+    """Session status should reconcile stale persisted records after the timeout window passes."""
+    monkeypatch.setenv("SEED_RUNNER_STATE_DIR", os.path.join(temp_dir, "state"))
+
+    state = load_state()
+    state["mounts"]["mnt_test"] = {
+        "mount_id": "mnt_test",
+        "machine": "vm-seed-01",
+        "local_path": os.path.join(temp_dir, "artifacts"),
+        "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
+        "remote_path": "/home/seed/seed-experiment",
+        "status": "mounted",
+        "mounted_at": "2026-04-08T11:00:00Z",
+        "session_ids": ["sess_test"],
+    }
+    state["sessions"]["sess_test"] = {
+        "session_id": "sess_test",
+        "session_name": "exp-web-01",
+        "machine": "vm-seed-01",
+        "mount_id": "mnt_test",
+        "local_mount_point": os.path.join(temp_dir, "artifacts"),
+        "remote_work_dir": "/home/seed/seed-experiment",
+        "status": "active",
+        "tmux_session": "seed_sess_test",
+        "created_at": "2026-04-08T10:00:00Z",
+        "command_count": 0,
+        "timeout_seconds": 1,
+        "busy": False,
+    }
+    save_state(state)
+
+    result = SessionManager().status("sess_test")
+
+    assert result["status"] == "timeout"
+    state = load_state()
+    assert state["sessions"]["sess_test"]["status"] == "timeout"
+
+
+def test_cli_global_status_lists_mounts_and_sessions(temp_dir):
+    """Top-level CLI status should list all persisted mounts and sessions without requiring IDs."""
+    state_dir = os.path.join(temp_dir, "state")
+    env = os.environ.copy()
+    env["SEED_RUNNER_STATE_DIR"] = state_dir
+    previous_state_dir = os.environ.get("SEED_RUNNER_STATE_DIR")
+    os.environ["SEED_RUNNER_STATE_DIR"] = state_dir
+
+    try:
+        state = load_state()
+        state["mounts"]["mnt_test"] = {
+            "mount_id": "mnt_test",
+            "machine": "vm-seed-01",
+            "local_path": os.path.join(temp_dir, "workspace"),
+            "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
+            "remote_path": "/home/seed/seed-experiment",
+            "status": "mounted",
+            "mounted_at": "2026-04-08T11:00:00Z",
+            "session_ids": ["sess_test"],
+        }
+        state["sessions"]["sess_test"] = {
+            "session_id": "sess_test",
+            "session_name": "exp-web-01",
+            "machine": "vm-seed-01",
+            "mount_id": "mnt_test",
+            "local_mount_point": os.path.join(temp_dir, "workspace"),
+            "remote_work_dir": "/home/seed/seed-experiment",
+            "status": "active",
+            "tmux_session": "seed_sess_test",
+            "created_at": "2026-04-08T10:00:00Z",
+            "command_count": 2,
+            "timeout_seconds": 3600,
+            "busy": False,
+        }
+        save_state(state)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "seed_runner.cli", "status"],
+            cwd=_repo_root(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["summary"] == {"mount_count": 1, "session_count": 1}
+        assert payload["mounts"][0]["mount_id"] == "mnt_test"
+        assert payload["sessions"][0]["session_id"] == "sess_test"
+    finally:
+        if previous_state_dir is None:
+            os.environ.pop("SEED_RUNNER_STATE_DIR", None)
+        else:
+            os.environ["SEED_RUNNER_STATE_DIR"] = previous_state_dir
+
+
+def test_cli_global_status_prunes_terminal_records(temp_dir):
+    """Top-level CLI status should drop destroyed/unmounted records from persisted state."""
+    state_dir = os.path.join(temp_dir, "state")
+    env = os.environ.copy()
+    env["SEED_RUNNER_STATE_DIR"] = state_dir
+    previous_state_dir = os.environ.get("SEED_RUNNER_STATE_DIR")
+    os.environ["SEED_RUNNER_STATE_DIR"] = state_dir
+
+    try:
+        state = load_state()
+        state["mounts"]["mnt_dead"] = {
+            "mount_id": "mnt_dead",
+            "machine": "vm-seed-01",
+            "local_path": os.path.join(temp_dir, "workspace"),
+            "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_dead/sync",
+            "remote_path": "/home/seed/seed-experiment",
+            "status": "unmounted",
+            "mounted_at": "2026-04-08T11:00:00Z",
+            "session_ids": ["sess_dead"],
+        }
+        state["sessions"]["sess_dead"] = {
+            "session_id": "sess_dead",
+            "session_name": "exp-web-01",
+            "machine": "vm-seed-01",
+            "mount_id": "mnt_dead",
+            "local_mount_point": os.path.join(temp_dir, "workspace"),
+            "remote_work_dir": "/home/seed/seed-experiment",
+            "status": "destroyed",
+            "tmux_session": "seed_sess_dead",
+            "created_at": "2026-04-08T10:00:00Z",
+            "command_count": 2,
+            "timeout_seconds": 3600,
+            "busy": False,
+        }
+        save_state(state)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "seed_runner.cli", "status"],
+            cwd=_repo_root(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["summary"] == {"mount_count": 0, "session_count": 0}
+
+        state = load_state()
+        assert state["mounts"] == {}
+        assert state["sessions"] == {}
+    finally:
+        if previous_state_dir is None:
+            os.environ.pop("SEED_RUNNER_STATE_DIR", None)
+        else:
+            os.environ["SEED_RUNNER_STATE_DIR"] = previous_state_dir
+
+
+def test_cli_global_status_refreshes_live_runtime_statuses(temp_dir, monkeypatch, capsys):
+    """Top-level CLI status should refresh mount/session statuses before printing them."""
+    monkeypatch.setenv("SEED_RUNNER_STATE_DIR", os.path.join(temp_dir, "state"))
+
+    state = load_state()
+    state["mounts"]["mnt_test"] = {
+        "mount_id": "mnt_test",
+        "machine": "vm-seed-01",
+        "local_path": os.path.join(temp_dir, "workspace"),
+        "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
+        "remote_path": "/home/seed/seed-experiment",
+        "status": "mounted",
+        "mounted_at": "2026-04-08T11:00:00Z",
+        "session_ids": ["sess_test"],
+    }
+    state["sessions"]["sess_test"] = {
+        "session_id": "sess_test",
+        "session_name": "exp-web-01",
+        "machine": "vm-seed-01",
+        "mount_id": "mnt_test",
+        "local_mount_point": os.path.join(temp_dir, "workspace"),
+        "remote_work_dir": "/home/seed/seed-experiment",
+        "status": "active",
+        "tmux_session": "seed_sess_test",
+        "created_at": "2026-04-08T10:00:00Z",
+        "command_count": 2,
+        "timeout_seconds": 3600 * 24 * 365,
+        "busy": False,
+    }
+    save_state(state)
+
+    monkeypatch.setattr(
+        "seed_runner.mount.run_ssh_command",
+        lambda *args, **kwargs: FakeCompletedProcess(returncode=1),
+    )
+    monkeypatch.setattr(
+        "seed_runner.session.run_ssh_command",
+        lambda *args, **kwargs: FakeCompletedProcess(returncode=1),
+    )
+
+    cmd_status(Namespace())
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["mounts"][0]["status"] == "error"
+    assert payload["sessions"][0]["status"] == "error"
+
+    state = load_state()
+    assert state["mounts"]["mnt_test"]["status"] == "error"
+    assert state["sessions"]["sess_test"]["status"] == "error"
+
+
+def test_sync_outputs_command_writes_results_to_reserved_artifacts_dir():
+    """Synced outputs should land under <mount-root>/artifacts/, not artifacts/artifacts/."""
+    script = SessionManager()._sync_outputs_command(
+        "/home/seed/seed-experiment",
+        "/home/seed/.seed-runner/mounts/mnt_test/sync",
+    )
+
+    assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/logs" in script
+    assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/" in script
+    assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/artifacts" not in script
+
+
+def test_remote_log_helpers_use_posix_paths_and_distinguish_sync_from_workdir():
+    """Remote log helpers should keep sync-visible logs separate from staged workdir logs."""
+    sync_dir = "/home/seed/.seed-runner/mounts/mnt_test/sync"
+    work_dir = "/home/seed/seed-experiment"
+
+    assert _remote_sync_session_logs_dir(sync_dir, "exp-web-01") == (
+        "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/logs/exp-web-01"
+    )
+    assert _remote_work_logs_dir(work_dir, "exp-web-01") == "/home/seed/seed-experiment/logs/exp-web-01"

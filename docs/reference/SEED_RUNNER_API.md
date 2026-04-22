@@ -1,4 +1,4 @@
-# seed-runner API 规范 v2
+# seed-runner API 规范 v3
 
 ## 概述
 
@@ -10,6 +10,7 @@
 - 挂载管理和 session 管理分离
 - 所有输出自动写入共享文件夹，Agent 通过本地文件读取
 - Agent 使用相对路径操作，对远程文件系统无感知
+- 共享目录只承担同步职责，Agent 面向的是远端本地磁盘工作目录
 
 ---
 
@@ -28,30 +29,87 @@ seed-runner (本地工具)
     │  └─ 写入日志文件
     └─ 日志管理层
        └─ 按 session name 组织日志
+    ├─ 同步层
+    │  └─ 将共享目录同步到远端本地工作目录
     ↓ (SSH + tmux)
 远程 VM
-    ├─ 执行命令
-    ├─ 生成输出
-    └─ 写入文件系统
-    ↓ (远端通过 sshfs 挂载本地共享目录)
-本地共享目录
-    ├─ logs/
-    │  ├─ exp-web-01/
-    │  │  ├─ cmd_001.log
-    │  │  ├─ cmd_002.log
-    │  │  └─ ...
-    │  └─ exp-crypto-02/
-    │     ├─ cmd_001.log
-    │     └─ ...
-    └─ artifacts/
-       ├─ code/
-       ├─ results/
-       └─ ...
+    ├─ hidden sync dir
+    │  └─ 通过 sshfs 挂载本地共享目录（不直接暴露给 Agent）
+    ├─ remote exec dir
+    │  ├─ 位于远端本地磁盘
+    │  ├─ docker-compose / ELF / sudo 等在这里运行
+    │  └─ Agent 看到的 remote_work_dir 指向这里
+    └─ 执行命令并生成输出
+    ↓ (日志与产物同步回本地共享目录)
+本地共享目录（--local-dir，即 sshfs 挂载根）
+    ├─ artifacts/                 # 保留目录：命令日志、与远端同步的产物等（由 seed-runner 与同步逻辑写入）
+    │  ├─ logs/
+    │  │  ├─ exp-web-01/
+    │  │  │  ├─ cmd_001.log
+    │  │  │  ├─ cmd_002.log
+    │  │  │  └─ ...
+    │  │  └─ exp-crypto-02/
+    │  │     ├─ cmd_001.log
+    │  │     └─ ...
+    │  ├─ code/                    # 示例：同步产物（具体布局依实验而定）
+    │  ├─ results/
+    │  └─ ...
+    ├─ metadata.json
+    └─ （其余文件与目录由 Agent 自由创建，例如手册、Labsetup、脚本等）
 ```
 
 ---
 
 ## 命令集
+
+### 0. 全局状态查询
+
+#### 0.1 查询所有 mount / session（无需 ID）
+
+**命令**：
+```bash
+seed-runner status
+```
+
+**用途**：
+- 当用户忘记 `mount_id` 或 `session_id` 时，先通过该命令恢复全局上下文
+- 返回本地持久化状态中的**当前** mount / session 概览，不要求指定单个 ID
+- 已销毁的 session 和已卸载的 mount 不会继续保留在全局状态中
+
+**返回值**（JSON）：
+```json
+{
+  "mounts": [
+    {
+      "mount_id": "mnt_20260407_001",
+      "machine": "vm-seed-01",
+      "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
+      "remote_path": "/home/user/seed-experiment",
+      "status": "mounted",
+      "mounted_at": "2026-04-07T10:30:00Z",
+      "session_count": 1
+    }
+  ],
+  "sessions": [
+    {
+      "session_id": "sess_20260407_001",
+      "session_name": "exp-web-01",
+      "machine": "vm-seed-01",
+      "mount_id": "mnt_20260407_001",
+      "status": "active",
+      "busy": false,
+      "command_count": 2,
+      "created_at": "2026-04-07T10:30:00Z"
+    }
+  ],
+  "summary": {
+    "mount_count": 1,
+    "session_count": 1
+  }
+}
+```
+
+---
 
 ### 第一层：挂载管理
 
@@ -68,8 +126,8 @@ seed-runner mount create \
 
 **参数**：
 - `--machine` (必需) — 目标机器的标识符，对应 SSH 配置中的 host
-- `--local-dir` (必需) — 本地共享目录路径（将被远程 VM 通过 sshfs 挂载）
-- `--remote-dir` (可选) — 远程 VM 中的实验目录路径，默认 `~/seed-experiment`
+- `--local-dir` (必需) — **本地 sshfs 挂载根目录**（绝对或相对路径均可）。该目录整棵子树会出现在远端隐藏 sync 目录的根下。**唯一保留名称为 `artifacts/`**：命令日志写入 `<local-dir>/artifacts/logs/<session-name>/`，经同步进入该目录的产物也由工具与实验输出共同填充。挂载根下除 `artifacts/` 与 `metadata.json` 外，其余路径由 Agent 自由支配。
+- `--remote-dir` (可选) — 远程 VM 中的实际工作目录路径，默认 `~/seed-experiment`
 - 如果默认路径与另一项仍在运行的实验冲突，可以显式指定唯一目录，例如 `/home/seed/seed-experiments/ARP_lab`
 - `--timeout` (可选) — 挂载操作的超时时间，单位秒，默认 30
 
@@ -78,7 +136,7 @@ seed-runner mount create \
 {
   "mount_id": "mnt_20260407_001",
   "machine": "vm-seed-01",
-  "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts",
+  "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
   "remote_path": "/home/user/seed-experiment",
   "status": "mounted",
   "mounted_at": "2026-04-07T10:30:00Z"
@@ -87,9 +145,9 @@ seed-runner mount create \
 
 **行为**：
 1. 验证 SSH 连接到目标机器
-2. 在远程 VM 中创建实验目录（如果不存在）
-3. 在本地创建共享目录（如果不存在）
-4. 在远程 VM 中执行 sshfs，将本地目录挂载到远程实验目录
+2. 在远程 VM 中准备一个隐藏的 sync 目录，并通过 sshfs **将 `--local-dir` 解析后的目录作为挂载源**挂到该 sync 目录（挂载根即用户指定的本地目录，而不是其父目录）
+3. 在远程 VM 中准备实际执行用的本地工作目录（即 `--remote-dir`）
+4. 后续 session 将把共享目录内容同步到该工作目录，再在该目录中执行命令
 5. 返回 mount_id 供后续使用
 
 **错误处理**：
@@ -114,7 +172,7 @@ seed-runner mount status --mount-id <mount-id>
 {
   "mount_id": "mnt_20260407_001",
   "machine": "vm-seed-01",
-  "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts",
+  "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
   "remote_path": "/home/user/seed-experiment",
   "status": "mounted",
   "mounted_at": "2026-04-07T10:30:00Z",
@@ -124,7 +182,6 @@ seed-runner mount status --mount-id <mount-id>
 
 **状态值**：
 - `mounted` — 挂载正常
-- `unmounted` — 已卸载
 - `error` — 挂载出现错误
 
 ---
@@ -147,7 +204,7 @@ seed-runner mount destroy --mount-id <mount-id> [--cleanup]
   "status": "unmounted",
   "unmounted_at": "2026-04-07T10:31:00Z",
   "artifacts_preserved": true,
-  "artifacts_location": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts"
+  "artifacts_location": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace"
 }
 ```
 
@@ -155,6 +212,7 @@ seed-runner mount destroy --mount-id <mount-id> [--cleanup]
 1. 卸载 sshfs 挂载
 2. 保留本地日志和产物（便于事后审计）
 3. 如果指定 `--cleanup`，删除远程 VM 中的实验目录
+4. 从全局持久化状态中移除该 mount；后续 `seed-runner status` 不再列出它
 
 **错误处理**：
 - Mount 不存在 → 返回错误
@@ -188,7 +246,7 @@ seed-runner session create \
   "session_name": "exp-web-01",
   "machine": "vm-seed-01",
   "mount_id": "mnt_20260407_001",
-  "local_mount_point": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts",
+  "local_mount_point": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
   "remote_work_dir": "/home/user/seed-experiment",
   "status": "ready",
   "tmux_session": "seed_sess_20260407_001",
@@ -200,12 +258,12 @@ seed-runner session create \
 1. 验证 mount 存在且状态为 mounted
 2. 在远程 VM 中创建 tmux session
 3. 在 tmux session 中自动执行 `cd <remote_work_dir>`（设置初始工作目录）
-4. 在本地创建日志目录 `<local_mount_point>/logs/<session-name>/`
+4. 在本地创建日志目录 `<local_mount_point>/artifacts/logs/<session-name>/`
 5. 返回 session_id 供后续命令使用
 
 **关键设计**：
-- Session 创建时自动进入挂载的远程路径
-- Agent 之后使用相对路径操作，对远程文件系统无感知
+- Session 创建时自动进入远端本地磁盘工作目录，而不是 sshfs 挂载目录
+- Agent 之后使用相对路径操作，对同步与 staging 机制无感知
 - 日志按 session name 分组，便于查找和审计
 
 **错误处理**：
@@ -237,7 +295,7 @@ seed-runner session exec \
   "session_name": "exp-web-01",
   "command": "cd code && make",
   "exit_code": 0,
-  "log_file_local": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts/logs/exp-web-01/cmd_002.log",
+  "log_file_local": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace/artifacts/logs/exp-web-01/cmd_002.log",
   "log_file_remote": "/home/user/seed-experiment/logs/exp-web-01/cmd_002.log",
   "log_filename": "cmd_002.log",
   "executed_at": "2026-04-07T10:30:15Z",
@@ -247,11 +305,17 @@ seed-runner session exec \
 
 **行为**：
 1. 验证 session 存在且状态为 active
-2. 在 tmux session 中执行命令（整体执行，不拆分）
-3. 捕获 stdout、stderr、exit code
-4. 将输出写入 `<remote_work_dir>/logs/<session-name>/<log-filename>`
-5. 日志通过共享目录自动同步到本地（底层由远程 VM 挂载本地目录实现）
-6. 返回执行结果（包含本地和远程路径）
+2. 在命令执行前，将共享目录中的输入同步到 `remote_work_dir`
+3. 在 tmux session 中于 `remote_work_dir` 执行命令（整体执行，不拆分）
+4. 捕获 stdout、stderr、exit code
+5. 将输出写入 `<remote_work_dir>/logs/<session-name>/<log-filename>`
+6. 将日志与产物同步回本地共享目录
+7. 返回执行结果（包含本地和远程路径）
+
+**工作目录语义**：
+- `remote_work_dir` 是远端本地磁盘目录，是 Agent 应该操作的唯一路径
+- 底层 sshfs 挂载目录属于内部实现细节，不直接暴露给 Agent
+- Docker bind mount、本地 ELF、sudo 读脚本等都应以 `remote_work_dir` 为准
 
 **日志文件命名**：
 - 自动递增：`cmd_001.log`, `cmd_002.log`, ...
@@ -298,7 +362,7 @@ seed-runner session status --session <session-id>
   "status": "active",
   "machine": "vm-seed-01",
   "mount_id": "mnt_20260407_001",
-  "local_mount_point": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts",
+  "local_mount_point": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
   "remote_work_dir": "/home/user/seed-experiment",
   "created_at": "2026-04-07T10:30:00Z",
   "last_command": "cd code && make",
@@ -315,7 +379,6 @@ seed-runner session status --session <session-id>
 - `busy` — session 中已有命令正在运行，暂不接受新的 exec
 - `timeout` — session 已超时
 - `error` — session 出现错误
-- `destroyed` — session 已销毁
 
 **错误处理**：
 - Session 不存在 → 返回错误
@@ -340,7 +403,7 @@ seed-runner session destroy --session <session-id>
   "status": "destroyed",
   "destroyed_at": "2026-04-07T10:31:00Z",
   "logs_preserved": true,
-  "logs_location": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts/logs/exp-web-01"
+  "logs_location": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace/artifacts/logs/exp-web-01"
 }
 ```
 
@@ -348,6 +411,7 @@ seed-runner session destroy --session <session-id>
 1. 销毁远程 tmux session
 2. 保留本地日志和产物（便于事后审计）
 3. 不卸载 mount（mount 由 Agent 显式销毁）
+4. 从全局持久化状态中移除该 session；后续 `seed-runner status` 不再列出它
 
 **错误处理**：
 - Session 不存在 → 返回错误
@@ -360,37 +424,39 @@ seed-runner session destroy --session <session-id>
 
 ```
 <local-mount-point>/
-├─ logs/                          # 所有 session 的日志
-│  ├─ exp-web-01/                # Session 1 的日志
-│  │  ├─ cmd_001.log
-│  │  ├─ cmd_002.log
+├─ artifacts/                     # 保留目录
+│  ├─ logs/                       # 所有 session 的命令日志
+│  │  ├─ exp-web-01/
+│  │  │  ├─ cmd_001.log
+│  │  │  ├─ cmd_002.log
+│  │  │  └─ ...
+│  │  ├─ exp-crypto-02/
+│  │  │  ├─ cmd_001.log
+│  │  │  └─ ...
 │  │  └─ ...
-│  ├─ exp-crypto-02/             # Session 2 的日志
-│  │  ├─ cmd_001.log
-│  │  └─ ...
-│  └─ ...
-├─ artifacts/                     # 实验产物（来自远程 VM）
-│  ├─ code/
+│  ├─ code/                       # 示例：同步产物（布局依实验而定）
 │  ├─ results/
 │  └─ ...
-└─ metadata.json                  # 挂载元数据
+├─ metadata.json                  # 挂载元数据（位于挂载根）
+└─ （其余由 Agent 自行组织，例如 Labsetup、脚本、手册等）
 ```
+
+若挂载根目录**本身**命名为 `artifacts`（例如 `runs/<实验名>/artifacts`），则命令日志的完整路径为 `<挂载根>/artifacts/logs/...`，路径中会出现连续两段 `artifacts`，表示「挂载根下的保留子目录 `artifacts`」，并非笔误。若希望路径更直观，可将挂载根命名为 `workspace` 等任意非 `artifacts` 的目录名（见上文 JSON 示例中的 `workspace`）。
 
 ### 远程目录结构
 
 ```
 <remote-work-dir>/
-├─ logs/                          # 所有 session 的日志（与本地同步）
+├─ logs/                          # 执行期日志（与本地 artifacts/logs 对应并同步）
 │  ├─ exp-web-01/
 │  │  ├─ cmd_001.log
 │  │  ├─ cmd_002.log
 │  │  └─ ...
 │  └─ ...
-├─ artifacts/                     # 实验产物
-│  ├─ code/
-│  ├─ results/
-│  └─ ...
-└─ metadata.json                  # 挂载元数据
+└─ artifacts/                     # 实验产物
+   ├─ code/
+   ├─ results/
+   └─ ...
 ```
 
 ### metadata.json 格式
@@ -399,7 +465,7 @@ seed-runner session destroy --session <session-id>
 {
   "mount_id": "mnt_20260407_001",
   "machine": "vm-seed-01",
-  "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/artifacts",
+  "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
   "remote_path": "/home/user/seed-experiment",
   "mounted_at": "2026-04-07T10:30:00Z",
   "sessions": [
@@ -433,7 +499,7 @@ seed-runner session destroy --session <session-id>
 # 1. 创建挂载
 $ seed-runner mount create \
     --machine vm-seed-01 \
-    --local-dir /Users/ely/workspace/research/agent/SEEDRunner/artifacts
+    --local-dir /Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace
 
 # 返回：mount_id = "mnt_20260407_001"
 
@@ -451,7 +517,7 @@ $ seed-runner session exec \
     --cmd "ls -la"
 
 # 返回：
-# log_file_local = "/Users/ely/workspace/research/agent/SEEDRunner/artifacts/logs/exp-web-01/cmd_001.log"
+# log_file_local = "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace/artifacts/logs/exp-web-01/cmd_001.log"
 # exit_code = 0
 
 # 4. 执行命令 2
@@ -460,7 +526,7 @@ $ seed-runner session exec \
     --cmd "cd code && make"
 
 # 返回：
-# log_file_local = "/Users/ely/workspace/research/agent/SEEDRunner/artifacts/logs/exp-web-01/cmd_002.log"
+# log_file_local = "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace/artifacts/logs/exp-web-01/cmd_002.log"
 # exit_code = 0
 
 # 5. 查询状态
@@ -473,10 +539,17 @@ $ seed-runner session destroy --session sess_20260407_001
 
 # 返回：status = "destroyed"
 
+# 6.1 再次查询该 session 会得到 not found
+# $ seed-runner session status --session sess_20260407_001
+
 # 7. 销毁挂载
 $ seed-runner mount destroy --mount-id mnt_20260407_001
 
 # 返回：status = "unmounted"
+
+# 7.1 全局状态中也不会再列出这两个资源
+# $ seed-runner status
+# 返回：mount_count = 0, session_count = 0
 ```
 
 ### 示例 2：多个 session 共享一个挂载
@@ -485,7 +558,7 @@ $ seed-runner mount destroy --mount-id mnt_20260407_001
 # 1. 创建挂载（一次）
 $ mount_id=$(seed-runner mount create \
     --machine vm-seed-01 \
-    --local-dir ./artifacts | jq -r '.mount_id')
+    --local-dir ./workspace | jq -r '.mount_id')
 
 # 2. 创建 session 1
 $ sess1=$(seed-runner session create \
@@ -502,12 +575,12 @@ $ sess2=$(seed-runner session create \
 # 4. 在 session 1 中执行命令
 $ seed-runner session exec --session $sess1 --cmd "make"
 
-# 日志写到：./artifacts/logs/exp-web-01/cmd_001.log
+# 日志写到：./workspace/artifacts/logs/exp-web-01/cmd_001.log
 
 # 5. 在 session 2 中执行命令
 $ seed-runner session exec --session $sess2 --cmd "make"
 
-# 日志写到：./artifacts/logs/exp-crypto-02/cmd_001.log
+# 日志写到：./workspace/artifacts/logs/exp-crypto-02/cmd_001.log
 
 # 6. 销毁 session（挂载保留）
 $ seed-runner session destroy --session $sess1
@@ -528,7 +601,7 @@ $ seed-runner session exec \
 # 返回：exit_code = 1（失败，但 session 保持 active）
 
 # Agent 可以读取日志，理解失败原因
-$ cat /Users/ely/workspace/research/agent/SEEDRunner/artifacts/logs/exp-web-01/cmd_003.log
+$ cat /Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace/artifacts/logs/exp-web-01/cmd_003.log
 # 输出：bash: cd: /nonexistent: No such file or directory
 
 # Agent 可以继续执行其他命令
@@ -554,6 +627,7 @@ $ seed-runner session exec \
 | 2007 | 命令执行超时 | 增加 --timeout 参数或优化命令 |
 | 2008 | 日志写入失败 | 检查本地磁盘空间、权限 |
 | 2009 | 挂载卸载失败 | 检查是否有进程占用挂载点 |
+| 2010 | 全局状态查询失败 | 检查本地状态目录与权限 |
 
 ---
 

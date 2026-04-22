@@ -51,7 +51,12 @@ cp .env.machines.example .env.machines
 # MACHINE_vm-seed-01_KEY=<PATH_TO_KEY>
 ```
 
-`seed-runner` now mounts the local shared directory on the remote VM via `sshfs`.
+`seed-runner` uses `sshfs` as an internal sync channel from the remote VM back
+to your local shared directory. Agents should not need to reason about the
+mounted path directly: the intended model is that commands run in a normal
+remote working directory on local disk, while logs and artifacts are synced
+through the shared directory.
+
 That means the target VM must be able to SSH back to your local machine using
 `SEED_RUNNER_LOCAL_HOST` and `SEED_RUNNER_LOCAL_SSH_PORT`. If the return path
 needs a different local username or key path, set `SEED_RUNNER_LOCAL_USER` and
@@ -72,7 +77,7 @@ cd runs/exp-web-01
 # Create a mount
 seed-runner mount create \
   --machine vm-seed-01 \
-  --local-dir ./artifacts
+  --local-dir ./workspace
 
 # Create a session
 seed-runner session create \
@@ -95,9 +100,14 @@ seed-runner session destroy --session sess_20260407_001
 seed-runner mount destroy --mount-id mnt_20260407_001
 ```
 
-This keeps experiment outputs under `runs/<experiment>/artifacts/` and avoids
-mixing lab results with SEEDRunner source files. See [`runs/README.md`](runs/README.md)
-for the expected workspace layout.
+`--local-dir` is the mount root. Under that root, `artifacts/` is the tool-reserved
+directory: command logs are written to `artifacts/logs/<session-name>/`, and synced
+outputs are stored under `artifacts/`. Everything else in the mount root can be
+managed freely by the agent.
+
+This keeps experiment outputs under `runs/<experiment>/workspace/artifacts/` and
+avoids mixing lab results with SEEDRunner source files. See
+[`runs/README.md`](runs/README.md) for the expected workspace layout.
 
 ## Documentation
 
