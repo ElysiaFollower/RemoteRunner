@@ -6,9 +6,11 @@ import subprocess
 import sys
 import threading
 import time
+from argparse import Namespace
 
 import pytest
 import seed_runner.config as config_module
+from seed_runner.cli import cmd_status
 from seed_runner.config import MachineConfig
 from seed_runner.mount import MountManager
 from seed_runner.session import SessionManager
@@ -610,3 +612,66 @@ def test_cli_global_status_prunes_terminal_records(temp_dir):
             os.environ.pop("SEED_RUNNER_STATE_DIR", None)
         else:
             os.environ["SEED_RUNNER_STATE_DIR"] = previous_state_dir
+
+
+def test_cli_global_status_refreshes_live_runtime_statuses(temp_dir, monkeypatch, capsys):
+    """Top-level CLI status should refresh mount/session statuses before printing them."""
+    monkeypatch.setenv("SEED_RUNNER_STATE_DIR", os.path.join(temp_dir, "state"))
+
+    state = load_state()
+    state["mounts"]["mnt_test"] = {
+        "mount_id": "mnt_test",
+        "machine": "vm-seed-01",
+        "local_path": os.path.join(temp_dir, "workspace"),
+        "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
+        "remote_path": "/home/seed/seed-experiment",
+        "status": "mounted",
+        "mounted_at": "2026-04-08T11:00:00Z",
+        "session_ids": ["sess_test"],
+    }
+    state["sessions"]["sess_test"] = {
+        "session_id": "sess_test",
+        "session_name": "exp-web-01",
+        "machine": "vm-seed-01",
+        "mount_id": "mnt_test",
+        "local_mount_point": os.path.join(temp_dir, "workspace"),
+        "remote_work_dir": "/home/seed/seed-experiment",
+        "status": "active",
+        "tmux_session": "seed_sess_test",
+        "created_at": "2026-04-08T10:00:00Z",
+        "command_count": 2,
+        "timeout_seconds": 3600 * 24 * 365,
+        "busy": False,
+    }
+    save_state(state)
+
+    monkeypatch.setattr(
+        "seed_runner.mount.run_ssh_command",
+        lambda *args, **kwargs: FakeCompletedProcess(returncode=1),
+    )
+    monkeypatch.setattr(
+        "seed_runner.session.run_ssh_command",
+        lambda *args, **kwargs: FakeCompletedProcess(returncode=1),
+    )
+
+    cmd_status(Namespace())
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["mounts"][0]["status"] == "error"
+    assert payload["sessions"][0]["status"] == "error"
+
+    state = load_state()
+    assert state["mounts"]["mnt_test"]["status"] == "error"
+    assert state["sessions"]["sess_test"]["status"] == "error"
+
+
+def test_sync_outputs_command_writes_results_to_reserved_artifacts_dir():
+    """Synced outputs should land under <mount-root>/artifacts/, not artifacts/artifacts/."""
+    script = SessionManager()._sync_outputs_command(
+        "/home/seed/seed-experiment",
+        "/home/seed/.seed-runner/mounts/mnt_test/sync",
+    )
+
+    assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/logs" in script
+    assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/" in script
+    assert "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/artifacts" not in script

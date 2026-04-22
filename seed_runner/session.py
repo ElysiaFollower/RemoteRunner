@@ -79,12 +79,12 @@ class SessionManager:
                 ),
                 (
                     f"  rsync -a {escape_shell_arg(work_artifacts_dir)}/ "
-                    f"{escape_shell_arg(posixpath.join(sync_artifacts_dir, 'artifacts'))}/"
+                    f"{escape_shell_arg(sync_artifacts_dir)}/"
                 ),
                 "else",
                 (
                     f"  mkdir -p {escape_shell_arg(posixpath.join(sync_artifacts_dir, 'logs'))} "
-                    f"{escape_shell_arg(posixpath.join(sync_artifacts_dir, 'artifacts'))}"
+                    f"{escape_shell_arg(sync_artifacts_dir)}"
                 ),
                 (
                     f"  cp -a {escape_shell_arg(work_logs_dir)}/. "
@@ -92,7 +92,7 @@ class SessionManager:
                 ),
                 (
                     f"  cp -a {escape_shell_arg(work_artifacts_dir)}/. "
-                    f"{escape_shell_arg(posixpath.join(sync_artifacts_dir, 'artifacts'))}/ 2>/dev/null || true"
+                    f"{escape_shell_arg(sync_artifacts_dir)}/ 2>/dev/null || true"
                 ),
                 "fi",
             ]

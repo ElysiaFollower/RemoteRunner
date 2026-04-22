@@ -134,9 +134,12 @@ def cmd_status(args: argparse.Namespace) -> None:
             state = prune_terminal_state(load_state())
             save_state(state)
 
+        mount_manager = get_mount_manager()
+        session_manager = get_session_manager()
+
         mounts = []
         for mount_id in sorted(state.get("mounts", {}).keys()):
-            mount = state["mounts"][mount_id]
+            mount = mount_manager.status(mount_id)
             mounts.append(
                 {
                     "mount_id": mount.get("mount_id", mount_id),
@@ -145,13 +148,17 @@ def cmd_status(args: argparse.Namespace) -> None:
                     "remote_path": mount.get("remote_path"),
                     "status": mount.get("status"),
                     "mounted_at": mount.get("mounted_at"),
-                    "session_count": len(mount.get("session_ids", [])),
+                    "session_count": mount.get("session_count", 0),
                 }
             )
 
+        with state_lock():
+            state = prune_terminal_state(load_state())
+            save_state(state)
+
         sessions = []
         for session_id in sorted(state.get("sessions", {}).keys()):
-            session = state["sessions"][session_id]
+            session = session_manager.status(session_id)
             sessions.append(
                 {
                     "session_id": session.get("session_id", session_id),
