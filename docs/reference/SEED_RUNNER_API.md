@@ -73,7 +73,8 @@ seed-runner status
 
 **用途**：
 - 当用户忘记 `mount_id` 或 `session_id` 时，先通过该命令恢复全局上下文
-- 返回本地持久化状态中的 mount / session 概览，不要求指定单个 ID
+- 返回本地持久化状态中的**当前** mount / session 概览，不要求指定单个 ID
+- 已销毁的 session 和已卸载的 mount 不会继续保留在全局状态中
 
 **返回值**（JSON）：
 ```json
@@ -181,7 +182,6 @@ seed-runner mount status --mount-id <mount-id>
 
 **状态值**：
 - `mounted` — 挂载正常
-- `unmounted` — 已卸载
 - `error` — 挂载出现错误
 
 ---
@@ -212,6 +212,7 @@ seed-runner mount destroy --mount-id <mount-id> [--cleanup]
 1. 卸载 sshfs 挂载
 2. 保留本地日志和产物（便于事后审计）
 3. 如果指定 `--cleanup`，删除远程 VM 中的实验目录
+4. 从全局持久化状态中移除该 mount；后续 `seed-runner status` 不再列出它
 
 **错误处理**：
 - Mount 不存在 → 返回错误
@@ -378,7 +379,6 @@ seed-runner session status --session <session-id>
 - `busy` — session 中已有命令正在运行，暂不接受新的 exec
 - `timeout` — session 已超时
 - `error` — session 出现错误
-- `destroyed` — session 已销毁
 
 **错误处理**：
 - Session 不存在 → 返回错误
@@ -411,6 +411,7 @@ seed-runner session destroy --session <session-id>
 1. 销毁远程 tmux session
 2. 保留本地日志和产物（便于事后审计）
 3. 不卸载 mount（mount 由 Agent 显式销毁）
+4. 从全局持久化状态中移除该 session；后续 `seed-runner status` 不再列出它
 
 **错误处理**：
 - Session 不存在 → 返回错误
@@ -538,10 +539,17 @@ $ seed-runner session destroy --session sess_20260407_001
 
 # 返回：status = "destroyed"
 
+# 6.1 再次查询该 session 会得到 not found
+# $ seed-runner session status --session sess_20260407_001
+
 # 7. 销毁挂载
 $ seed-runner mount destroy --mount-id mnt_20260407_001
 
 # 返回：status = "unmounted"
+
+# 7.1 全局状态中也不会再列出这两个资源
+# $ seed-runner status
+# 返回：mount_count = 0, session_count = 0
 ```
 
 ### 示例 2：多个 session 共享一个挂载

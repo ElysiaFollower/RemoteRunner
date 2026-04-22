@@ -327,24 +327,10 @@ class MountManager:
             if mount_id not in state["mounts"]:
                 raise KeyError(f"Mount '{mount_id}' not found")
 
-            mount_info = state["mounts"][mount_id]
-            mount_info["status"] = "unmounted"
-            mount_info["unmounted_at"] = unmounted_at
-            state["mounts"][mount_id] = mount_info
+            mount_info = state["mounts"].pop(mount_id)
 
             for session_id in mount_info.get("session_ids", []):
-                session = state["sessions"].get(session_id)
-                if not session or session.get("status") == "destroyed":
-                    continue
-                session["status"] = "destroyed"
-                session["destroyed_at"] = unmounted_at
-                session["logs_preserved"] = True
-                session["logs_location"] = os.path.join(
-                    local_path, "artifacts", "logs", session["session_name"]
-                )
-                session["busy"] = False
-                session.pop("active_command", None)
-                state["sessions"][session_id] = session
+                state["sessions"].pop(session_id, None)
 
             save_state(state)
 

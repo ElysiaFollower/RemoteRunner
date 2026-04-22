@@ -187,6 +187,8 @@ def test_mount_destroy_kills_tmux_sessions_discovered_by_remote_path(temp_dir, m
     assert result["status"] == "unmounted"
     assert any("tmux kill-session -t 'stale_session'" in cmd for cmd in remote_commands)
     assert any("tmux kill-session -t 'sync_stale'" in cmd for cmd in remote_commands)
+    state = load_state()
+    assert "mnt_test" not in state["mounts"]
 
 
 def test_mount_destroy_raises_when_remote_mount_is_still_active(temp_dir, monkeypatch):
@@ -311,9 +313,12 @@ def test_session_lifecycle_updates_state_and_metadata(temp_dir, monkeypatch):
         local_dir, "artifacts", "logs", "exp-web-01"
     )
 
-    final_status = SessionManager().status(created_session["session_id"])
-    assert final_status["status"] == "destroyed"
-    assert final_status["command_count"] == 1
+    with pytest.raises(KeyError, match="not found"):
+        SessionManager().status(created_session["session_id"])
+
+    state = load_state()
+    assert created_session["session_id"] not in state["sessions"]
+    assert state["mounts"][mount["mount_id"]]["session_ids"] == []
 
     with open(os.path.join(local_dir, "metadata.json"), "r") as f:
         metadata = json.load(f)
@@ -540,6 +545,66 @@ def test_cli_global_status_lists_mounts_and_sessions(temp_dir):
         assert payload["summary"] == {"mount_count": 1, "session_count": 1}
         assert payload["mounts"][0]["mount_id"] == "mnt_test"
         assert payload["sessions"][0]["session_id"] == "sess_test"
+    finally:
+        if previous_state_dir is None:
+            os.environ.pop("SEED_RUNNER_STATE_DIR", None)
+        else:
+            os.environ["SEED_RUNNER_STATE_DIR"] = previous_state_dir
+
+
+def test_cli_global_status_prunes_terminal_records(temp_dir):
+    """Top-level CLI status should drop destroyed/unmounted records from persisted state."""
+    state_dir = os.path.join(temp_dir, "state")
+    env = os.environ.copy()
+    env["SEED_RUNNER_STATE_DIR"] = state_dir
+    previous_state_dir = os.environ.get("SEED_RUNNER_STATE_DIR")
+    os.environ["SEED_RUNNER_STATE_DIR"] = state_dir
+
+    try:
+        state = load_state()
+        state["mounts"]["mnt_dead"] = {
+            "mount_id": "mnt_dead",
+            "machine": "vm-seed-01",
+            "local_path": os.path.join(temp_dir, "workspace"),
+            "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_dead/sync",
+            "remote_path": "/home/seed/seed-experiment",
+            "status": "unmounted",
+            "mounted_at": "2026-04-08T11:00:00Z",
+            "session_ids": ["sess_dead"],
+        }
+        state["sessions"]["sess_dead"] = {
+            "session_id": "sess_dead",
+            "session_name": "exp-web-01",
+            "machine": "vm-seed-01",
+            "mount_id": "mnt_dead",
+            "local_mount_point": os.path.join(temp_dir, "workspace"),
+            "remote_work_dir": "/home/seed/seed-experiment",
+            "status": "destroyed",
+            "tmux_session": "seed_sess_dead",
+            "created_at": "2026-04-08T10:00:00Z",
+            "command_count": 2,
+            "timeout_seconds": 3600,
+            "busy": False,
+        }
+        save_state(state)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "seed_runner.cli", "status"],
+            cwd=_repo_root(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["summary"] == {"mount_count": 0, "session_count": 0}
+
+        state = load_state()
+        assert state["mounts"] == {}
+        assert state["sessions"] == {}
     finally:
         if previous_state_dir is None:
             os.environ.pop("SEED_RUNNER_STATE_DIR", None)

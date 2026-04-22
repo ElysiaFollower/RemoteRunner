@@ -71,6 +71,39 @@ def save_state(state: Dict[str, Any]) -> None:
     os.replace(temp_file, state_file)
 
 
+def prune_terminal_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop terminal mount/session records so persisted state reflects only current resources."""
+    mounts = state.setdefault("mounts", {})
+    sessions = state.setdefault("sessions", {})
+
+    for session_id, session_info in list(sessions.items()):
+        if session_info.get("status") == "destroyed":
+            sessions.pop(session_id, None)
+
+    for mount_id, mount_info in list(mounts.items()):
+        if mount_info.get("status") == "unmounted":
+            mounts.pop(mount_id, None)
+            continue
+
+        session_ids = mount_info.get("session_ids", [])
+        mount_info["session_ids"] = [session_id for session_id in session_ids if session_id in sessions]
+        mounts[mount_id] = mount_info
+
+    active_mount_ids = set(mounts)
+    for session_id, session_info in list(sessions.items()):
+        if session_info.get("mount_id") not in active_mount_ids:
+            sessions.pop(session_id, None)
+
+    for mount_id, mount_info in list(mounts.items()):
+        session_ids = mount_info.get("session_ids", [])
+        filtered = [session_id for session_id in session_ids if session_id in sessions]
+        if filtered != session_ids:
+            mount_info["session_ids"] = filtered
+            mounts[mount_id] = mount_info
+
+    return state
+
+
 def load_mount_metadata(local_path: str) -> Dict[str, Any]:
     """Load metadata.json for a mount if present."""
     metadata_path = os.path.join(local_path, "metadata.json")

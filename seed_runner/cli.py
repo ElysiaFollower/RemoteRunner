@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 from seed_runner.mount import get_mount_manager
 from seed_runner.session import get_session_manager
-from seed_runner.state import load_state
+from seed_runner.state import load_state, prune_terminal_state, save_state, state_lock
 from seed_runner.utils import json_response
 
 
@@ -130,7 +130,9 @@ def cmd_session_destroy(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     """Handle top-level 'status' command."""
     try:
-        state = load_state()
+        with state_lock():
+            state = prune_terminal_state(load_state())
+            save_state(state)
 
         mounts = []
         for mount_id in sorted(state.get("mounts", {}).keys()):

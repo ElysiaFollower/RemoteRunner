@@ -609,14 +609,15 @@ class SessionManager:
             state = self._get_state()
             if session_id not in state["sessions"]:
                 raise KeyError(f"Session '{session_id}' not found")
-            session_info = state["sessions"][session_id]
-            session_info["status"] = "destroyed"
-            session_info["destroyed_at"] = destroyed_at
-            session_info["logs_preserved"] = True
-            session_info["logs_location"] = logs_location
-            session_info["busy"] = False
-            session_info.pop("active_command", None)
-            state["sessions"][session_id] = session_info
+            session_info = state["sessions"].pop(session_id)
+            mount = state["mounts"].get(session_info["mount_id"])
+            if mount:
+                mount["session_ids"] = [
+                    existing_id
+                    for existing_id in mount.get("session_ids", [])
+                    if existing_id != session_id
+                ]
+                state["mounts"][session_info["mount_id"]] = mount
             save_state(state)
 
         return {
