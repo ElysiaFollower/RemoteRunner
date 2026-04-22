@@ -62,6 +62,54 @@ seed-runner (本地工具)
 
 ## 命令集
 
+### 0. 全局状态查询
+
+#### 0.1 查询所有 mount / session（无需 ID）
+
+**命令**：
+```bash
+seed-runner status
+```
+
+**用途**：
+- 当用户忘记 `mount_id` 或 `session_id` 时，先通过该命令恢复全局上下文
+- 返回本地持久化状态中的 mount / session 概览，不要求指定单个 ID
+
+**返回值**（JSON）：
+```json
+{
+  "mounts": [
+    {
+      "mount_id": "mnt_20260407_001",
+      "machine": "vm-seed-01",
+      "local_path": "/Users/ely/workspace/research/agent/SEEDRunner/runs/exp-web-01/workspace",
+      "remote_path": "/home/user/seed-experiment",
+      "status": "mounted",
+      "mounted_at": "2026-04-07T10:30:00Z",
+      "session_count": 1
+    }
+  ],
+  "sessions": [
+    {
+      "session_id": "sess_20260407_001",
+      "session_name": "exp-web-01",
+      "machine": "vm-seed-01",
+      "mount_id": "mnt_20260407_001",
+      "status": "active",
+      "busy": false,
+      "command_count": 2,
+      "created_at": "2026-04-07T10:30:00Z"
+    }
+  ],
+  "summary": {
+    "mount_count": 1,
+    "session_count": 1
+  }
+}
+```
+
+---
+
 ### 第一层：挂载管理
 
 #### 1.1 创建挂载
@@ -571,6 +619,7 @@ $ seed-runner session exec \
 | 2007 | 命令执行超时 | 增加 --timeout 参数或优化命令 |
 | 2008 | 日志写入失败 | 检查本地磁盘空间、权限 |
 | 2009 | 挂载卸载失败 | 检查是否有进程占用挂载点 |
+| 2010 | 全局状态查询失败 | 检查本地状态目录与权限 |
 
 ---
 

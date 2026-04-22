@@ -487,3 +487,61 @@ def test_session_status_persists_timeout(temp_dir, monkeypatch):
     assert result["status"] == "timeout"
     state = load_state()
     assert state["sessions"]["sess_test"]["status"] == "timeout"
+
+
+def test_cli_global_status_lists_mounts_and_sessions(temp_dir):
+    """Top-level CLI status should list all persisted mounts and sessions without requiring IDs."""
+    state_dir = os.path.join(temp_dir, "state")
+    env = os.environ.copy()
+    env["SEED_RUNNER_STATE_DIR"] = state_dir
+    previous_state_dir = os.environ.get("SEED_RUNNER_STATE_DIR")
+    os.environ["SEED_RUNNER_STATE_DIR"] = state_dir
+
+    try:
+        state = load_state()
+        state["mounts"]["mnt_test"] = {
+            "mount_id": "mnt_test",
+            "machine": "vm-seed-01",
+            "local_path": os.path.join(temp_dir, "workspace"),
+            "remote_sync_dir": "/home/seed/.seed-runner/mounts/mnt_test/sync",
+            "remote_path": "/home/seed/seed-experiment",
+            "status": "mounted",
+            "mounted_at": "2026-04-08T11:00:00Z",
+            "session_ids": ["sess_test"],
+        }
+        state["sessions"]["sess_test"] = {
+            "session_id": "sess_test",
+            "session_name": "exp-web-01",
+            "machine": "vm-seed-01",
+            "mount_id": "mnt_test",
+            "local_mount_point": os.path.join(temp_dir, "workspace"),
+            "remote_work_dir": "/home/seed/seed-experiment",
+            "status": "active",
+            "tmux_session": "seed_sess_test",
+            "created_at": "2026-04-08T10:00:00Z",
+            "command_count": 2,
+            "timeout_seconds": 3600,
+            "busy": False,
+        }
+        save_state(state)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "seed_runner.cli", "status"],
+            cwd=_repo_root(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["summary"] == {"mount_count": 1, "session_count": 1}
+        assert payload["mounts"][0]["mount_id"] == "mnt_test"
+        assert payload["sessions"][0]["session_id"] == "sess_test"
+    finally:
+        if previous_state_dir is None:
+            os.environ.pop("SEED_RUNNER_STATE_DIR", None)
+        else:
+            os.environ["SEED_RUNNER_STATE_DIR"] = previous_state_dir
