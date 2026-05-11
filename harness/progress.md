@@ -9,7 +9,7 @@
 
 - 当前功能项：无 active；`F-013 Remote Runner 公共模块 Facade 迁移切片` 已 passing。
 - 当前任务计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-public-module-facade.md`。
-- 当前阶段性提交：`561c349 docs(harness): define remote runner lighthouse`；`9097b9e feat(remote-runner): add mount-free machine session file run CLI`；`f80f490 test(remote-runner): add opt-in real machine integration`；另有 handoff/progress 收尾提交。
+- 当前阶段性提交：`561c349 docs(harness): define remote runner lighthouse`；`9097b9e feat(remote-runner): add mount-free machine session file run CLI`；`f80f490 test(remote-runner): add opt-in real machine integration`；`bf47cc1 docs(harness): record staged remote runner handoff`；另有 harness-check 标题检查修复提交。
 - 上次验证：2026-05-11，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 23 passed, 81 warnings；此前 `./init.sh` 通过且 harness-check 0 warnings；`python3 -m remote_runner.cli --help` 通过；`remote_runner.remote_*` 目标 import path 可用；真实机器 machine/session/file/run 基础闭环已验证；`python3 -m pytest -q` 通过 44 passed, 2 skipped, 101 warnings。
 - 下一步最佳动作：先运行提交后完整验证并确认工作树清洁；之后可开始完整包迁移计划，逐步把 `seed_runner/remote_*.py` 实现搬到 `remote_runner`，或开始领域 profile、验收 DSL、报告层设计。
 
@@ -143,3 +143,4 @@
 - 提交前将仓库文档和测试中的真实机器别名与本机 Windows 用户路径替换为通用示例，避免把机器细节写入提交历史。
 - handoff/progress 作为单独收尾提交记录当前状态。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 23 passed, 81 warnings。
+- 收尾验证发现 `scripts/harness-check.sh` 对 handoff 旧标题的检查已过期，同时 `$heading` 后接中文标点在 `set -u` 下触发解析问题；已改为检查当前 handoff 标题并用 `${heading}` 展开。

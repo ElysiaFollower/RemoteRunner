@@ -12,7 +12,8 @@
   - `561c349 docs(harness): define remote runner lighthouse`
   - `9097b9e feat(remote-runner): add mount-free machine session file run CLI`
   - `f80f490 test(remote-runner): add opt-in real machine integration`
-  - 另有本文件所在的 handoff/progress 收尾提交
+  - `bf47cc1 docs(harness): record staged remote runner handoff`
+  - 另有本文件所在的 harness-check handoff 标题检查修复提交
 - 当前计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-public-module-facade.md`。
 - 当前功能项：无 active；`F-001`、`F-002`、`F-003`、`F-004`、`F-006`、`F-007`、`F-008`、`F-009`、`F-010`、`F-011`、`F-012`、`F-013` passing；`F-005` profile/report 层未开始。
 
