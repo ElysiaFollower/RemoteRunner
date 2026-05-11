@@ -17,10 +17,10 @@
 - WIP limit：1。
 - 功能清单有效性：`./scripts/harness-check.sh` 通过。
 - 交接新鲜度：2026-05-11 已更新。
-- 验证命令健康度：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest -q` 通过 46 passed, 2 skipped，且无 warnings；black check 通过；`git diff --check` 通过；Remote Runner 真实机器 opt-in 测试默认 skip，显式配置后此前已验证通过。
+- 验证命令健康度：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`git diff --check` 通过；Remote Runner 真实机器 launch+integration opt-in smoke 显式配置后通过 4 passed。
 - 冷启动测试：`./init.sh` 已运行通过，指向事实来源和验证命令。
 - 端到端覆盖：真实 VM opt-in 测试存在但本次未运行。
-- 重复失败是否已执行化：已增加 `tests/test_remote_runner_mvp.py` 覆盖 no-mount machine/session/file 核心行为和 legacy 回归。
+- 重复失败是否已执行化：已增加 `tests/test_remote_runner_mvp.py` 覆盖 no-mount machine/session/file 核心行为和 legacy 回归；已增加 `tests/test_remote_runner_launch_suite.py` 作为上线前长期复用验收资产。
 
 ## 维护队列
 
@@ -28,5 +28,4 @@
 - 交互式 `remote-runner machine add` 已落地；后续可考虑 credential reference 或系统钥匙串。
 - Windows 文件写入验证必须限制在 `/mnt/c/Users/example/Desktop/SSHRunner` 或对应 Windows `SSHRunner` 目录内。
 - 继续扩展 harness-check 或测试，检查目标 CLI 文档和实现是否同步。
-- 关注后续是否需要把共享 helper 从 `seed_runner.utils` 迁移到 `remote_runner.utils`。
 - 后续大改前先保护 legacy `seed-runner` 可验证路径，避免无意破坏原型。

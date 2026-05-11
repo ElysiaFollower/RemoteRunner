@@ -178,6 +178,17 @@
       "verification": "rg -n \"from seed_runner|import seed_runner\" remote_runner -S && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
       "evidence": "2026-05-11: remote_runner 包内不再从 seed_runner.utils 导入；shared helper 已迁移到 remote_runner.utils；seed_runner.utils 保持兼容 wrapper 并 re-export 目标 helper；新增测试验证 legacy wrapper 与 target helper 同一对象；聚焦测试 26 passed；完整 pytest 47 passed, 2 skipped；black check 通过；harness-check 0 warnings；git diff --check 通过；remote_runner import 边界检查无残留 seed_runner.utils 引用。",
       "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-utils-migration.md。本轮不改变 helper 行为、不删除 seed_runner.utils、不运行真实机器 opt-in 测试。"
+    },
+    {
+      "id": "F-017",
+      "priority": "P0",
+      "area": "testing",
+      "title": "Remote Runner 上线验收测试资产",
+      "behavior": "提供长期可复用的 launch acceptance suite，覆盖公共接口、fake-backed 核心闭环和真实机器 opt-in 烟雾测试，作为上线前门禁。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_launch_suite.py tests/test_remote_runner_real_integration.py -q",
+      "evidence": "2026-05-11: 新增 tests/test_remote_runner_launch_suite.py、tests/remote_runner_launch_support.py 和 docs/testing/remote-runner-launch-acceptance.md；默认 launch suite 2 passed, 1 skipped；默认真实集成测试 1 skipped；完整 pytest 49 passed, 3 skipped；harness-check 0 warnings；git diff --check 通过；显式 opt-in 真实机器 launch+integration smoke 4 passed，写入范围限制在已配置安全测试目录，未记录真实机器细节。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md。真实机器验收默认 skip，显式 opt-in 后只允许写 REMOTE_RUNNER_REAL_TEST_CWD。"
     }
   ]
 }

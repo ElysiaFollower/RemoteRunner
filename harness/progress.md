@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：无 active；`F-016 Remote Runner shared utils 迁移切片` 已 passing。
-- 当前任务计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-utils-migration.md`。
-- 当前阶段性提交：`561c349 docs(harness): define remote runner lighthouse`；`9097b9e feat(remote-runner): add mount-free machine session file run CLI`；`f80f490 test(remote-runner): add opt-in real machine integration`；`bf47cc1 docs(harness): record staged remote runner handoff`；另有 harness-check 标题检查修复提交。
-- 上次验证：2026-05-11，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 23 passed, 81 warnings；此前 `./init.sh` 通过且 harness-check 0 warnings；`python3 -m remote_runner.cli --help` 通过；`remote_runner.remote_*` 目标 import path 可用；真实机器 machine/session/file/run 基础闭环已验证；`python3 -m pytest -q` 通过 44 passed, 2 skipped, 101 warnings。
-- 下一步最佳动作：可开始 profile/report 层第一切片；若继续做代码边界整理，可评估是否迁移 `seed_runner` 其余 legacy helpers，但不要破坏旧原型。
+- 当前功能项：无 active；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
+- 当前任务计划：无 active；`F-017` 任务计划已归档至 `plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md`。
+- 当前阶段性提交：截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`；`F-017` 测试资产由本轮收尾提交记录。
+- 上次验证：2026-05-11，`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；真实机器 opt-in launch+integration smoke 通过 4 passed。
+- 下一步最佳动作：若准备上线或发 PR，审阅 launch acceptance 文档与测试覆盖；若继续产品演进，开 `F-005` profile/report 层第一切片。
 
 ## 状态约定
 
@@ -183,3 +183,16 @@
 - `seed_runner.utils` 改为 legacy compatibility wrapper，并继续 re-export 目标 helper。
 - 新增测试确认 legacy wrapper 与 target helper 同一对象，且 `remote_runner` 内部 import 边界已清理。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 26 passed；`python3 -m pytest -q` 通过 47 passed, 2 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；`remote_runner` import 边界检查无残留 `seed_runner.utils` 引用。
+
+### 2026-05-11 - 上线验收测试资产开工
+
+- 新增 active plan：`plans/active/2026-05-11-remote-runner-launch-acceptance-suite.md`。
+- 新增 `F-017` active：目标是建立长期可复用 launch acceptance suite，覆盖默认 fake-backed 核心闭环和真实机器 opt-in 烟雾测试。
+- 安全边界：真实机器验收默认 skip，只有显式设置 `REMOTE_RUNNER_RUN_REAL_TESTS=1`、机器 ID 和测试目录时才运行，并只写 `REMOTE_RUNNER_REAL_TEST_CWD`。
+
+### 2026-05-11 - 上线验收测试资产完成
+
+- 新增 `tests/test_remote_runner_launch_suite.py` 和 `tests/remote_runner_launch_support.py`，默认覆盖目标公共接口、legacy wrapper、机器配置脱敏、startup commands、path mapping、session exec/logs/destroy、file put/list/get、transfer records、run once、artifact manifest、session state 和 run state。
+- 新增 `docs/testing/remote-runner-launch-acceptance.md`，说明默认门禁、真实机器门禁、环境变量、安全边界和上线判定；README 增加入口链接。
+- 真实机器 opt-in smoke 覆盖 doctor、session create/exec、file put/list/get、run once artifact pullback、远程 cleanup 和 session destroy；测试只写入显式安全测试目录，未把真实机器细节写入仓库。
+- 验证：`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；真实机器 opt-in launch+integration smoke 通过 4 passed。

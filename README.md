@@ -167,12 +167,19 @@ implementation detail, not the desired long-term public API.
 - [Overview](docs/overview.md) - product positioning and relationship to the SEEDRunner prototype
 - [Requirements](REQUIREMENTS.md) - MVP requirements and acceptance criteria
 - [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) - target agent-facing CLI
+- [Launch Acceptance Suite](docs/testing/remote-runner-launch-acceptance.md) - reusable pre-release validation
 - [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - current prototype CLI reference
 
 ## Development
 
 ```bash
 python3 -m pytest tests/
+```
+
+Run the reusable Remote Runner launch acceptance suite before release:
+
+```bash
+python3 -m pytest tests/test_remote_runner_launch_suite.py -q
 ```
 
 Run the opt-in VM-backed integration test only when a real test machine is configured:
