@@ -1,72 +1,138 @@
-# SEEDRunner
+# Remote Runner
 
-Autonomous SEED experiment runner powered by AI agents.
+Local CLI infrastructure for controlling remote machines through agent-friendly sessions.
 
-## Overview
+Remote Runner turns configured remote machines into stable local CLI resources. The core is not
+research, SEED, SSH convenience, tmux, or file mounting. The core is a predictable interface for
+remote interaction: list machines, diagnose connections, create sessions, execute commands in a
+remote directory, explicitly transfer files, and collect structured output, logs, and artifacts.
 
-SEEDRunner is a system that enables AI agents to autonomously complete SEED (Security Experimentation and Evaluation) lab experiments and generate formal reports.
+## Current Status
 
-**Key Features**:
-- Autonomous experiment execution without human intervention
-- Real-time remote command execution via SSH + tmux
-- Complete execution tracing and audit logs
-- Automatic experiment report generation
-- Modular architecture for extensibility
+This repository currently contains the `seed-runner` prototype that started as a SEED lab
+experiment runner. That prototype validated the deeper need: agents need a small, auditable local
+tool for operating remote machines without repeatedly handling credentials and connection plumbing.
 
-## Quick Start
+The project direction is now broader:
+
+- `seed-runner` is the current prototype CLI and implementation.
+- Remote Runner is the provisional product boundary and working name.
+- Research, experiments, operations, SEED labs, model training, and benchmarks are use cases above
+  the remote-interaction layer.
+- SSH, tmux, sshfs, rsync, SFTP, Slurm, Docker, and Kubernetes are backend details, not product
+  identity.
+
+## One-Sentence Definition
+
+Remote Runner is a lightweight local CLI that turns configured remote machines into agent-friendly
+sessions for command execution, structured output, logs, and artifact handling.
+
+## Core Principles
+
+- Remote interaction first: the product is a CLI interface for operating remote machines.
+- Local-first: the tool is installed, configured, and called on the user's own machine.
+- Machine registry: users configure remote machines once, then humans or agents use machine IDs.
+- Credential absorption: normal workflows should not revolve around passwords, private keys, jump
+  hosts, or SSH incantations.
+- Stable CLI contract: commands should support non-interactive use, JSON output, clear errors,
+  timeouts, recovery, log lookup, and cleanup.
+- Explicit transfer: file movement should be done through `file put/get/list`, not by assuming a
+  mounted local/remote tree.
+- Implementation flexibility: backend mechanisms can change without changing the machine/session
+  contract.
+- Domain workflows on top: research reports, SEED automation, operations runbooks, training jobs,
+  and benchmarks are higher-level profiles.
+
+## Target MVP Interface
+
+The intended CLI shape is:
+
+```bash
+remote-runner machine add
+remote-runner machine configure-startup lab-gpu-01 \
+  --startup-command wsl \
+  --default-cwd /mnt/c/Users/example/Desktop/SSHRunner \
+  --json
+remote-runner machine configure-path-map lab-gpu-01 \
+  --command-prefix /mnt/c/Users/example/Desktop/SSHRunner \
+  --file-prefix C:/Users/example/Desktop/SSHRunner \
+  --json
+remote-runner machine list --json
+remote-runner machine show lab-gpu-01 --json
+remote-runner machine doctor lab-gpu-01 --json
+
+remote-runner session create --machine lab-gpu-01 --cwd /home/user/project --json
+remote-runner session exec --session sess_abc123 --cmd "pytest -q" --timeout 300 --json
+remote-runner session logs --session sess_abc123 --json
+remote-runner session destroy --session sess_abc123 --json
+
+remote-runner file put --session sess_abc123 --local ./input.txt --remote /home/user/project/input.txt --json
+remote-runner file get --session sess_abc123 --remote /home/user/project/output.txt --local ./output.txt --json
+remote-runner file list --session sess_abc123 --remote /home/user/project --json
+
+remote-runner run once \
+  --machine lab-gpu-01 \
+  --cwd /home/user/project \
+  --input ./input.txt=/home/user/project/input.txt \
+  --cmd "python job.py --input input.txt --output output.txt" \
+  --artifact /home/user/project/output.txt=./output.txt \
+  --json
+```
+
+`session exec --json` should return the command, remote working directory, stdout, stderr,
+exit code, timestamps, duration, and local log path.
+
+`remote-runner machine add --json` prompts for missing SSH machine fields and writes prompts to
+stderr, so stdout remains one JSON object. Password auth uses hidden input in the recommended
+interactive path. The `--password` flag exists for compatibility and tests, but it is not the
+recommended way to enter real credentials because shell history can leak it.
+
+Machines can also store ordered startup commands that run immediately after SSH login and before
+the normal `cd` plus user command. This is for hosts such as Windows OpenSSH where the usable Linux
+shell is reached by first running `wsl`.
+
+Machines can store explicit path mappings when command execution and SFTP use different path
+namespaces. `file put/get/list` apply those mappings before transfer while keeping user-facing
+paths in local state records.
+
+`run once` is the first generic closed-loop layer above machine/session/file: it can upload inputs,
+execute one command, download artifacts, save a run manifest, and destroy the temporary session
+while preserving logs.
+
+See [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) for the target contract.
+
+## Current Prototype Usage
+
+Until the CLI is renamed and the machine/session contract is rebuilt, the working executable is
+still `seed-runner`.
 
 ### Prerequisites
 
 - Python 3.8+
-- SSH access to target VM with public key authentication
-- `tmux` and `sshfs` installed on target VM
+- SSH access to the target VM with key authentication
+- Current prototype backend dependencies on the target VM: `tmux` and `sshfs`
 
 ### Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd SEEDRunner
-
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 python3 -m pip install -e ".[dev]"
 ```
 
 ### Configuration
 
 ```bash
-# Copy the example configuration
 cp .env.machines.example .env.machines
-
-# Edit .env.machines with your machine details and local SSH info
-# SEED_RUNNER_LOCAL_HOST=<LOCAL_IP_REACHABLE_FROM_VM>
-# SEED_RUNNER_LOCAL_SSH_PORT=<LOCAL_SSH_PORT>
-# MACHINE_vm-seed-01_HOST=<IP>
-# MACHINE_vm-seed-01_PORT=<SSH_PORT>
-# MACHINE_vm-seed-01_USER=<USER>
-# MACHINE_vm-seed-01_KEY=<PATH_TO_KEY>
 ```
 
-`seed-runner` uses `sshfs` as an internal sync channel from the remote VM back
-to your local shared directory. Agents should not need to reason about the
-mounted path directly: the intended model is that commands run in a normal
-remote working directory on local disk, while logs and artifacts are synced
-through the shared directory.
+Edit `.env.machines` with the current prototype's machine settings. This is a legacy prototype
+format; the target MVP should move toward a local Remote Runner state directory such as
+`~/.remote-runner/`.
 
-That means the target VM must be able to SSH back to your local machine using
-`SEED_RUNNER_LOCAL_HOST` and `SEED_RUNNER_LOCAL_SSH_PORT`. If the return path
-needs a different local username or key path, set `SEED_RUNNER_LOCAL_USER` and
-`SEED_RUNNER_REMOTE_TO_LOCAL_KEY` in `.env.machines` as well.
+### Basic Prototype Workflow
 
-### Basic Usage
-
-For application-layer experiments, create a dedicated workspace under `runs/`
-and invoke `seed-runner` from there instead of using the repository root as the
-working directory:
+Create a workspace under `runs/` so prototype outputs do not mix with source files:
 
 ```bash
 mkdir -p runs/exp-web-01
@@ -74,96 +140,62 @@ cd runs/exp-web-01
 ```
 
 ```bash
-# Create a mount
 seed-runner mount create \
   --machine vm-seed-01 \
   --local-dir ./workspace
 
-# Create a session
 seed-runner session create \
   --machine vm-seed-01 \
   --mount-id mnt_20260407_001 \
   --name exp-web-01
 
-# Execute a command
 seed-runner session exec \
   --session sess_20260407_001 \
   --cmd "make"
 
-# Check session status
 seed-runner session status --session sess_20260407_001
-
-# Destroy session
 seed-runner session destroy --session sess_20260407_001
-
-# Destroy mount
 seed-runner mount destroy --mount-id mnt_20260407_001
 ```
 
-`--local-dir` is the mount root. Under that root, `artifacts/` is the tool-reserved
-directory: command logs are written to `artifacts/logs/<session-name>/`, and synced
-outputs are stored under `artifacts/`. Everything else in the mount root can be
-managed freely by the agent.
-
-This keeps experiment outputs under `runs/<experiment>/workspace/artifacts/` and
-avoids mixing lab results with SEEDRunner source files. See
-[`runs/README.md`](runs/README.md) for the expected workspace layout.
+In the prototype, `--local-dir` is the full sshfs sync root. The tool reserves
+`<local-dir>/artifacts/` for command logs and synced outputs. This mount-first model is legacy
+implementation detail, not the desired long-term public API.
 
 ## Documentation
 
-- [API Reference](docs/reference/SEED_RUNNER_API.md) — Complete API specification
-- [Requirements](REQUIREMENTS.md) — Project requirements and constraints
-- [Architecture](docs/architecture/) — System design and architecture decisions
-
-## Project Structure
-
-```
-SEEDRunner/
-├── seed_runner/           # Main package
-│   ├── __init__.py
-│   ├── cli.py            # CLI entry point
-│   ├── config.py         # Configuration management
-│   ├── mount.py          # Mount management
-│   ├── session.py        # Session management
-│   └── utils.py          # Utilities
-├── tests/                # Test suite
-├── docs/                 # Documentation
-├── runs/                 # Per-experiment workspaces for application-layer use
-├── plans/                # Project plans
-├── evals/                # Evaluation samples
-├── pyproject.toml        # Project metadata
-├── requirements.txt      # Dependencies
-├── .env.machines.example # Configuration template
-└── README.md            # This file
-```
+- [Overview](docs/overview.md) - product positioning and relationship to the SEEDRunner prototype
+- [Requirements](REQUIREMENTS.md) - MVP requirements and acceptance criteria
+- [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) - target agent-facing CLI
+- [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - current prototype CLI reference
 
 ## Development
-
-### Running Tests
 
 ```bash
 python3 -m pytest tests/
 ```
 
-To run the real VM-backed integration test that exercises the full CLI workflow
-across separate processes:
+Run the opt-in VM-backed integration test only when a real test machine is configured:
 
 ```bash
 SEED_RUNNER_RUN_REAL_VM_TESTS=1 python3 -m pytest tests/test_real_vm_integration.py -q
 ```
 
-### Code Style
+Run the opt-in Remote Runner integration test only when a real Remote Runner machine and a safe
+remote test directory are configured:
 
 ```bash
-black seed_runner/
-flake8 seed_runner/
-mypy seed_runner/
+REMOTE_RUNNER_RUN_REAL_TESTS=1 \
+  REMOTE_RUNNER_REAL_MACHINE=<machine_id> \
+  REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> \
+  python3 -m pytest tests/test_remote_runner_real_integration.py -q
 ```
+
+The repository still keeps most implementation modules under `seed_runner` for legacy
+compatibility. The target package facade is `remote_runner`: `remote-runner` points to
+`remote_runner.cli:main`, and public Remote Runner modules are also available through
+`remote_runner.remote_*` import paths.
 
 ## License
 
 MIT
-
-## Contact
-
-For questions or issues, please open an issue on GitHub.

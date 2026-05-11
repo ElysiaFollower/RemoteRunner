@@ -1,242 +1,70 @@
 # Agents
 
-This document describes the AI agents and their capabilities in the SEEDRunner system.
+本文件是 Remote Runner 仓库的 agent 入口路由。不要把它扩写成百科全书；长期事实放 `docs/`，状态放 `harness/`，任务合同放 `plans/`，可执行检查放 `scripts/`。
 
-## Overview
+## 项目灯塔
 
-SEEDRunner is designed to work with Claude AI agents (via Claude API or Codex framework). The system provides a minimal, well-defined interface that allows agents to autonomously complete SEED experiments.
+Remote Runner 是本地轻量级远程机器操作 CLI：用户在本地登记远程机器，使用者通过稳定 CLI 查询机器、创建会话、在远程目录执行命令、读取结构化输出、日志和产物。
 
-## Agent Capabilities
+当前仓库仍包含可运行的 `seed-runner` 原型。原型验证了 SSH/tmux/sshfs 复杂性需要被工具吸收，但 SEED、research、sshfs、tmux 都不是长期项目边界。
 
-### What Agents Can Do
+## 事实来源地图
 
-1. **Understand Experiments** — Parse experiment documentation and extract goals, methods, and acceptance criteria
-2. **Plan Execution** — Design a sequence of steps to complete the experiment
-3. **Execute Commands** — Run commands on remote VMs via `seed-runner` CLI
-4. **Monitor Progress** — Check execution logs and determine if acceptance criteria are met
-5. **Iterate on Failure** — Adjust strategy and retry when commands fail
-6. **Generate Reports** — Synthesize execution logs into formal experiment reports
+- 项目目标、受众、范围、术语和冲突裁决：`docs/overview.md`
+- 核心灯塔和不可变原则：`docs/architecture/core-lighthouse.md`
+- MVP 需求和验收标准：`REQUIREMENTS.md`
+- 目标 CLI 合同：`docs/reference/REMOTE_RUNNER_API.md`
+- 当前原型 CLI：`docs/reference/SEED_RUNNER_API.md`
+- 当前功能状态：`harness/feature_list.json`
+- 进度和下一步：`harness/progress.md`、`harness/session-handoff.md`
+- 质量和完成评估：`harness/evaluator-rubric.md`、`harness/quality.md`
 
-### What Agents Cannot Do (By Design)
+## 开始流程
 
-- Configure SSH, network, or authentication (pre-configured by humans)
-- Modify the `seed-runner` tool itself
-- Access systems outside the designated experiment VM
-- Make decisions that require human judgment (e.g., security implications)
+1. 运行 `./init.sh` 读取项目状态并执行 harness 检查。
+2. 阅读 `docs/overview.md`，确认当前工作属于目标设计、原型兼容、profile/use case，还是 harness 维护。
+3. 查看 `harness/feature_list.json` 和 `harness/session-handoff.md`，确认 WIP 状态。
+4. 若要开发功能，先在 `plans/active/` 建立一个任务合同；默认 WIP=1。
+5. 修改前检查 `git status --short`，不要覆盖他人或用户已有改动。
 
-## Integration Points
+## 硬性规则
 
-### 1. CLI Tool
+1. 仓库是唯一事实来源；会影响后续 agent 的目标、状态、决策和验证必须写回仓库。
+2. 不把 research、SEED、实验或运维任一场景当作项目边界；它们只能是 profile/use case。
+3. 不把 sshfs、tmux、rsync、Slurm 或某个库写成长期需求；它们只能是可替换 backend。
+4. 不声称 `remote-runner` CLI 已实现，除非代码和测试已经落地。
+5. 当前可运行行为以 `seed-runner` 原型、测试和 legacy API 为准；目标行为以 Remote Runner API 合同为准。
+6. 正常工作流不得要求用户反复提供密码、私钥内容、跳板机细节或临时认证材料。
+7. 不把密码、密钥、主机敏感细节写入日志、报告、issue、handoff 或提交。
+8. 默认 WIP=1；`harness/feature_list.json` 最多一个 `active`。
+9. `passing` 必须有验证命令和 evidence，不能只凭主观判断。
+10. 初始化和定位整理不做业务功能迁移；大改前先保持目标、需求和定义无冲突。
+11. 修改公共接口、状态目录、CLI 名称或兼容策略时，同步更新 requirements、API 文档、feature list 和 handoff。
+12. 会话结束前更新 `harness/session-handoff.md`，记录验证证据、风险、脏文件和下一步。
 
-Agents interact with `seed-runner` via command-line interface:
+## 验证阶梯
 
-```bash
-cd runs/exp-web-01
-seed-runner mount create --machine vm-seed-01 --local-dir ./workspace
-seed-runner session create --machine vm-seed-01 --mount-id mnt_xxx --name exp-web-01
-seed-runner session exec --session sess_xxx --cmd "make"
-seed-runner session status --session sess_xxx
-```
+- Harness 检查：`./scripts/harness-check.sh`
+- 聚焦验证：`python3 -m pytest tests/test_config.py tests/test_workflow_state.py -q`
+- 完整本地验证：`python3 -m pytest -q`
+- Remote Runner 真实机器验证：`REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q`
+- 真实 VM 验证：`SEED_RUNNER_RUN_REAL_VM_TESTS=1 python3 -m pytest tests/test_real_vm_integration.py -q`
 
-`--local-dir` is the **full sshfs mount root** (here `./workspace`). The tool reserves only the subdirectory `artifacts/` under that root: command logs live under `artifacts/logs/<session-name>/`, and synced experiment outputs also land under `artifacts/`. Everything else at the mount root (for example `Labsetup/`, scripts, or docs) is for the agent to manage. `metadata.json` is written at the mount root by `seed-runner`.
+真实机器/VM 验证需要人工预配置目标机器；默认本地验证不应依赖它。Remote Runner 真实测试只允许写入 `REMOTE_RUNNER_REAL_TEST_CWD` 指定目录。
 
-If you name the mount root `./artifacts` instead, logs become `./artifacts/artifacts/logs/...` (two `artifacts` segments in the path). Using a name like `workspace` avoids that.
+## 完成定义
 
-### 2. File System
+一次任务完成必须同时满足：
 
-Agents should work inside a dedicated experiment directory under `runs/` and
-read execution logs and artifacts from the local mount point in that workspace:
+- 目标、范围、实现或文档改动与当前任务合同一致。
+- 相关事实来源已同步更新，没有目标/需求/定义冲突。
+- 必要验证已运行，结果和限制写入 handoff 或 feature evidence。
+- 没有未解释的占位符、密钥、下载缓存、临时日志或机器特定状态进入仓库。
+- `harness/session-handoff.md` 能让新 agent 三分钟内恢复上下文。
 
-```
-./runs/exp-web-01/workspace/          # --local-dir (mount root)
-├── metadata.json
-├── artifacts/                        # reserved: tool + sync outputs
-│   ├── logs/
-│   │   └── exp-web-01/
-│   │       ├── cmd_001.log
-│   │       ├── cmd_002.log
-│   │       └── ...
-│   ├── code/
-│   ├── results/
-│   └── ...
-└── (everything else: Labsetup, scripts, docs, … — agent-managed)
-```
+## 退出流程
 
-### 3. Skill/Tool Wrapper (Future)
-
-The `seed-runner` CLI can be wrapped as a Claude Code Skill or Tool for seamless integration:
-
-```python
-# Pseudo-code for future Skill
-@skill("seed-runner")
-def run_seed_experiment(machine_id: str, experiment_name: str, commands: List[str]) -> ExperimentResult:
-    """Run a SEED experiment autonomously."""
-    # Implementation wraps seed-runner CLI
-    pass
-```
-
-## Agent Workflow
-
-### Typical Experiment Execution Flow
-
-```
-1. Agent receives experiment task
-   ├─ Input: experiment manual, labsetup, target VM info
-   └─ Output: execution plan
-
-2. Agent initializes environment
-   ├─ Enter or create workspace: runs/<experiment-name>/
-   ├─ Create mount: seed-runner mount create ...
-   ├─ Create session: seed-runner session create ...
-   └─ Verify connectivity
-
-3. Agent executes experiment steps
-   ├─ Loop:
-   │  ├─ Execute command: seed-runner session exec ...
-   │  ├─ Read logs: cat ./workspace/artifacts/logs/.../cmd_XXX.log
-   │  ├─ Check acceptance criteria
-   │  └─ If not met, adjust and retry
-   └─ Until acceptance criteria met or max retries reached
-
-4. Agent generates report
-   ├─ Collect all logs and artifacts
-   ├─ Synthesize into formal report without waiting for human supervision
-   └─ Save to ./report/
-
-5. Agent cleans up
-   ├─ Destroy session: seed-runner session destroy ...
-   ├─ Destroy mount: seed-runner mount destroy ...
-   └─ Return success/failure status
-```
-
-## Design Principles for Agent Integration
-
-### 1. Minimal Interface
-
-The `seed-runner` API is intentionally minimal (4 mount commands + 4 session commands). This reduces cognitive load on agents and makes the system easier to understand and debug.
-
-### 2. Transparent Execution
-
-All execution is logged and traceable. Agents can read logs to understand what happened and why something failed.
-
-### 3. No Hidden State
-
-The system maintains no hidden state. All information is either in the CLI return values or in the log files.
-
-### 4. Fail-Safe Defaults
-
-- Commands that fail don't destroy the session (allows debugging)
-- Mounts are separate from sessions (allows reuse)
-- Logs are always preserved (allows audit)
-- Experiments run inside `runs/<experiment>/` so tool code and experiment outputs stay separated
-
-### 5. Agent Autonomy
-
-Agents are expected to:
-- Make decisions about retry strategies
-- Interpret acceptance criteria
-- Adjust execution plans based on failures
-- Generate reports without human input
-- Carry the workflow to completion instead of stopping at partial progress updates
-
-## Example: Agent Executing a Web Security Experiment
-
-```python
-# Pseudo-code showing how an agent might use seed-runner
-
-def run_web_security_experiment(manual_path, labsetup_path, target_vm):
-    os.makedirs("runs/exp-web-01", exist_ok=True)
-    os.chdir("runs/exp-web-01")
-
-    # 1. Parse experiment manual
-    experiment = parse_manual(manual_path)
-    acceptance_criteria = extract_acceptance_criteria(experiment)
-    
-    # 2. Initialize environment
-    mount = run_cmd("seed-runner mount create --machine {} --local-dir ./workspace".format(target_vm))
-    session = run_cmd("seed-runner session create --machine {} --mount-id {} --name exp-web-01".format(
-        target_vm, mount['mount_id']))
-    
-    # 3. Execute experiment steps
-    for step in experiment.steps:
-        result = run_cmd("seed-runner session exec --session {} --cmd '{}'".format(
-            session['session_id'], step.command))
-        
-        # Read logs to check progress
-        logs = read_file(result['log_file_local'])
-        
-        # Check if acceptance criteria are met
-        if check_acceptance_criteria(logs, acceptance_criteria):
-            break
-        
-        # If not met, try next step or retry
-    
-    # 4. Generate report
-    all_logs = collect_logs("./workspace/artifacts/logs/exp-web-01/")
-    report = generate_report(experiment, all_logs)
-    save_report("./report/exp-web-01.zh.md", report)
-    
-    # 5. Clean up
-    run_cmd("seed-runner session destroy --session {}".format(session['session_id']))
-    run_cmd("seed-runner mount destroy --mount-id {}".format(mount['mount_id']))
-    
-    return report
-```
-
-## Future Enhancements
-
-### Skill Wrapper
-
-Wrap `seed-runner` as a Claude Code Skill for direct integration:
-
-```bash
-/seed-runner mount create --machine vm-seed-01 --local-dir ./workspace
-```
-
-### Tool Integration
-
-Expose `seed-runner` as a Claude API Tool for programmatic access.
-
-### Agent Supervision
-
-Add an external supervisor agent that monitors experiment progress and ensures completion.
-
-### Multi-Experiment Orchestration
-
-Support running multiple experiments in sequence or parallel.
-
-## Troubleshooting
-
-### Agent Stuck in Loop
-
-If an agent keeps retrying the same command:
-- Check the log file to understand the failure reason
-- Manually inspect the remote VM state
-- Adjust the agent's retry logic or acceptance criteria
-
-### Incomplete Logs
-
-If logs are missing or incomplete:
-- Check disk space on local and remote systems
-- Verify sshfs mount is still active
-- Check file permissions
-
-### Session Timeout
-
-If a session times out:
-- Increase the `--timeout` parameter
-- Break the experiment into smaller steps
-- Check for long-running background processes
-
-### Partial Completion Without Report
-
-If an agent stops after running commands but before writing the report:
-- Treat the task as incomplete
-- Resume from the saved logs and artifacts
-- Write the report before cleanup, or explicitly explain why the report is blocked
-
-## References
-
-- [API Reference](docs/reference/SEED_RUNNER_API.md)
-- [Requirements](REQUIREMENTS.md)
-- [Architecture](docs/architecture/)
+1. 运行最小可靠验证，至少包括 `./scripts/harness-check.sh`。
+2. 更新 `harness/feature_list.json`、`harness/progress.md` 和 `harness/session-handoff.md`。
+3. 用 `git status --short` 记录最终脏文件。
+4. 向用户报告改动、验证、残留风险和下一步。

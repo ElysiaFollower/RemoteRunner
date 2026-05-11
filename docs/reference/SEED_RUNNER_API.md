@@ -1,5 +1,9 @@
 # seed-runner API 规范 v3
 
+> Legacy prototype API: this document describes the currently implemented `seed-runner`
+> mount/session CLI. It remains useful as compatibility reference, but the target product contract
+> is Remote Runner's machine/session API in `docs/reference/REMOTE_RUNNER_API.md`.
+
 ## 概述
 
 `seed-runner` 是 SEEDRunner 项目的核心工具，为 Agent 提供与远程 VM 交互的统一接口。

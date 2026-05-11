@@ -1,47 +1,78 @@
 ---
-name: seed-runner
-description: Use when a task should be executed inside a preconfigured remote VM through the seed-runner CLI, especially for SEED experiments that require running shell commands, inspecting logs and artifacts from the local shared directory, iterating on failures, and cleaning up remote sessions without using raw ssh, tmux, or sshfs directly.
+name: remote-runner
+description: Use when a task should be executed on a preconfigured remote machine through Remote Runner or the current seed-runner prototype, especially when an agent must run commands, inspect logs and artifacts, iterate on failures, and clean up sessions without using raw ssh, tmux, or sshfs directly.
 metadata:
-  short-description: Run remote VM tasks through seed-runner
+  short-description: Operate remote machines through agent-friendly sessions
 ---
 
-# Seed Runner
+# Remote Runner
 
-Use this skill when the work must happen on a remote VM and the environment has already been prepared for `seed-runner`.
+Use this skill when the work must happen on a remote machine and the environment has already been
+prepared for Remote Runner or the current `seed-runner` prototype.
 
-Do not use this skill to modify or debug the `seed-runner` implementation itself. This skill is for application-layer execution on top of the tool.
+Do not use this skill to modify or debug the Remote Runner implementation itself. This skill is for
+application-layer execution on top of the tool.
 
 ## Read First
 
-- Read `docs/reference/SEED_RUNNER_API.md` for exact command forms and JSON fields.
+- Read `docs/reference/REMOTE_RUNNER_API.md` for the target machine/session contract.
+- Read `docs/reference/SEED_RUNNER_API.md` when using the current `seed-runner` prototype.
 - Read `AGENTS.md` for system boundaries and agent expectations.
-- Read the chosen experiment materials under `runs/<experiment-name>/`, especially `docs/*.tex` and `Labsetup/docker-compose.yml`.
-- Read `runs/SKILL.md` only when drafting or polishing the final Chinese report.
+- Read the chosen task or workspace materials before running remote commands.
+
+## Current Implementation Note
+
+The project is being repositioned from SEEDRunner to a generic remote-machine CLI, currently called
+Remote Runner. The current executable is still `seed-runner`; the target executable is
+`remote-runner`.
+
+Use the implemented CLI that exists in the current branch. Do not pretend target commands are
+available until the code implements them.
 
 ## Preconditions
 
-- Assume `.env.machines` is already correct.
-- Assume SSH, remote sshfs, tmux, and keys are preconfigured by humans.
-- Do not reconfigure SSH, keys, ports, tmux, or sshfs unless the user explicitly asks you to debug the platform.
-- Prefer `seed-runner` CLI over raw `ssh`, `tmux`, or `sshfs`.
-- Unless the user says otherwise, create and use a dedicated workspace under `runs/<experiment-name>/` and do not run experiments from the repository root.
-- Treat this skill as a complete end-to-end workflow: understand the lab, execute it, verify the result, write the report, and clean up in one pass.
-- Do not assume a human is supervising between steps or will manually stitch together partial outputs for you.
-- Treat `remote_work_dir` as the real remote working directory on local disk, not as an sshfs mount path you need to reason about.
+- Assume machine configuration has been prepared by a human unless the user explicitly asks you to configure it.
+- Do not ask for passwords, key contents, or jump-host details during normal task execution.
+- Do not print credentials in logs, reports, or conversation summaries.
+- Prefer the tool CLI over raw `ssh`, `tmux`, `sshfs`, `scp`, or `rsync`.
+- Unless the user says otherwise, create and use a dedicated workspace for task files and outputs.
+- Treat the workflow as end to end: understand the task, execute it, verify the result, write any requested report or summary, and clean up in one pass.
 
-## Standard Workflow
+## Target Workflow
 
-1. Choose the target experiment directory under `runs/`, for example `runs/ARP_Attack/` or `runs/Sniffing_Spoofing/`.
-2. Read the experiment manual and lab setup files in that directory before issuing commands.
-3. Choose a **mount root** directory (this is `--local-dir`): for example `./workspace`. That directory is the full sshfs mount root. Under it, only `artifacts/` is reserved (command logs under `artifacts/logs/<session-name>/`, plus synced outputs under `artifacts/`). The rest of the mount root is yours (e.g. `Labsetup/`, scripts). Prefer a name other than `artifacts` for the mount root so paths stay readable; if the mount root is literally `./artifacts`, logs appear at `./artifacts/artifacts/logs/...`.
+When the target Remote Runner CLI is available:
+
+```bash
+remote-runner machine list --json
+remote-runner machine doctor <machine-id> --json
+remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
+remote-runner session exec --session <session-id> --cmd "<shell-command>" --json
+remote-runner session logs --session <session-id> --json
+remote-runner session destroy --session <session-id> --json
+```
+
+After each command:
+
+- inspect `exit_code`
+- read `stdout` and `stderr`
+- inspect `log_file_local`
+- inspect artifact paths returned by the tool
+- decide whether to continue, retry, or conclude
+
+## Prototype Workflow
+
+When using the current `seed-runner` prototype:
+
+1. Choose a target workspace, commonly under `runs/` for historical SEED tasks.
+2. Read task materials before issuing commands.
+3. Choose a mount root directory such as `./workspace`. Under it, only `artifacts/` is reserved.
 4. Create a mount:
 
 ```bash
 seed-runner mount create --machine <machine-id> --local-dir ./workspace
 ```
 
-If the default remote mount point is occupied by another experiment, retry with
-an explicit per-experiment path such as:
+If the default remote path is occupied, retry once with an explicit per-task path:
 
 ```bash
 seed-runner mount create \
@@ -50,84 +81,39 @@ seed-runner mount create \
   --remote-dir /home/seed/seed-experiments/<experiment-name>
 ```
 
-5. Create a session with a descriptive name:
+5. Create a session:
 
 ```bash
 seed-runner session create --machine <machine-id> --mount-id <mount-id> --name <session-name>
 ```
 
-6. Execute commands through the session:
+6. Execute commands:
 
 ```bash
 seed-runner session exec --session <session-id> --cmd "<shell-command>"
 ```
 
-7. After each command:
-- inspect the returned `exit_code`
-- read `log_file_local` (under `<local-dir>/artifacts/logs/<session-name>/` by convention)
-- inspect files under `<local-dir>/artifacts/` for synced outputs and evidence (paths besides `logs/` are experiment-dependent)
-
-8. Use `seed-runner session status --session <session-id>` when you need current status, command count, or the last command context.
-9. Save a complete Chinese report under `./report/`, grounded in logs and artifacts from the run.
-10. When the task is complete, destroy the session and then destroy the mount.
+7. Read the returned `log_file_local`, normally under `<local-dir>/artifacts/logs/<session-name>/`.
+8. Inspect synced outputs under `<local-dir>/artifacts/`.
+9. Destroy the session and then the mount when complete.
 
 ## Command Discipline
 
 - Send complete shell commands, not partial fragments.
 - Prefer non-interactive commands.
-- Use relative paths inside the remote work directory unless there is a clear reason not to.
-- Assume `seed-runner` handles sync/staging before command execution. You should operate on the returned `remote_work_dir` as if it were a normal remote directory.
-- If a task is long-running, set a larger `--timeout` instead of assuming the default is enough.
-- Command logs: use the returned `log_file_local` (under `<local-dir>/artifacts/logs/`). Other durable outputs from the remote run appear under `<local-dir>/artifacts/` after sync. You may add your own files anywhere under the mount root (for example next to `Labsetup/`) as long as you avoid colliding with tool-managed paths under `artifacts/`.
-- Keep notes, reports, and intermediate files inside the current `runs/<experiment-name>/` workspace so the tool repository stays clean.
-- A successful run is not just command execution. It must end with a usable report that a human can read without replaying the entire session.
-
-## Failure Handling
-
-- If `mount create` fails, treat it as an environment blocker. Surface the exact JSON error and stop. Do not silently fall back to raw SSH.
-- If `mount create` fails because the default remote path is already occupied by another experiment, it is acceptable to retry once with a unique `--remote-dir` such as `/home/seed/seed-experiments/<experiment-name>`.
-- If `session create` fails, report the exact error and stop.
-- If `session exec` reports that the session is busy, do not assume platform failure. Wait for the current command to finish or inspect its log/status before retrying.
-- If `seed-runner session exec` returns a non-zero `exit_code`, this is usually a task-level failure, not a platform failure. Read the log, diagnose, and retry strategically.
-- If a command times out, inspect the partial log first. Then either increase `--timeout`, split the work into smaller commands, or report the blocker.
-- If a session is gone or a mount is unmounted, recreate what you need instead of assuming hidden state still exists.
+- Use a larger `--timeout` for long-running tasks instead of assuming the default is enough.
+- Do not queue many blind commands before reading evidence from the previous one.
+- Treat non-zero `exit_code` as task-level evidence. Read the log and retry strategically.
+- If the session is busy, inspect status/logs before retrying.
+- If a platform command fails, surface the exact JSON error instead of silently falling back to raw SSH.
 
 ## Completion Rules
 
 A task using this skill is complete only when:
-- the requested remote action has been carried out
+
+- the requested remote action has been carried out or a precise blocker has been identified
 - the result is supported by logs or artifacts
-- a Chinese report has been written under `./report/`
-- session and mount cleanup has been performed, unless the user asked to keep them for inspection
+- any requested report or summary has been written in the workspace
+- sessions and mounts are cleaned up unless the user asked to keep them
 
-In the final report, include:
-- `mount_id`
-- `session_id`
-- the key command or commands run
-- relevant `log_file_local` paths
-- important artifact paths
-- final success or failure status
-- whether the acceptance criteria were met, partially met, or blocked
-
-## Practical Pattern
-
-For a typical experiment loop:
-
-1. create mount
-2. create session
-3. run one command
-4. inspect `log_file_local`
-5. inspect generated artifacts
-6. decide whether to continue, retry, or conclude
-7. write the report under `./report/`
-8. clean up
-
-Keep the loop tight. Do not queue many blind commands before reading the evidence from the previous one.
-
-## Notes
-
-- `seed-runner` already handles the remote working directory and log placement. Use the returned paths instead of guessing.
-- The sync directory is an internal detail. The only remote path the agent should rely on is `remote_work_dir`.
-- Logs are the primary source of truth for command behavior.
-- Artifacts in the local shared directory are the primary source of truth for produced files.
-- `runs/SKILL.md` is an auxiliary writing guide for report polish, not the primary execution workflow.
+In the final answer, include key IDs, important log/artifact paths, final status, and whether the acceptance criteria were met, partially met, or blocked.
