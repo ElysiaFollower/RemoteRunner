@@ -191,10 +191,10 @@ REMOTE_RUNNER_RUN_REAL_TESTS=1 \
   python3 -m pytest tests/test_remote_runner_real_integration.py -q
 ```
 
-The repository still keeps most implementation modules under `seed_runner` for legacy
-compatibility. The target package facade is `remote_runner`: `remote-runner` points to
-`remote_runner.cli:main`, and public Remote Runner modules are also available through
-`remote_runner.remote_*` import paths.
+Remote Runner target implementation modules now live under `remote_runner`. The `remote-runner`
+console script points to `remote_runner.cli:main`; legacy `seed_runner.remote_*` modules are
+compatibility wrappers that re-export the target implementation. The older `seed-runner` prototype
+CLI remains available for legacy mount/session workflows.
 
 ## License
 

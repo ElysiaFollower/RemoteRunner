@@ -145,6 +145,17 @@
       "verification": "python3 -m remote_runner.cli --help && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh",
       "evidence": "2026-05-11: 新增 remote_runner.remote_backend、remote_machine、remote_session、remote_file、remote_run、remote_state facade 模块，均 re-export seed_runner.remote_* 当前实现；测试验证 facade 公共对象与 seed_runner 实现对象一致；python3 -m remote_runner.cli --help 通过；目标 import path smoke 通过；聚焦测试 23 passed；完整 pytest 44 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
       "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-public-module-facade.md；本轮不搬移实现文件。"
+    },
+    {
+      "id": "F-014",
+      "priority": "P1",
+      "area": "packaging",
+      "title": "Remote Runner 包实现迁移第一切片",
+      "behavior": "remote_runner 包名承载 Remote Runner 真实实现，seed_runner.remote_* 退为兼容 wrapper；remote-runner CLI 和 legacy import 都继续可用。",
+      "status": "passing",
+      "verification": "python3 -m remote_runner.cli --help && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-05-11: 已将 Remote Runner 真实实现迁移到 remote_runner.cli 和 remote_runner.remote_*；seed_runner.remote_* 改为 legacy compatibility wrappers 并 re-export 同一批目标实现对象；remote-runner 与 python3 -m seed_runner.remote_cli 入口均可用；聚焦测试 24 passed；默认真实集成测试 1 skipped；完整 pytest 45 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-package-implementation-migration.md。本轮未改 CLI schema，未运行真实机器 opt-in 测试，未删除 legacy seed-runner 原型。"
     }
   ]
 }

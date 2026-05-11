@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：无 active；`F-013 Remote Runner 公共模块 Facade 迁移切片` 已 passing。
-- 当前任务计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-public-module-facade.md`。
+- 当前功能项：无 active；`F-014 Remote Runner 包实现迁移第一切片` 已 passing。
+- 当前任务计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-package-implementation-migration.md`。
 - 当前阶段性提交：`561c349 docs(harness): define remote runner lighthouse`；`9097b9e feat(remote-runner): add mount-free machine session file run CLI`；`f80f490 test(remote-runner): add opt-in real machine integration`；`bf47cc1 docs(harness): record staged remote runner handoff`；另有 harness-check 标题检查修复提交。
 - 上次验证：2026-05-11，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 23 passed, 81 warnings；此前 `./init.sh` 通过且 harness-check 0 warnings；`python3 -m remote_runner.cli --help` 通过；`remote_runner.remote_*` 目标 import path 可用；真实机器 machine/session/file/run 基础闭环已验证；`python3 -m pytest -q` 通过 44 passed, 2 skipped, 101 warnings。
-- 下一步最佳动作：先运行提交后完整验证并确认工作树清洁；之后可开始完整包迁移计划，逐步把 `seed_runner/remote_*.py` 实现搬到 `remote_runner`，或开始领域 profile、验收 DSL、报告层设计。
+- 下一步最佳动作：可开新任务清理 `datetime.utcnow()` warnings，或开始 profile/report 层第一切片；若继续包迁移，应评估是否迁移共享 `utils`，但不要破坏 legacy seed-runner。
 
 ## 状态约定
 
@@ -144,3 +144,18 @@
 - handoff/progress 作为单独收尾提交记录当前状态。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 23 passed, 81 warnings。
 - 收尾验证发现 `scripts/harness-check.sh` 对 handoff 旧标题的检查已过期，同时 `$heading` 后接中文标点在 `set -u` 下触发解析问题；已改为检查当前 handoff 标题并用 `${heading}` 展开。
+
+### 2026-05-11 - Remote Runner 包实现迁移开工
+
+- 新增 active plan：`plans/active/2026-05-11-remote-runner-package-implementation-migration.md`。
+- 新增 `F-014` active：目标是让 `remote_runner` 承载真实实现，`seed_runner.remote_*` 退为兼容 wrapper。
+- 非目标：不改变 CLI schema、不删除 legacy 原型、不运行真实机器 opt-in 测试、不触碰用户远程机器。
+
+### 2026-05-11 - Remote Runner 包实现迁移完成
+
+- 将 `remote_runner.cli`、`remote_runner.remote_backend`、`remote_machine`、`remote_session`、`remote_file`、`remote_run`、`remote_state` 从 facade 改为真实实现模块。
+- 将 `seed_runner.remote_*` 改为 legacy compatibility wrappers，继续 re-export 目标实现，旧导入不破坏。
+- 更新测试默认从 `remote_runner.*` 导入，并增加检查：目标类/函数的 `__module__` 属于 `remote_runner.*`，legacy wrapper 返回同一对象。
+- 默认真实机器集成测试入口改为 `python3 -m remote_runner.cli`，仍默认 skip，不触碰远程机器。
+- 同步 README 和 overview 中的包名事实。
+- 验证：`python3 -m remote_runner.cli --help` 通过；`python3 -m seed_runner.remote_cli --help` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 24 passed；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 45 passed, 2 skipped, 101 warnings；black check 通过；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。

@@ -10,14 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from seed_runner import utils as runner_utils
-from seed_runner.remote_backend import ParamikoRemoteBackend, RemoteCommandResult
-from seed_runner.remote_cli import main as remote_cli_main
-from seed_runner.remote_file import RemoteFileManager
-from seed_runner.remote_machine import RemoteMachineManager
-from seed_runner.remote_run import RemoteRunManager
-from seed_runner.remote_session import RemoteSessionManager
-from seed_runner.remote_state import (
+from remote_runner.cli import main as remote_cli_main
+from remote_runner.remote_backend import ParamikoRemoteBackend, RemoteCommandResult
+from remote_runner.remote_file import RemoteFileManager
+from remote_runner.remote_machine import RemoteMachineManager
+from remote_runner.remote_run import RemoteRunManager
+from remote_runner.remote_session import RemoteSessionManager
+from remote_runner.remote_state import (
     get_machines_file,
     load_artifact_manifest,
     load_machines_state,
@@ -25,6 +24,7 @@ from seed_runner.remote_state import (
     load_session_state,
     load_transfer_records,
 )
+from seed_runner import utils as runner_utils
 
 
 class FakeBackend:
@@ -134,32 +134,42 @@ def _add_key_machine(machine_manager: RemoteMachineManager, tmp_path: Path):
     )
 
 
-def test_remote_runner_package_facade_exposes_cli_entrypoint():
-    from remote_runner.cli import main as facade_main
+def test_seed_runner_remote_cli_wrapper_points_to_remote_runner_entrypoint():
+    from seed_runner.remote_cli import main as legacy_main
 
-    assert facade_main is remote_cli_main
+    assert legacy_main is remote_cli_main
 
 
-def test_remote_runner_package_facade_reexports_public_modules():
-    from remote_runner.remote_backend import ParamikoRemoteBackend as FacadeBackend
-    from remote_runner.remote_file import RemoteFileManager as FacadeFileManager
-    from remote_runner.remote_machine import RemoteMachineManager as FacadeMachineManager
-    from remote_runner.remote_run import RemoteRunManager as FacadeRunManager
-    from remote_runner.remote_session import RemoteSessionManager as FacadeSessionManager
-    from remote_runner.remote_state import load_run_state as facade_load_run_state
-    from seed_runner.remote_backend import ParamikoRemoteBackend
-    from seed_runner.remote_file import RemoteFileManager as SeedFileManager
-    from seed_runner.remote_machine import RemoteMachineManager as SeedMachineManager
-    from seed_runner.remote_run import RemoteRunManager as SeedRunManager
-    from seed_runner.remote_session import RemoteSessionManager as SeedSessionManager
-    from seed_runner.remote_state import load_run_state
+def test_remote_runner_modules_own_target_implementation():
+    assert remote_cli_main.__module__ == "remote_runner.cli"
+    assert ParamikoRemoteBackend.__module__ == "remote_runner.remote_backend"
+    assert RemoteFileManager.__module__ == "remote_runner.remote_file"
+    assert RemoteMachineManager.__module__ == "remote_runner.remote_machine"
+    assert RemoteRunManager.__module__ == "remote_runner.remote_run"
+    assert RemoteSessionManager.__module__ == "remote_runner.remote_session"
+    assert load_run_state.__module__ == "remote_runner.remote_state"
 
-    assert FacadeBackend is ParamikoRemoteBackend
-    assert FacadeMachineManager is SeedMachineManager
-    assert FacadeSessionManager is SeedSessionManager
-    assert FacadeFileManager is SeedFileManager
-    assert FacadeRunManager is SeedRunManager
-    assert facade_load_run_state is load_run_state
+
+def test_seed_runner_remote_wrappers_reexport_target_implementation():
+    from remote_runner.remote_backend import ParamikoRemoteBackend as TargetBackend
+    from remote_runner.remote_file import RemoteFileManager as TargetFileManager
+    from remote_runner.remote_machine import RemoteMachineManager as TargetMachineManager
+    from remote_runner.remote_run import RemoteRunManager as TargetRunManager
+    from remote_runner.remote_session import RemoteSessionManager as TargetSessionManager
+    from remote_runner.remote_state import load_run_state as target_load_run_state
+    from seed_runner.remote_backend import ParamikoRemoteBackend as LegacyBackend
+    from seed_runner.remote_file import RemoteFileManager as LegacyFileManager
+    from seed_runner.remote_machine import RemoteMachineManager as LegacyMachineManager
+    from seed_runner.remote_run import RemoteRunManager as LegacyRunManager
+    from seed_runner.remote_session import RemoteSessionManager as LegacySessionManager
+    from seed_runner.remote_state import load_run_state as legacy_load_run_state
+
+    assert LegacyBackend is TargetBackend
+    assert LegacyMachineManager is TargetMachineManager
+    assert LegacySessionManager is TargetSessionManager
+    assert LegacyFileManager is TargetFileManager
+    assert LegacyRunManager is TargetRunManager
+    assert legacy_load_run_state is target_load_run_state
 
 
 def test_generate_id_stays_unique_when_timestamp_collides(monkeypatch):
@@ -512,7 +522,7 @@ def test_remote_runner_cli_machine_add_prompts_missing_password_fields(
         ),
     )
     monkeypatch.setattr(
-        "seed_runner.remote_cli.getpass.getpass",
+        "remote_runner.cli.getpass.getpass",
         lambda prompt, stream=None: "secret-password",
     )
 
@@ -590,7 +600,7 @@ def test_remote_runner_cli_interactive_replace_rejects_wrong_confirmation(
         ),
     )
     monkeypatch.setattr(
-        "seed_runner.remote_cli.getpass.getpass",
+        "remote_runner.cli.getpass.getpass",
         lambda prompt, stream=None: "new-password",
     )
 
@@ -645,7 +655,7 @@ def test_remote_runner_cli_interactive_replace_updates_machine_with_exact_confir
         ),
     )
     monkeypatch.setattr(
-        "seed_runner.remote_cli.getpass.getpass",
+        "remote_runner.cli.getpass.getpass",
         lambda prompt, stream=None: "new-password",
     )
 

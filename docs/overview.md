@@ -58,9 +58,8 @@ MVP 不优先做：
 
 当前事实：
 
-- 主要实现仍在 `seed_runner`，用于保持 legacy 原型兼容。
-- 目标包名 facade 是 `remote_runner`，`remote-runner` console script 指向 `remote_runner.cli:main`。
-- Remote Runner 公共模块也可通过 `remote_runner.remote_*` facade 导入；当前仍委托 `seed_runner.remote_*`。
+- Remote Runner 目标实现位于 `remote_runner`，`remote-runner` console script 指向 `remote_runner.cli:main`。
+- `seed_runner.remote_*` 仅作为 legacy compatibility wrapper，继续 re-export `remote_runner.*` 公开对象。
 - legacy 原型命令仍是 `seed-runner`。
 - 当前原型依赖 `.env.machines`、SSH key、tmux、sshfs 和 mount/session 流程。
 - 旧 API 记录在 `docs/reference/SEED_RUNNER_API.md`。

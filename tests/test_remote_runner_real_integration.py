@@ -25,7 +25,7 @@ def _require_env(name: str) -> str:
 
 def _run_remote_runner(*args: str) -> dict:
     result = subprocess.run(
-        [sys.executable, "-m", "seed_runner.remote_cli", *args],
+        [sys.executable, "-m", "remote_runner.cli", *args],
         capture_output=True,
         text=True,
         timeout=60,
