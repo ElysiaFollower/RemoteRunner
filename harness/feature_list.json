@@ -167,6 +167,17 @@
       "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
       "evidence": "2026-05-11: seed_runner.utils 改为使用 datetime.now(timezone.utc) 生成 UTC timestamp 和 ID；get_timestamp 仍输出 Z 后缀；utcnow 搜索无结果；聚焦测试 25 passed 且无 warnings；完整 pytest 46 passed, 2 skipped 且无 warnings；remote_runner 和 legacy seed_runner.remote_cli help 通过；harness-check 0 warnings；git diff --check 通过。",
       "notes": "任务合同归档至 plans/archive/2026-05-11-timezone-aware-timestamps.md。本轮未改变状态 schema、CLI 输出合同或真实机器测试行为。"
+    },
+    {
+      "id": "F-016",
+      "priority": "P1",
+      "area": "packaging",
+      "title": "Remote Runner shared utils 迁移切片",
+      "behavior": "remote_runner 实现不再依赖 seed_runner.utils；共享 helper 实现迁移到 remote_runner.utils，seed_runner.utils 退为兼容 wrapper。",
+      "status": "passing",
+      "verification": "rg -n \"from seed_runner|import seed_runner\" remote_runner -S && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-05-11: remote_runner 包内不再从 seed_runner.utils 导入；shared helper 已迁移到 remote_runner.utils；seed_runner.utils 保持兼容 wrapper 并 re-export 目标 helper；新增测试验证 legacy wrapper 与 target helper 同一对象；聚焦测试 26 passed；完整 pytest 47 passed, 2 skipped；black check 通过；harness-check 0 warnings；git diff --check 通过；remote_runner import 边界检查无残留 seed_runner.utils 引用。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-utils-migration.md。本轮不改变 helper 行为、不删除 seed_runner.utils、不运行真实机器 opt-in 测试。"
     }
   ]
 }

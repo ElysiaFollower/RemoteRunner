@@ -14,7 +14,7 @@ import uuid
 import paramiko
 
 from remote_runner.remote_machine import RemoteMachine
-from seed_runner.utils import get_timestamp
+from remote_runner.utils import get_timestamp
 
 
 @dataclass

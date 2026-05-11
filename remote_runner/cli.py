@@ -9,7 +9,7 @@ from remote_runner.remote_file import get_remote_file_manager
 from remote_runner.remote_machine import get_remote_machine_manager
 from remote_runner.remote_run import get_remote_run_manager
 from remote_runner.remote_session import get_remote_session_manager
-from seed_runner.utils import json_response
+from remote_runner.utils import json_response
 
 
 def _print(payload: Dict[str, Any]) -> None:

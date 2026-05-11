@@ -12,7 +12,7 @@ from remote_runner.remote_state import (
     remote_state_lock,
     save_session_state,
 )
-from seed_runner.utils import ensure_dir, generate_id, get_timestamp, write_file
+from remote_runner.utils import ensure_dir, generate_id, get_timestamp, write_file
 
 
 class RemoteSessionManager:

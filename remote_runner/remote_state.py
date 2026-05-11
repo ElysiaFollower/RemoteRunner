@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any, Dict, Iterator, List
 
-from seed_runner.utils import append_file, ensure_dir, read_file, write_file
+from remote_runner.utils import append_file, ensure_dir, read_file, write_file
 
 
 def get_remote_state_dir() -> str:

@@ -14,8 +14,8 @@
   - `f80f490 test(remote-runner): add opt-in real machine integration`
   - `bf47cc1 docs(harness): record staged remote runner handoff`
   - 另有本文件所在的 harness-check handoff 标题检查修复提交
-- 当前计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-timezone-aware-timestamps.md`。
-- 当前功能项：无 active；`F-001`、`F-002`、`F-003`、`F-004`、`F-006`、`F-007`、`F-008`、`F-009`、`F-010`、`F-011`、`F-012`、`F-013`、`F-014`、`F-015` passing；`F-005` profile/report 层未开始。
+- 当前计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-utils-migration.md`。
+- 当前功能项：无 active；`F-001`、`F-002`、`F-003`、`F-004`、`F-006`、`F-007`、`F-008`、`F-009`、`F-010`、`F-011`、`F-012`、`F-013`、`F-014`、`F-015`、`F-016` passing；`F-005` profile/report 层未开始。
 
 ## 已落地能力
 
@@ -28,10 +28,11 @@
 - `run once` 支持上传输入、执行命令、拉回产物、保存 run manifest，并默认销毁临时 session。
 - 默认跳过的真实机器 opt-in 集成测试已提交：显式设置机器和测试目录后验证 doctor、session exec、file put/list/get、内容比对、远程 cleanup 和 session destroy。
 - 时间戳已改为 timezone-aware UTC API，测试输出不再有 `datetime.utcnow()` deprecation warnings。
+- `remote_runner` 现在不再依赖 `seed_runner.utils`；shared helper 实现已迁移到 `remote_runner.utils`，legacy `seed_runner.utils` 仅作为兼容 wrapper。
 
 ## 验证证据
 
-- 最近验证：`python3 -m remote_runner.cli --help` 通过；`python3 -m seed_runner.remote_cli --help` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 25 passed；`python3 -m pytest -q` 通过 46 passed, 2 skipped，且无 warnings；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
+- 最近验证：`python3 -m remote_runner.cli --help` 通过；`python3 -m seed_runner.remote_cli --help` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 26 passed；`python3 -m pytest -q` 通过 47 passed, 2 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；`remote_runner` import 边界检查无残留 `seed_runner.utils` 引用。
 - 此前 harness 验证：`./init.sh` 通过；`./scripts/harness-check.sh` 0 warnings。
 - 此前 CLI/import 验证：`python3 -m remote_runner.cli --help` 通过；`remote_runner.remote_*` import smoke 通过。
 - 此前真实机器验证：machine/session/file/run 基础闭环通过；真实机器细节不写入仓库，测试写入范围限制在显式 `REMOTE_RUNNER_REAL_TEST_CWD`。

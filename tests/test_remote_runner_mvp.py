@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from remote_runner import utils as runner_utils
 from remote_runner.cli import main as remote_cli_main
 from remote_runner.remote_backend import ParamikoRemoteBackend, RemoteCommandResult
 from remote_runner.remote_file import RemoteFileManager
@@ -24,7 +25,6 @@ from remote_runner.remote_state import (
     load_session_state,
     load_transfer_records,
 )
-from seed_runner import utils as runner_utils
 
 
 class FakeBackend:
@@ -170,6 +170,13 @@ def test_seed_runner_remote_wrappers_reexport_target_implementation():
     assert LegacyFileManager is TargetFileManager
     assert LegacyRunManager is TargetRunManager
     assert legacy_load_run_state is target_load_run_state
+
+
+def test_seed_runner_utils_wrapper_reexports_target_helpers():
+    from seed_runner import utils as legacy_utils
+
+    assert legacy_utils.get_timestamp is runner_utils.get_timestamp
+    assert legacy_utils.generate_id is runner_utils.generate_id
 
 
 def test_generate_id_stays_unique_when_timestamp_collides(monkeypatch):
