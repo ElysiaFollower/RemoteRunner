@@ -156,6 +156,17 @@
       "verification": "python3 -m remote_runner.cli --help && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
       "evidence": "2026-05-11: 已将 Remote Runner 真实实现迁移到 remote_runner.cli 和 remote_runner.remote_*；seed_runner.remote_* 改为 legacy compatibility wrappers 并 re-export 同一批目标实现对象；remote-runner 与 python3 -m seed_runner.remote_cli 入口均可用；聚焦测试 24 passed；默认真实集成测试 1 skipped；完整 pytest 45 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
       "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-package-implementation-migration.md。本轮未改 CLI schema，未运行真实机器 opt-in 测试，未删除 legacy seed-runner 原型。"
+    },
+    {
+      "id": "F-015",
+      "priority": "P2",
+      "area": "quality",
+      "title": "Timezone-aware 时间戳清理",
+      "behavior": "使用 timezone-aware UTC 时间生成 timestamp 和 ID，移除 datetime.utcnow() deprecation warnings，同时保持现有输出格式兼容。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-05-11: seed_runner.utils 改为使用 datetime.now(timezone.utc) 生成 UTC timestamp 和 ID；get_timestamp 仍输出 Z 后缀；utcnow 搜索无结果；聚焦测试 25 passed 且无 warnings；完整 pytest 46 passed, 2 skipped 且无 warnings；remote_runner 和 legacy seed_runner.remote_cli help 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-timezone-aware-timestamps.md。本轮未改变状态 schema、CLI 输出合同或真实机器测试行为。"
     }
   ]
 }

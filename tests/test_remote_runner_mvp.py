@@ -179,12 +179,19 @@ def test_generate_id_stays_unique_when_timestamp_collides(monkeypatch):
 
     class FixedDatetime:
         @staticmethod
-        def utcnow():
+        def now(tz=None):
             return FixedNow()
 
     monkeypatch.setattr(runner_utils, "datetime", FixedDatetime)
 
     assert runner_utils.generate_id("xfer") != runner_utils.generate_id("xfer")
+
+
+def test_get_timestamp_uses_utc_z_suffix():
+    timestamp = runner_utils.get_timestamp()
+
+    assert timestamp.endswith("Z")
+    assert "+00:00" not in timestamp
 
 
 def test_machine_registry_redacts_credentials_and_recovers(remote_state_dir, tmp_path):

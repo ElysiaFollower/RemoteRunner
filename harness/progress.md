@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：无 active；`F-014 Remote Runner 包实现迁移第一切片` 已 passing。
-- 当前任务计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-package-implementation-migration.md`。
+- 当前功能项：无 active；`F-015 Timezone-aware 时间戳清理` 已 passing。
+- 当前任务计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-timezone-aware-timestamps.md`。
 - 当前阶段性提交：`561c349 docs(harness): define remote runner lighthouse`；`9097b9e feat(remote-runner): add mount-free machine session file run CLI`；`f80f490 test(remote-runner): add opt-in real machine integration`；`bf47cc1 docs(harness): record staged remote runner handoff`；另有 harness-check 标题检查修复提交。
 - 上次验证：2026-05-11，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 23 passed, 81 warnings；此前 `./init.sh` 通过且 harness-check 0 warnings；`python3 -m remote_runner.cli --help` 通过；`remote_runner.remote_*` 目标 import path 可用；真实机器 machine/session/file/run 基础闭环已验证；`python3 -m pytest -q` 通过 44 passed, 2 skipped, 101 warnings。
-- 下一步最佳动作：可开新任务清理 `datetime.utcnow()` warnings，或开始 profile/report 层第一切片；若继续包迁移，应评估是否迁移共享 `utils`，但不要破坏 legacy seed-runner。
+- 下一步最佳动作：可开始 profile/report 层第一切片，或评估是否把共享 helper 从 `seed_runner.utils` 迁移到 `remote_runner.utils`；两者都应保持 legacy seed-runner 兼容。
 
 ## 状态约定
 
@@ -159,3 +159,15 @@
 - 默认真实机器集成测试入口改为 `python3 -m remote_runner.cli`，仍默认 skip，不触碰远程机器。
 - 同步 README 和 overview 中的包名事实。
 - 验证：`python3 -m remote_runner.cli --help` 通过；`python3 -m seed_runner.remote_cli --help` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 24 passed；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 45 passed, 2 skipped, 101 warnings；black check 通过；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
+
+### 2026-05-11 - Timezone-aware 时间戳清理开工
+
+- 新增 active plan：`plans/active/2026-05-11-timezone-aware-timestamps.md`。
+- 新增 `F-015` active：目标是移除 `datetime.utcnow()` deprecation warnings，同时保持 timestamp 和 id 输出格式兼容。
+
+### 2026-05-11 - Timezone-aware 时间戳清理完成
+
+- `seed_runner.utils.get_timestamp()` 改为使用 `datetime.now(timezone.utc)`，保持 `Z` 后缀输出。
+- `seed_runner.utils.generate_id()` 改为 timezone-aware UTC 时间片，保持微秒时间片和随机后缀。
+- 新增测试确认 `get_timestamp()` 输出以 `Z` 结尾且不包含 `+00:00`。
+- 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 25 passed；`python3 -m pytest -q` 通过 46 passed, 2 skipped，且无 warnings；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；`remote_runner` 与 legacy `seed_runner.remote_cli` help 均通过。

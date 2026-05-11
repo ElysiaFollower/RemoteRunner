@@ -5,7 +5,7 @@ import os
 import shlex
 import subprocess
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence, Union
 
 Command = Union[str, Sequence[str]]
@@ -65,7 +65,7 @@ def json_response(data: Dict[str, Any]) -> str:
 
 def get_timestamp() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def parse_timestamp(timestamp: str) -> datetime:
@@ -75,7 +75,7 @@ def parse_timestamp(timestamp: str) -> datetime:
 
 def generate_id(prefix: str) -> str:
     """Generate a unique ID with given prefix."""
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     return f"{prefix}_{timestamp}_{uuid.uuid4().hex[:8]}"
 
 

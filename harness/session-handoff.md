@@ -14,8 +14,8 @@
   - `f80f490 test(remote-runner): add opt-in real machine integration`
   - `bf47cc1 docs(harness): record staged remote runner handoff`
   - 另有本文件所在的 harness-check handoff 标题检查修复提交
-- 当前计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-remote-runner-package-implementation-migration.md`。
-- 当前功能项：无 active；`F-001`、`F-002`、`F-003`、`F-004`、`F-006`、`F-007`、`F-008`、`F-009`、`F-010`、`F-011`、`F-012`、`F-013`、`F-014` passing；`F-005` profile/report 层未开始。
+- 当前计划：无 active；上一轮完成计划已归档至 `plans/archive/2026-05-11-timezone-aware-timestamps.md`。
+- 当前功能项：无 active；`F-001`、`F-002`、`F-003`、`F-004`、`F-006`、`F-007`、`F-008`、`F-009`、`F-010`、`F-011`、`F-012`、`F-013`、`F-014`、`F-015` passing；`F-005` profile/report 层未开始。
 
 ## 已落地能力
 
@@ -27,10 +27,11 @@
 - SFTP `file put/get/list` 支持路径前缀映射，transfer records 和 artifact manifest 保留用户输入的远程路径。
 - `run once` 支持上传输入、执行命令、拉回产物、保存 run manifest，并默认销毁临时 session。
 - 默认跳过的真实机器 opt-in 集成测试已提交：显式设置机器和测试目录后验证 doctor、session exec、file put/list/get、内容比对、远程 cleanup 和 session destroy。
+- 时间戳已改为 timezone-aware UTC API，测试输出不再有 `datetime.utcnow()` deprecation warnings。
 
 ## 验证证据
 
-- 最近验证：`python3 -m remote_runner.cli --help` 通过；`python3 -m seed_runner.remote_cli --help` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 24 passed, 81 warnings；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 45 passed, 2 skipped, 101 warnings；black check 通过；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
+- 最近验证：`python3 -m remote_runner.cli --help` 通过；`python3 -m seed_runner.remote_cli --help` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 25 passed；`python3 -m pytest -q` 通过 46 passed, 2 skipped，且无 warnings；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
 - 此前 harness 验证：`./init.sh` 通过；`./scripts/harness-check.sh` 0 warnings。
 - 此前 CLI/import 验证：`python3 -m remote_runner.cli --help` 通过；`remote_runner.remote_*` import smoke 通过。
 - 此前真实机器验证：machine/session/file/run 基础闭环通过；真实机器细节不写入仓库，测试写入范围限制在显式 `REMOTE_RUNNER_REAL_TEST_CWD`。
@@ -46,13 +47,12 @@
 - 共享工具函数仍在 `seed_runner.utils`，`remote_runner` 实现仍复用这些通用 helper；是否迁移 shared utils 需要单独小任务评估。
 - `F-005` 上层 profile、验收 DSL、报告层未开始；通用 `run once` 只是基础闭环。
 - legacy 真实 VM opt-in 测试未运行。
-- 仍有 `datetime.utcnow()` deprecation warnings，尚未清理。
 
 ## 下一步最佳动作
 
-1. 运行提交后的完整收尾验证：`./scripts/harness-check.sh`、`python3 -m pytest -q`、`git diff --check`。
-2. 若验证通过，开始新 active plan：完整包迁移第一切片，或 profile/report 层第一切片。
-3. 若优先降低噪音，可单独开小任务清理 `datetime.utcnow()` warnings。
+1. 开始新 active plan：profile/report 层第一切片，或评估是否迁移共享 `utils` 到 `remote_runner.utils`。
+2. 若继续真实机器验证，必须显式设置 `REMOTE_RUNNER_REAL_TEST_CWD`，且只写该目录。
+3. 若准备发 PR，先运行 `./scripts/harness-check.sh`、`python3 -m pytest -q`、`git diff --check`。
 
 ## 常用命令
 
