@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import subprocess
+import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence, Union
 
@@ -75,26 +76,26 @@ def parse_timestamp(timestamp: str) -> datetime:
 def generate_id(prefix: str) -> str:
     """Generate a unique ID with given prefix."""
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-    return f"{prefix}_{timestamp}"
+    return f"{prefix}_{timestamp}_{uuid.uuid4().hex[:8]}"
 
 
 def read_file(path: str) -> str:
     """Read file contents."""
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         return f.read()
 
 
 def write_file(path: str, content: str) -> None:
     """Write content to file."""
     ensure_dir(os.path.dirname(path))
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         f.write(content)
 
 
 def append_file(path: str, content: str) -> None:
     """Append content to file."""
     ensure_dir(os.path.dirname(path))
-    with open(path, 'a') as f:
+    with open(path, "a") as f:
         f.write(content)
 
 

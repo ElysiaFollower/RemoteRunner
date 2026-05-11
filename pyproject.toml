@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "seed-runner"
 version = "0.1.0"
-description = "Autonomous SEED experiment runner with AI agent support"
+description = "Remote Runner prototype: local CLI infrastructure for controlling remote machines"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "SEEDRunner Team"}
+    {name = "Remote Runner Team"}
 ]
 
 dependencies = [
@@ -30,9 +30,10 @@ dev = [
 
 [project.scripts]
 seed-runner = "seed_runner.cli:main"
+remote-runner = "remote_runner.cli:main"
 
 [tool.setuptools]
-packages = ["seed_runner"]
+packages = ["seed_runner", "remote_runner"]
 
 [tool.black]
 line-length = 100
