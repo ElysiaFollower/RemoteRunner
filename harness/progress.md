@@ -10,8 +10,8 @@
 - 当前功能项：无 active；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
 - 当前任务计划：无 active；`F-017` 任务计划已归档至 `plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md`。
 - 当前阶段性提交：截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`；`F-017` 测试资产由本轮收尾提交记录。
-- 上次验证：2026-05-11，`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；真实机器 opt-in launch+integration smoke 通过 4 passed。
-- 下一步最佳动作：若准备上线或发 PR，审阅 launch acceptance 文档与测试覆盖；若继续产品演进，开 `F-005` profile/report 层第一切片。
+- 上次验证：2026-05-12，`conda run -n seedrunner remote-runner --help` 通过；`conda run -n seedrunner python -m remote_runner.cli --help` 通过；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；真实机器 opt-in launch+integration smoke 中 `csa-my` 通过 4 passed，`linux-01` 在 `/home/ely/tmp` 上出现权限阻塞。
+- 下一步最佳动作：若准备上线或发 PR，审阅 launch acceptance 文档与测试覆盖；若继续产品演进，开 `F-005` profile/report 层第一切片；若要继续用 `linux-01` 做真机蓝本，先修复 `/home/ely/tmp` 的写权限或换成可写安全目录。
 
 ## 状态约定
 
@@ -196,3 +196,9 @@
 - 新增 `docs/testing/remote-runner-launch-acceptance.md`，说明默认门禁、真实机器门禁、环境变量、安全边界和上线判定；README 增加入口链接。
 - 真实机器 opt-in smoke 覆盖 doctor、session create/exec、file put/list/get、run once artifact pullback、远程 cleanup 和 session destroy；测试只写入显式安全测试目录，未把真实机器细节写入仓库。
 - 验证：`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；真实机器 opt-in launch+integration smoke 通过 4 passed。
+
+### 2026-05-12 - seedrunner 环境安装与 Linux 蓝本复核
+
+- 已在 `seedrunner` conda 环境中执行 `python -m pip install -e .`，`remote-runner` console script 可直接调用。
+- 新增 `docs/getting-started.md`，补齐安装、基础用法、Windows+WSL、真实机器验收和可写测试目录要求。
+- 两台 Linux 蓝本中，`csa-my` 的真实 launch+integration smoke 通过；`linux-01` 的 `/home/ely/tmp` 目录为 root-owned 且不可写，导致真实文件传输在该目录上出现权限阻塞。

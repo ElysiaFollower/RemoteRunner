@@ -167,12 +167,14 @@ implementation detail, not the desired long-term public API.
 - [Overview](docs/overview.md) - product positioning and relationship to the SEEDRunner prototype
 - [Requirements](REQUIREMENTS.md) - MVP requirements and acceptance criteria
 - [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) - target agent-facing CLI
+- [Getting Started](docs/getting-started.md) - install and basic usage guide
 - [Launch Acceptance Suite](docs/testing/remote-runner-launch-acceptance.md) - reusable pre-release validation
 - [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - current prototype CLI reference
 
 ## Development
 
 ```bash
+python3 -m pip install -e .
 python3 -m pytest tests/
 ```
 

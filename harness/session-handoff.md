@@ -11,6 +11,7 @@
 - 当前计划：无 active；最近完成计划已归档至 `plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md`。
 - 当前功能项：无 active；`F-001` 到 `F-004`、`F-006` 到 `F-017` 均为 passing；`F-005` profile/report 层未开始。
 - 当前目标：Remote Runner 是基于 SSH 的本地 CLI，让 AI 能通过稳定命令访问外部机器终端、执行命令、收集结构化输出、日志和产物。
+- `seedrunner` conda 环境已安装本仓库的 editable 包，`remote-runner` 现在可直接调用。
 
 ## 已落地能力
 
@@ -30,6 +31,7 @@
 - 完整本地验证：`python3 -m pytest -q` 通过 49 passed, 3 skipped。
 - Harness 与格式检查：`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
 - 真实机器 opt-in 验收：显式配置后 `tests/test_remote_runner_launch_suite.py` 与 `tests/test_remote_runner_real_integration.py` 通过 4 passed；写入范围限制在已配置安全测试目录，未记录真实机器细节。
+- 环境入口验证：`conda run -n seedrunner remote-runner --help` 通过；`conda run -n seedrunner python -m remote_runner.cli --help` 通过。
 
 ## 安全与隐私边界
 
@@ -42,12 +44,14 @@
 - `F-005` 上层 profile、验收 DSL、报告层未开始；通用 `run once` 只是基础闭环。
 - legacy 真实 VM opt-in 测试未运行。
 - 后续上线前仍建议按 `docs/testing/remote-runner-launch-acceptance.md` 重跑默认门禁和真实机器 opt-in 门禁。
+- `linux-01` 的 `/home/ely/tmp` 目前是 root-owned 且不可写；若继续把它当真机蓝本，需要先修复该目录权限或换成别的可写安全目录。
 
 ## 下一步最佳动作
 
 1. 若准备上线或发 PR，审阅本轮测试资产并按 launch acceptance 文档重跑门禁。
 2. 若继续产品能力演进，先为 `F-005` profile/report 层建立 active plan。
 3. 若继续真实机器验证，必须显式设置 `REMOTE_RUNNER_REAL_TEST_CWD`，且只写该目录。
+4. 若继续使用 `linux-01`，先解决 `/home/ely/tmp` 的写权限问题。
 
 ## 常用命令
 
