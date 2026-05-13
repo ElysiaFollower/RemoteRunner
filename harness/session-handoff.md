@@ -12,6 +12,7 @@
 - 当前功能项：无 active；`F-001` 到 `F-004`、`F-006` 到 `F-017` 均为 passing；`F-005` profile/report 层未开始。
 - 当前目标：Remote Runner 是基于 SSH 的本地 CLI，让 AI 能通过稳定命令访问外部机器终端、执行命令、收集结构化输出、日志和产物。
 - `seedrunner` conda 环境已安装本仓库的 editable 包，`remote-runner` 现在可直接调用。
+- 已安装 skill 已迁移为 `~/.codex/skills/remote-runner/SKILL.md`；旧 `~/.codex/skills/seed-runner` 已删除，不再保留 legacy skill 入口。
 
 ## 已落地能力
 
@@ -23,6 +24,7 @@
 - SFTP `file put/get/list` 支持路径前缀映射，transfer records 和 artifact manifest 保留用户输入的远程路径。
 - `run once` 支持上传输入、执行命令、拉回产物、保存 run manifest，并默认销毁临时 session。
 - 新增上线验收资产：`tests/test_remote_runner_launch_suite.py`、`tests/remote_runner_launch_support.py`、`docs/testing/remote-runner-launch-acceptance.md`。
+- 仓库根目录 `SKILL.md` 是当前 Remote Runner 操作 skill 的来源，不包含旧 mount/sshfs/tmux workflow。
 
 ## 验证证据
 
@@ -44,14 +46,13 @@
 - `F-005` 上层 profile、验收 DSL、报告层未开始；通用 `run once` 只是基础闭环。
 - legacy 真实 VM opt-in 测试未运行。
 - 后续上线前仍建议按 `docs/testing/remote-runner-launch-acceptance.md` 重跑默认门禁和真实机器 opt-in 门禁。
-- `linux-01` 的 `/home/ely/tmp` 目前是 root-owned 且不可写；若继续把它当真机蓝本，需要先修复该目录权限或换成别的可写安全目录。
+- 一台 Linux 蓝本在密码更新后 `/tmp` 文件传输闭环已通过；`/home/ely/tmp` 是否可写仍取决于远端目录权限。
 
 ## 下一步最佳动作
 
 1. 若准备上线或发 PR，审阅本轮测试资产并按 launch acceptance 文档重跑门禁。
 2. 若继续产品能力演进，先为 `F-005` profile/report 层建立 active plan。
 3. 若继续真实机器验证，必须显式设置 `REMOTE_RUNNER_REAL_TEST_CWD`，且只写该目录。
-4. 若继续使用 `linux-01`，先解决 `/home/ely/tmp` 的写权限问题。
 
 ## 常用命令
 

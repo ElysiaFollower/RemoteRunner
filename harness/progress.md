@@ -10,8 +10,8 @@
 - 当前功能项：无 active；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
 - 当前任务计划：无 active；`F-017` 任务计划已归档至 `plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md`。
 - 当前阶段性提交：截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`；`F-017` 测试资产由本轮收尾提交记录。
-- 上次验证：2026-05-12，`conda run -n seedrunner remote-runner --help` 通过；`conda run -n seedrunner python -m remote_runner.cli --help` 通过；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；真实机器 opt-in launch+integration smoke 中 `csa-my` 通过 4 passed，`linux-01` 在 `/home/ely/tmp` 上出现权限阻塞。
-- 下一步最佳动作：若准备上线或发 PR，审阅 launch acceptance 文档与测试覆盖；若继续产品演进，开 `F-005` profile/report 层第一切片；若要继续用 `linux-01` 做真机蓝本，先修复 `/home/ely/tmp` 的写权限或换成可写安全目录。
+- 上次验证：2026-05-13，`conda run -n seedrunner remote-runner --help` 通过；`conda run -n seedrunner python -m remote_runner.cli --help` 通过；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；两台 Linux 蓝本中一台 opt-in launch+integration smoke 通过 4 passed，另一台在密码更新后 `/tmp` 文件传输闭环通过。
+- 下一步最佳动作：若准备上线或发 PR，审阅 launch acceptance 文档与测试覆盖；若继续产品演进，开 `F-005` profile/report 层第一切片。
 
 ## 状态约定
 
@@ -79,7 +79,7 @@
 - 后端在存在 startup commands 时使用交互式 SSH shell，发送 carriage return 以兼容 Windows conhost，并用 sentinel 捕获用户命令退出码。
 - `machine doctor` 和 `session exec` 已支持 startup-aware 执行路径。
 - 为交互式 stdout 增加 ANSI/control 清理和 sentinel 行过滤，避免 JSON/log 被 Windows conhost 输出淹没。
-- 真实验证：机器 `windows-wsl` 配置 `startup_commands=["wsl"]`、`default_cwd=/mnt/c/Users/example/Desktop/SSHRunner`；`machine doctor` 通过；`session exec` 在该目录内创建、读取、删除 `rr_probe.txt` 后 exit_code=0；只读 `pwd && printf` 复验通过；测试 session 已 destroy。
+- 真实验证：Windows+WSL 蓝本配置 `startup_commands=["wsl"]`、`default_cwd=/mnt/c/Users/example/Desktop/SSHRunner`；`machine doctor` 通过；`session exec` 在该目录内创建、读取、删除 `rr_probe.txt` 后 exit_code=0；只读 `pwd && printf` 复验通过；测试 session 已 destroy。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 15 passed；`python3 -m pytest -q` 通过 36 passed, 1 skipped, 73 warnings；`./scripts/harness-check.sh` 通过 0 warnings；black check 通过；`git diff --check` 通过；尾随空白扫描无结果。
 
 ### 2026-05-11 - SFTP 路径映射与真实文件传输验证落地
@@ -89,7 +89,7 @@
 - SFTP backend 在 `file put/get/list` 前应用路径映射，`file list` 返回路径回映射到用户输入的命令侧路径。
 - 传输记录和 artifact manifest 保持用户传入的原始 remote path，不暴露 backend 内部路径作为主接口。
 - 修复真实验证中发现的并发 ID 碰撞：`generate_id` 增加随机后缀，避免多个 CLI 进程在同一微秒生成相同 `transfer_id`。
-- 真实验证：`windows-wsl` 配置 `/mnt/c/Users/example/Desktop/SSHRunner` -> `C:/Users/example/Desktop/SSHRunner`；在 `SSHRunner` 内完成 `rr_sftp_probe_20260511.txt` 的 file put/list/get，本地 `cmp` 内容一致，随后用 session exec 删除并复验目录为空；测试 session 已 destroy。
+- 真实验证：Windows+WSL 蓝本配置 `/mnt/c/Users/example/Desktop/SSHRunner` -> `C:/Users/example/Desktop/SSHRunner`；在 `SSHRunner` 内完成 `rr_sftp_probe_20260511.txt` 的 file put/list/get，本地 `cmp` 内容一致，随后用 session exec 删除并复验目录为空；测试 session 已 destroy。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 19 passed；`python3 -m pytest -q` 通过 40 passed, 1 skipped, 79 warnings；`./scripts/harness-check.sh` 通过 0 warnings；black check 通过；`git diff --check` 通过。
 
 ### 2026-05-11 - 交互式 SSH 输出清理落地
@@ -98,7 +98,7 @@
 - 进入 startup 后的目标 shell 会尝试清空 `PS1` 并关闭 echo，减少 prompt 和输入回显。
 - 清理器支持把真实终端中同一行的 runtime marker 拆出来，避免 conhost/WSL 光标控制序列导致用户输出被误删。
 - 单元测试覆盖 Windows banner、startup/cd/命令回显、prompt、sentinel 过滤。
-- 真实验证：`windows-wsl` doctor 通过；在 `SSHRunner` 内只读执行 `pwd && printf "remote-runner-clean-output\n"`，stdout 只包含 `/mnt/c/Users/example/Desktop/SSHRunner` 和 `remote-runner-clean-output`；测试 session 已 destroy。
+- 真实验证：Windows+WSL 蓝本 doctor 通过；在 `SSHRunner` 内只读执行 `pwd && printf "remote-runner-clean-output\n"`，stdout 只包含 `/mnt/c/Users/example/Desktop/SSHRunner` 和 `remote-runner-clean-output`；测试 session 已 destroy。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 19 passed；`python3 -m pytest -q` 通过 40 passed, 1 skipped, 79 warnings；`./scripts/harness-check.sh` 通过 0 warnings；black check 通过；`git diff --check` 通过。
 
 ### 2026-05-11 - Remote Runner 真实机器 opt-in 集成测试落地
@@ -118,7 +118,7 @@
 - `run once` 支持 `--input LOCAL=REMOTE` 和 `--artifact REMOTE=LOCAL`；使用 `=` 避免 Windows 路径冒号冲突。
 - run manifest 记录 run_id、machine_id、session_id、cwd、command、inputs、command_result、artifacts、status、started_at、ended_at 和 destroy_session_result。
 - 非零退出码会将 run 标记为 failed，但保留命令日志和 manifest。
-- 真实验证：`windows-wsl` 的 `SSHRunner` 目录内 run once 上传输入、执行命令生成输出、拉回 artifact、本地 cmp 成功；随后清理远程 input/output 探针文件并销毁 cleanup session；`run list/show` 可恢复查询 manifest。
+- 真实验证：Windows+WSL 蓝本的 `SSHRunner` 目录内 run once 上传输入、执行命令生成输出、拉回 artifact、本地 cmp 成功；随后清理远程 input/output 探针文件并销毁 cleanup session；`run list/show` 可恢复查询 manifest。
 - 验证：`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 21 passed；`python3 -m pytest -q` 通过 42 passed, 2 skipped, 101 warnings；`./scripts/harness-check.sh` 通过 0 warnings；black check 通过；`git diff --check` 通过。
 
 ### 2026-05-11 - Remote Runner 包名 facade 落地
@@ -201,4 +201,10 @@
 
 - 已在 `seedrunner` conda 环境中执行 `python -m pip install -e .`，`remote-runner` console script 可直接调用。
 - 新增 `docs/getting-started.md`，补齐安装、基础用法、Windows+WSL、真实机器验收和可写测试目录要求。
-- 两台 Linux 蓝本中，`csa-my` 的真实 launch+integration smoke 通过；`linux-01` 的 `/home/ely/tmp` 目录为 root-owned 且不可写，导致真实文件传输在该目录上出现权限阻塞。
+- 两台 Linux 蓝本中，一台真实 launch+integration smoke 通过；另一台的 `/home/ely/tmp` 目录为 root-owned 且不可写，导致真实文件传输在该目录上出现权限阻塞。
+
+### 2026-05-13 - Remote Runner skill 去 legacy 化
+
+- 仓库根目录 `SKILL.md` 已改为纯 `remote-runner` skill，不再保留 `seed-runner mount/sshfs/tmux` workflow。
+- 已安装 skill 从 `~/.codex/skills/seed-runner` 迁移为 `~/.codex/skills/remote-runner`，旧目录已删除，避免后续 agent 触发旧流程。
+- skill 现在要求先 `machine doctor`，通过 `session exec`、`file put/get/list` 和 `run once` 操作远程机器；失败时按 auth、远程路径权限、SFTP subsystem 和 path mapping 分类。
