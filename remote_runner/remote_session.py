@@ -485,7 +485,7 @@ class RemoteSessionManager:
         machine_id: str,
         record: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {
+        result = {
             "session_id": session_id,
             "command_id": record.get("command_id"),
             "machine_id": machine_id,
@@ -505,6 +505,18 @@ class RemoteSessionManager:
             "remote_state_dir": record.get("remote_state_dir"),
             "remote_pid": record.get("remote_pid"),
         }
+        for key in (
+            "remote_stdout_file",
+            "remote_stderr_file",
+            "remote_status_file",
+            "remote_pid_file",
+            "remote_exit_code_file",
+            "remote_ended_at_file",
+            "remote_worker_file",
+        ):
+            if key in record:
+                result[key] = record[key]
+        return result
 
     def _public_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
         return {

@@ -395,6 +395,8 @@ def test_session_background_command_can_be_polled_waited_and_stopped(remote_stat
     assert started["mode"] == "background"
     assert started["exit_code"] is None
     assert started["remote_state_dir"].endswith(f"/.remote-runner/commands/{command_id}")
+    assert started["remote_stdout_file"].endswith(f"/.remote-runner/commands/{command_id}/stdout.log")
+    assert started["remote_status_file"].endswith(f"/.remote-runner/commands/{command_id}/status")
     assert session_manager.show(session_id)["busy"] is False
     assert session_manager.show(session_id)["command_count"] == 1
 
@@ -491,6 +493,30 @@ def test_remote_runner_cli_background_command_outputs_json(remote_state_dir, tmp
     assert payload["status"] == "running"
     assert payload["mode"] == "background"
     assert payload["command_id"].startswith("cmd_")
+    assert payload["remote_stdout_file"].endswith("/stdout.log")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "command",
+            "result",
+            "--session",
+            session_id,
+            "--command-id",
+            payload["command_id"],
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    result_payload = json.loads(capsys.readouterr().out)
+
+    assert result_payload["status"] == "running"
+    assert result_payload["command_id"] == payload["command_id"]
+    assert result_payload["remote_status_file"].endswith("/status")
 
 
 def test_file_transfer_records_success_and_failure(remote_state_dir, tmp_path):

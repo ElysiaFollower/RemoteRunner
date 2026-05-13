@@ -280,13 +280,14 @@ command state from local session records plus those remote files.
 ```bash
 remote-runner session command list --session sess_abc123 --json
 remote-runner session command show --session sess_abc123 --command-id cmd_abc123 --json
+remote-runner session command result --session sess_abc123 --command-id cmd_abc123 --json
 remote-runner session command wait --session sess_abc123 --command-id cmd_abc123 --timeout 20 --json
 remote-runner session command stop --session sess_abc123 --command-id cmd_abc123 --json
 ```
 
-`show` returns the current command status, bounded stdout/stderr excerpts, truncation flags, exit
-code when available, timestamps, local log path, and remote state references when the command was
-started in background mode.
+`show` and `result` are aliases. They return the current command status, bounded stdout/stderr
+excerpts, truncation flags, exit code when available, timestamps, local log path, and remote state
+references when the command was started in background mode.
 
 `wait` only limits the wait call itself. It does not kill the remote command on timeout. The
 returned JSON includes `wait_timed_out` so callers can distinguish "still running" from

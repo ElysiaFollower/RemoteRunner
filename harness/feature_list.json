@@ -198,7 +198,7 @@
       "behavior": "用户或上层 agent 能在 session 下启动长时间运行的远程命令并立即获得 command_id，之后用 CLI 查询状态、读取有界输出、等待完成或停止命令；现有同步 session exec 行为继续可用。",
       "status": "passing",
       "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=seed-lab REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
-      "evidence": "2026-05-13: 已实现 session exec --mode background、session command list/show/wait/stop、远端 command state 文件与本地持久化 command record；聚焦测试 29 passed；launch suite 2 passed, 1 skipped；完整 pytest 52 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；seed-lab Linux/SSH opt-in 真实集成测试 1 passed，验证后台命令可启动、show 可见中间输出、wait 可回收最终结果，测试目录限制在 /tmp。",
+      "evidence": "2026-05-14: 已实现 session exec --mode background、session command list/show/result/wait/stop、远端 command state 文件与本地持久化 command record；聚焦测试 29 passed；launch suite 2 passed, 1 skipped；完整 pytest 52 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；seed-lab Linux/SSH opt-in 真实集成测试 1 passed，验证后台命令可启动、show/result 可见中间输出、wait 可回收最终结果、stop 可终止运行中命令，测试目录限制在 /tmp。",
       "notes": "任务合同已归档至 plans/archive/2026-05-13-remote-runner-background-session-commands.md。第一切片聚焦 durable background command，不做完整 attach shell、stdin streaming、PTY、daemon 或 profile/report 层。"
     }
   ]

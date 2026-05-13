@@ -58,6 +58,8 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
     cleanup_done = False
     background_command_id = None
     background_finished = False
+    stop_command_id = None
+    stop_requested = False
     try:
         doctor = _run_remote_runner("machine", "doctor", machine_id, "--json")
         assert doctor["reachable"] is True
@@ -137,6 +139,50 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
         assert background_wait["exit_code"] == 0
         assert "rr-background-end" in background_wait["stdout"]
 
+        stop_background = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            'printf "rr-stop-start\\n"; sleep 30; printf "rr-stop-end\\n"',
+            "--mode",
+            "background",
+            "--json",
+        )
+        stop_command_id = stop_background["command_id"]
+        assert stop_background["status"] == "running"
+
+        time.sleep(0.5)
+        stop_result = _run_remote_runner(
+            "session",
+            "command",
+            "stop",
+            "--session",
+            session_id,
+            "--command-id",
+            stop_command_id,
+            "--json",
+        )
+        stop_requested = True
+        assert stop_result["status"] == "stopped"
+        assert stop_result["exit_code"] == 143
+        assert stop_result["stop_requested"] is True
+        assert "rr-stop-start" in stop_result["stdout"]
+
+        stop_show = _run_remote_runner(
+            "session",
+            "command",
+            "show",
+            "--session",
+            session_id,
+            "--command-id",
+            stop_command_id,
+            "--json",
+        )
+        assert stop_show["status"] == "stopped"
+        assert stop_show["exit_code"] == 143
+
         put = _run_remote_runner(
             "file",
             "put",
@@ -185,6 +231,7 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
             (
                 f"rm -f {shlex.quote(probe_name)} && "
                 f"rm -rf .remote-runner/commands/{shlex.quote(background_command_id or '')} && "
+                f"rm -rf .remote-runner/commands/{shlex.quote(stop_command_id or '')} && "
                 f"test ! -e {shlex.quote(probe_name)}"
             ),
             "--json",
@@ -203,6 +250,17 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
                 background_command_id,
                 "--json",
             )
+        if session_id and stop_command_id and not stop_requested:
+            _run_remote_runner(
+                "session",
+                "command",
+                "stop",
+                "--session",
+                session_id,
+                "--command-id",
+                stop_command_id,
+                "--json",
+            )
         if session_id and not cleanup_done:
             _run_remote_runner(
                 "session",
@@ -212,7 +270,8 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
                 "--cmd",
                 (
                     f"rm -f {shlex.quote(probe_name)} && "
-                    f"rm -rf .remote-runner/commands/{shlex.quote(background_command_id or '')}"
+                    f"rm -rf .remote-runner/commands/{shlex.quote(background_command_id or '')} && "
+                    f"rm -rf .remote-runner/commands/{shlex.quote(stop_command_id or '')}"
                 ),
                 "--json",
             )

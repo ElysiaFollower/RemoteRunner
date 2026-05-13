@@ -203,11 +203,12 @@ commands until Windows/WSL interactive-shell semantics are designed.
 
 Lists persisted command summaries for a session.
 
-### `remote-runner session command show --session <session_id> --command-id <command_id> [--stdout-bytes <n>] [--stderr-bytes <n>] --json`
+### `remote-runner session command show|result --session <session_id> --command-id <command_id> [--stdout-bytes <n>] [--stderr-bytes <n>] --json`
 
-Shows one command. For background commands, it refreshes status and bounded stdout/stderr excerpts
-from the remote state/log files when those files are still available. JSON excerpts are bounded;
-the remote stdout/stderr file references remain part of the recoverable command record.
+Shows one command result. `show` and `result` are aliases. For background commands, it refreshes
+status and bounded stdout/stderr excerpts from the remote state/log files when those files are
+still available. JSON excerpts are bounded; the remote stdout/stderr file references remain part of
+the recoverable command record.
 
 ### `remote-runner session command wait --session <session_id> --command-id <command_id> --timeout <seconds> --json`
 

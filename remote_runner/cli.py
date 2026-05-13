@@ -448,6 +448,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_json_flag(session_command_show)
     session_command_show.set_defaults(func=cmd_session_command_show)
 
+    session_command_result = session_command_sub.add_parser(
+        "result",
+        help="Show a session command result",
+    )
+    session_command_result.add_argument("--session", required=True)
+    session_command_result.add_argument("--command-id", required=True)
+    session_command_result.add_argument("--stdout-bytes", type=int, default=8192)
+    session_command_result.add_argument("--stderr-bytes", type=int, default=8192)
+    add_json_flag(session_command_result)
+    session_command_result.set_defaults(func=cmd_session_command_show)
+
     session_command_wait = session_command_sub.add_parser("wait", help="Wait for a session command")
     session_command_wait.add_argument("--session", required=True)
     session_command_wait.add_argument("--command-id", required=True)
