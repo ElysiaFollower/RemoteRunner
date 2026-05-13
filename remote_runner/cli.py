@@ -233,6 +233,43 @@ def cmd_session_exec(args: argparse.Namespace) -> None:
             command=args.cmd,
             cwd=args.cwd,
             timeout=args.timeout,
+            mode=args.mode,
+        )
+    )
+
+
+def cmd_session_command_list(args: argparse.Namespace) -> None:
+    _print(get_remote_session_manager().command_list(args.session))
+
+
+def cmd_session_command_show(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_session_manager().command_show(
+            session_id=args.session,
+            command_id=args.command_id,
+            stdout_limit=args.stdout_bytes,
+            stderr_limit=args.stderr_bytes,
+        )
+    )
+
+
+def cmd_session_command_wait(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_session_manager().command_wait(
+            session_id=args.session,
+            command_id=args.command_id,
+            timeout=args.timeout,
+            stdout_limit=args.stdout_bytes,
+            stderr_limit=args.stderr_bytes,
+        )
+    )
+
+
+def cmd_session_command_stop(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_session_manager().command_stop(
+            session_id=args.session,
+            command_id=args.command_id,
         )
     )
 
@@ -386,8 +423,45 @@ def build_parser() -> argparse.ArgumentParser:
     session_exec.add_argument("--cmd", required=True)
     session_exec.add_argument("--cwd")
     session_exec.add_argument("--timeout", type=int, default=300)
+    session_exec.add_argument(
+        "--mode",
+        choices=["wait", "background"],
+        default="wait",
+        help="wait for command completion or start it in the background",
+    )
     add_json_flag(session_exec)
     session_exec.set_defaults(func=cmd_session_exec)
+
+    session_command = session_sub.add_parser("command", help="Inspect background session commands")
+    session_command_sub = session_command.add_subparsers(dest="session_command_action")
+
+    session_command_list = session_command_sub.add_parser("list", help="List session commands")
+    session_command_list.add_argument("--session", required=True)
+    add_json_flag(session_command_list)
+    session_command_list.set_defaults(func=cmd_session_command_list)
+
+    session_command_show = session_command_sub.add_parser("show", help="Show a session command")
+    session_command_show.add_argument("--session", required=True)
+    session_command_show.add_argument("--command-id", required=True)
+    session_command_show.add_argument("--stdout-bytes", type=int, default=8192)
+    session_command_show.add_argument("--stderr-bytes", type=int, default=8192)
+    add_json_flag(session_command_show)
+    session_command_show.set_defaults(func=cmd_session_command_show)
+
+    session_command_wait = session_command_sub.add_parser("wait", help="Wait for a session command")
+    session_command_wait.add_argument("--session", required=True)
+    session_command_wait.add_argument("--command-id", required=True)
+    session_command_wait.add_argument("--timeout", type=int, default=30)
+    session_command_wait.add_argument("--stdout-bytes", type=int, default=8192)
+    session_command_wait.add_argument("--stderr-bytes", type=int, default=8192)
+    add_json_flag(session_command_wait)
+    session_command_wait.set_defaults(func=cmd_session_command_wait)
+
+    session_command_stop = session_command_sub.add_parser("stop", help="Stop a session command")
+    session_command_stop.add_argument("--session", required=True)
+    session_command_stop.add_argument("--command-id", required=True)
+    add_json_flag(session_command_stop)
+    session_command_stop.set_defaults(func=cmd_session_command_stop)
 
     session_logs = session_sub.add_parser("logs", help="List session logs")
     session_logs.add_argument("--session", required=True)

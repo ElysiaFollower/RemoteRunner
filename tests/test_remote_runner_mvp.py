@@ -32,6 +32,7 @@ class FakeBackend:
 
     def __init__(self):
         self.commands = []
+        self.background_commands = {}
         self.puts = []
         self.gets = []
         self.lists = []
@@ -79,6 +80,60 @@ class FakeBackend:
             ended_at="2026-05-08T00:00:02Z",
             duration_ms=1000,
         )
+
+    def start_background(self, machine, cwd, command, command_id, timeout=15):
+        self.background_commands[command_id] = {
+            "machine_id": machine.machine_id,
+            "cwd": cwd,
+            "command": command,
+            "status": "running",
+            "exit_code": None,
+            "stdout": "started\n",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "ended_at": None,
+            "remote_pid": "12345",
+        }
+        return {
+            "remote_state_dir": f"{cwd}/.remote-runner/commands/{command_id}",
+            "remote_stdout_file": f"{cwd}/.remote-runner/commands/{command_id}/stdout.log",
+            "remote_stderr_file": f"{cwd}/.remote-runner/commands/{command_id}/stderr.log",
+            "remote_status_file": f"{cwd}/.remote-runner/commands/{command_id}/status",
+            "remote_pid_file": f"{cwd}/.remote-runner/commands/{command_id}/pid",
+            "remote_exit_code_file": f"{cwd}/.remote-runner/commands/{command_id}/exit_code",
+            "remote_ended_at_file": f"{cwd}/.remote-runner/commands/{command_id}/ended_at",
+            "remote_pid": "12345",
+        }
+
+    def inspect_background(self, machine, command_record, stdout_limit=8192, stderr_limit=8192):
+        record = self.background_commands[command_record["command_id"]]
+        stdout = record["stdout"]
+        stderr = record["stderr"]
+        return {
+            "status": record["status"],
+            "exit_code": record["exit_code"],
+            "stdout": stdout[:stdout_limit],
+            "stderr": stderr[:stderr_limit],
+            "stdout_truncated": len(stdout) > stdout_limit,
+            "stderr_truncated": len(stderr) > stderr_limit,
+            "ended_at": record["ended_at"],
+        }
+
+    def stop_background(self, machine, command_record):
+        record = self.background_commands[command_record["command_id"]]
+        record["status"] = "stopped"
+        record["exit_code"] = 143
+        record["ended_at"] = "2026-05-08T00:00:05Z"
+        return {"stop_result": "stopped"}
+
+    def finish_background(self, command_id, exit_code=0, stdout="done\n", stderr=""):
+        record = self.background_commands[command_id]
+        record["status"] = "exited"
+        record["exit_code"] = exit_code
+        record["stdout"] = stdout
+        record["stderr"] = stderr
+        record["ended_at"] = "2026-05-08T00:00:04Z"
 
     def put(self, machine, local_path, remote_path):
         self.puts.append((machine.machine_id, local_path, remote_path))
@@ -324,6 +379,118 @@ def test_session_exec_rejects_concurrent_commands(remote_state_dir, tmp_path):
     assert result["first"]["exit_code"] == 0
     assert session_manager.show(session_id)["command_count"] == 1
     assert load_session_state(session_id)["busy"] is False
+
+
+def test_session_background_command_can_be_polled_waited_and_stopped(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = session_manager.create("lab-gpu-01")["session_id"]
+
+    started = session_manager.exec(session_id, "sleep 30", mode="background")
+    command_id = started["command_id"]
+
+    assert started["status"] == "running"
+    assert started["mode"] == "background"
+    assert started["exit_code"] is None
+    assert started["remote_state_dir"].endswith(f"/.remote-runner/commands/{command_id}")
+    assert session_manager.show(session_id)["busy"] is False
+    assert session_manager.show(session_id)["command_count"] == 1
+
+    running = RemoteSessionManager(
+        machine_manager=RemoteMachineManager(),
+        backend=backend,
+    ).command_show(session_id, command_id)
+    assert running["status"] == "running"
+    assert running["stdout"] == "started\n"
+    assert running["stdout_truncated"] is False
+
+    timed_out = session_manager.command_wait(session_id, command_id, timeout=0)
+    assert timed_out["status"] == "running"
+    assert timed_out["wait_timed_out"] is True
+
+    backend.finish_background(
+        command_id,
+        exit_code=7,
+        stdout="x" * 20,
+        stderr="failed\n",
+    )
+    finished = session_manager.command_show(
+        session_id,
+        command_id,
+        stdout_limit=5,
+        stderr_limit=20,
+    )
+    assert finished["status"] == "exited"
+    assert finished["exit_code"] == 7
+    assert finished["stdout"] == "xxxxx"
+    assert finished["stdout_truncated"] is True
+    assert finished["stderr"] == "failed\n"
+    assert Path(finished["log_file_local"]).read_text().find("[stdout_truncated] true") >= 0
+    refreshed = session_manager.command_show(
+        session_id,
+        command_id,
+        stdout_limit=30,
+        stderr_limit=20,
+    )
+    assert refreshed["stdout"] == "x" * 20
+    assert refreshed["stdout_truncated"] is False
+    assert session_manager.command_list(session_id)["summary"]["command_count"] == 1
+
+
+def test_session_background_command_stop_blocks_destroy_until_stopped(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = session_manager.create("lab-gpu-01")["session_id"]
+    command_id = session_manager.exec(session_id, "tail -f app.log", mode="background")[
+        "command_id"
+    ]
+
+    with pytest.raises(RuntimeError, match="running background commands"):
+        session_manager.destroy(session_id)
+
+    stopped = session_manager.command_stop(session_id, command_id)
+
+    assert stopped["status"] == "stopped"
+    assert stopped["exit_code"] == 143
+    assert stopped["stop_requested"] is True
+    assert stopped["stop_result"] == "stopped"
+    assert session_manager.destroy(session_id)["status"] == "destroyed"
+
+
+def test_remote_runner_cli_background_command_outputs_json(remote_state_dir, tmp_path, monkeypatch, capsys):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = manager.create("lab-gpu-01")["session_id"]
+    monkeypatch.setattr("remote_runner.cli.get_remote_session_manager", lambda: manager)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            "sleep 30",
+            "--mode",
+            "background",
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["status"] == "running"
+    assert payload["mode"] == "background"
+    assert payload["command_id"].startswith("cmd_")
 
 
 def test_file_transfer_records_success_and_failure(remote_state_dir, tmp_path):

@@ -31,6 +31,7 @@ class LaunchBackend:
 
     def __init__(self):
         self.commands: List[Dict[str, Any]] = []
+        self.background_commands: Dict[str, Dict[str, Any]] = {}
         self.puts: List[Dict[str, str]] = []
         self.gets: List[Dict[str, str]] = []
         self.lists: List[Dict[str, str]] = []
@@ -80,6 +81,50 @@ class LaunchBackend:
             ended_at="2026-05-11T00:00:02Z",
             duration_ms=1000,
         )
+
+    def start_background(self, machine, cwd, command, command_id, timeout=15):
+        self.background_commands[command_id] = {
+            "machine_id": machine.machine_id,
+            "cwd": cwd,
+            "command": command,
+            "status": "running",
+            "exit_code": None,
+            "stdout": "launch-background-started\n",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "ended_at": None,
+            "remote_pid": "4242",
+        }
+        return {
+            "remote_state_dir": f"{cwd}/.remote-runner/commands/{command_id}",
+            "remote_stdout_file": f"{cwd}/.remote-runner/commands/{command_id}/stdout.log",
+            "remote_stderr_file": f"{cwd}/.remote-runner/commands/{command_id}/stderr.log",
+            "remote_status_file": f"{cwd}/.remote-runner/commands/{command_id}/status",
+            "remote_pid_file": f"{cwd}/.remote-runner/commands/{command_id}/pid",
+            "remote_exit_code_file": f"{cwd}/.remote-runner/commands/{command_id}/exit_code",
+            "remote_ended_at_file": f"{cwd}/.remote-runner/commands/{command_id}/ended_at",
+            "remote_pid": "4242",
+        }
+
+    def inspect_background(self, machine, command_record, stdout_limit=8192, stderr_limit=8192):
+        record = self.background_commands[command_record["command_id"]]
+        return {
+            "status": record["status"],
+            "exit_code": record["exit_code"],
+            "stdout": record["stdout"][:stdout_limit],
+            "stderr": record["stderr"][:stderr_limit],
+            "stdout_truncated": len(record["stdout"]) > stdout_limit,
+            "stderr_truncated": len(record["stderr"]) > stderr_limit,
+            "ended_at": record["ended_at"],
+        }
+
+    def stop_background(self, machine, command_record):
+        record = self.background_commands[command_record["command_id"]]
+        record["status"] = "stopped"
+        record["exit_code"] = 143
+        record["ended_at"] = "2026-05-11T00:00:04Z"
+        return {"stop_result": "stopped"}
 
     def put(self, machine, local_path, remote_path):
         file_path = machine.map_file_path(remote_path)
@@ -205,6 +250,9 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
     session = session_manager.create("launch-lab-01")
     session_id = session["session_id"]
     exec_result = session_manager.exec(session_id, "echo launch-ready")
+    background = session_manager.exec(session_id, "sleep 30", mode="background")
+    background_show = session_manager.command_show(session_id, background["command_id"])
+    background_stop = session_manager.command_stop(session_id, background["command_id"])
 
     local_input = tmp_path / "launch_input.txt"
     local_input.write_text("launch input\n")
@@ -244,6 +292,9 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
         "doctor": doctor,
         "session": session,
         "exec": exec_result,
+        "background": background,
+        "background_show": background_show,
+        "background_stop": background_stop,
         "put": put,
         "list": listing,
         "get": get,

@@ -144,19 +144,29 @@ Lists recoverable sessions with machine ID, cwd, status, created time, command c
 
 Shows one session, including last command, last exit code, command count, log dir, and transfer count.
 
-### `remote-runner session exec --session <session_id> --cmd <command> [--cwd <remote_cwd>] --timeout <seconds> --json`
+### `remote-runner session exec --session <session_id> --cmd <command> [--cwd <remote_cwd>] [--mode wait|background] --timeout <seconds> --json`
 
 Executes the command directly in the remote cwd. It must not require a mount.
+
+Default `--mode wait` runs a bounded command and returns after completion. `--mode background`
+starts a long-running command and returns after a durable `command_id` and remote state/log
+references exist. In background mode, `--timeout` is the launch timeout, not the remote command
+runtime limit.
 
 Minimum response fields:
 
 - `session_id`
+- `command_id`
 - `machine_id`
 - `cwd`
 - `command`
+- `mode`
+- `status`
 - `exit_code`
 - `stdout`
 - `stderr`
+- `stdout_truncated`
+- `stderr_truncated`
 - `started_at`
 - `ended_at`
 - `duration_ms`
@@ -164,6 +174,50 @@ Minimum response fields:
 
 Command records must be persisted even when `exit_code` is non-zero. Non-zero exit code must not
 destroy the session.
+
+Background command records must include enough references for a new CLI process to recover command
+state. The first implementation stores remote status and output under:
+
+```text
+<session cwd>/.remote-runner/commands/<command_id>/
+  status
+  pid
+  exit_code
+  ended_at
+  stdout.log
+  stderr.log
+```
+
+Background command statuses are:
+
+- `running`
+- `exited`
+- `failed`
+- `timed_out`
+- `stopped`
+
+The first implementation may explicitly reject machines with `startup_commands` for background
+commands until Windows/WSL interactive-shell semantics are designed.
+
+### `remote-runner session command list --session <session_id> --json`
+
+Lists persisted command summaries for a session.
+
+### `remote-runner session command show --session <session_id> --command-id <command_id> [--stdout-bytes <n>] [--stderr-bytes <n>] --json`
+
+Shows one command. For background commands, it refreshes status and bounded stdout/stderr excerpts
+from the remote state/log files when those files are still available. JSON excerpts are bounded;
+the remote stdout/stderr file references remain part of the recoverable command record.
+
+### `remote-runner session command wait --session <session_id> --command-id <command_id> --timeout <seconds> --json`
+
+Polls a command until it finishes or this wait call times out. A wait timeout must not kill or
+detach the remote command. Responses include `wait_timed_out`.
+
+### `remote-runner session command stop --session <session_id> --command-id <command_id> --json`
+
+Requests termination of a running background command. Stop must preserve command state and logs.
+Destroying a session with running background commands must fail with a clear error.
 
 ### `remote-runner session logs --session <session_id> --json`
 
@@ -259,7 +313,9 @@ Shows the full run manifest.
 
 - Machine, session, command, log, and transfer state can be recovered by a new CLI process.
 - Remote command execution works without mount setup.
+- Long-running commands can be started in background mode, queried by `command_id`, waited on, or
+  stopped without relying on an in-process command table.
 - File put/get/list works without sshfs, FUSE, reverse SSH, or a long-running daemon.
 - Run once can upload input, execute a command, download an artifact, and recover the run manifest.
 - Credentials are redacted from JSON, logs, reports, and handoff files.
-- `./scripts/harness-check.sh` and `python3 -m pytest -q` pass after documentation-only preparation.
+- `./scripts/harness-check.sh` and `python3 -m pytest -q` pass after implementation changes.

@@ -30,6 +30,10 @@ def test_launch_suite_fake_core_smoke(launch_state_dir, tmp_path):
     assert result["session"]["cwd"] == "/srv/app"
     assert result["exec"]["exit_code"] == 0
     assert "launch-ready" in result["exec"]["stdout"]
+    assert result["background"]["status"] == "running"
+    assert result["background"]["command_id"].startswith("cmd_")
+    assert result["background_show"]["stdout"] == "launch-background-started\n"
+    assert result["background_stop"]["status"] == "stopped"
     assert result["put"]["status"] == "completed"
     assert result["download"] == "launch input\n"
     assert any(entry["name"] == "launch_input.txt" for entry in result["list"]["entries"])

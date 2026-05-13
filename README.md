@@ -63,6 +63,10 @@ remote-runner machine doctor lab-gpu-01 --json
 
 remote-runner session create --machine lab-gpu-01 --cwd /home/user/project --json
 remote-runner session exec --session sess_abc123 --cmd "pytest -q" --timeout 300 --json
+remote-runner session exec --session sess_abc123 --cmd "python long_job.py" --mode background --json
+remote-runner session command show --session sess_abc123 --command-id cmd_abc123 --json
+remote-runner session command wait --session sess_abc123 --command-id cmd_abc123 --timeout 30 --json
+remote-runner session command stop --session sess_abc123 --command-id cmd_abc123 --json
 remote-runner session logs --session sess_abc123 --json
 remote-runner session destroy --session sess_abc123 --json
 
@@ -79,8 +83,10 @@ remote-runner run once \
   --json
 ```
 
-`session exec --json` should return the command, remote working directory, stdout, stderr,
-exit code, timestamps, duration, and local log path.
+`session exec --json` defaults to synchronous wait mode and returns the command, remote working
+directory, stdout, stderr, exit code, timestamps, duration, and local log path. Long-running jobs
+should use `--mode background`; later `session command show/wait/stop` calls recover state by
+`command_id`.
 
 `remote-runner machine add --json` prompts for missing SSH machine fields and writes prompts to
 stderr, so stdout remains one JSON object. Password auth uses hidden input in the recommended

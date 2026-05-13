@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：`F-018 Remote Runner 后台会话命令` active；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
-- 当前任务计划：`plans/active/2026-05-13-remote-runner-background-session-commands.md`。
-- 当前阶段性提交：截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`；`F-017` 测试资产由本轮收尾提交记录。
-- 上次验证：2026-05-13，`conda run -n seedrunner remote-runner --help` 通过；`conda run -n seedrunner python -m remote_runner.cli --help` 通过；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped；`python3 -m pytest -q` 通过 49 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；两台 Linux 蓝本中一台 opt-in launch+integration smoke 通过 4 passed，另一台在密码更新后 `/tmp` 文件传输闭环通过。
-- 下一步最佳动作：先更新 API/spec，确认 `session exec --mode background` 与 `session command show/wait/stop` 的 JSON 合同，再设计跨 CLI 进程可恢复的 command state 与远程状态文件布局。
+- 当前功能项：`F-018 Remote Runner 后台会话命令` passing；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
+- 当前任务计划：`plans/archive/2026-05-13-remote-runner-background-session-commands.md`。
+- 当前阶段性提交：本轮收尾提交记录 `F-018` 完成状态；截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`。
+- 上次验证：2026-05-13，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 29 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 52 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；`REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=seed-lab REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 passed。
+- 下一步最佳动作：等待下一轮需求；如果继续演进，优先考虑更完整的 attach/stdin streaming 语义或 `F-005` profile/report 层。
 
 ## 状态约定
 
@@ -215,3 +215,10 @@
 - 新增 active plan：`plans/active/2026-05-13-remote-runner-background-session-commands.md`。
 - 新增 `F-018` active：目标是让 session 下长时间运行的远程命令可后台启动、按 `command_id` 查询状态/有界输出、等待完成或停止，同时保留现有同步 `session exec` 行为。
 - 范围边界：第一切片不实现完整 attach shell、stdin streaming、PTY、实时输出推送、tmux/daemon 依赖或 profile/report 层。
+
+### 2026-05-13 - 后台会话命令完成
+
+- `remote-runner session exec --mode background` 已实现，返回 durable `command_id`、远端状态目录和本地摘要日志路径。
+- 新增 `remote-runner session command list/show/wait/stop`，可跨 CLI 进程恢复后台命令状态、查看有界输出、等待完成或停止命令。
+- 代码与文档同步更新：API contract、spec、getting-started、README 和 Remote Runner skill 都已补齐后台命令语义。
+- 真实验证：`seed-lab` Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；背景命令可启动、show 可见中间输出、wait 可收回最终结果，cleanup 与 session destroy 均成功。

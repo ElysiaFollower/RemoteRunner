@@ -56,6 +56,8 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
 
     session_id = None
     cleanup_done = False
+    background_command_id = None
+    background_finished = False
     try:
         doctor = _run_remote_runner("machine", "doctor", machine_id, "--json")
         assert doctor["reachable"] is True
@@ -87,6 +89,53 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
         assert "remote-runner-real-integration" in executed["stdout"]
         assert "Microsoft Windows" not in executed["stdout"]
         assert "wsl" not in executed["stdout"]
+
+        background = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            'printf "rr-background-start\\n"; sleep 2; printf "rr-background-end\\n"',
+            "--mode",
+            "background",
+            "--json",
+        )
+        background_command_id = background["command_id"]
+        assert background["status"] == "running"
+
+        import time
+
+        time.sleep(0.5)
+        background_show = _run_remote_runner(
+            "session",
+            "command",
+            "show",
+            "--session",
+            session_id,
+            "--command-id",
+            background_command_id,
+            "--json",
+        )
+        assert background_show["status"] == "running"
+        assert "rr-background-start" in background_show["stdout"]
+
+        background_wait = _run_remote_runner(
+            "session",
+            "command",
+            "wait",
+            "--session",
+            session_id,
+            "--command-id",
+            background_command_id,
+            "--timeout",
+            "5",
+            "--json",
+        )
+        background_finished = background_wait["status"] == "exited"
+        assert background_finished is True
+        assert background_wait["exit_code"] == 0
+        assert "rr-background-end" in background_wait["stdout"]
 
         put = _run_remote_runner(
             "file",
@@ -133,12 +182,27 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
             "--session",
             session_id,
             "--cmd",
-            f"rm -f {shlex.quote(probe_name)} && test ! -e {shlex.quote(probe_name)}",
+            (
+                f"rm -f {shlex.quote(probe_name)} && "
+                f"rm -rf .remote-runner/commands/{shlex.quote(background_command_id or '')} && "
+                f"test ! -e {shlex.quote(probe_name)}"
+            ),
             "--json",
         )
         cleanup_done = cleanup["exit_code"] == 0
         assert cleanup_done is True
     finally:
+        if session_id and background_command_id and not background_finished:
+            _run_remote_runner(
+                "session",
+                "command",
+                "stop",
+                "--session",
+                session_id,
+                "--command-id",
+                background_command_id,
+                "--json",
+            )
         if session_id and not cleanup_done:
             _run_remote_runner(
                 "session",
@@ -146,7 +210,10 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
                 "--session",
                 session_id,
                 "--cmd",
-                f"rm -f {shlex.quote(probe_name)}",
+                (
+                    f"rm -f {shlex.quote(probe_name)} && "
+                    f"rm -rf .remote-runner/commands/{shlex.quote(background_command_id or '')}"
+                ),
                 "--json",
             )
         if session_id:

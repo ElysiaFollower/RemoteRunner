@@ -14,7 +14,8 @@ Use this skill when work must happen on a remote machine through the `remote-run
 Use `remote-runner` as the stable interface:
 
 - machine registry and diagnostics: `machine list/show/doctor`
-- remote command context: `session create/exec/logs/destroy`
+- remote command context: `session create/exec`, `session command list/show/wait/stop`,
+  `session logs/destroy`
 - explicit file movement: `file put/get/list`
 - one-shot closed loop: `run once`
 
@@ -68,16 +69,46 @@ remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
 
 `session create` records local state; it does not by itself prove SSH auth. `machine doctor` and the first `session exec` are the real connectivity checks.
 
-5. Run commands through the session:
+5. Run bounded commands through the session:
 
 ```bash
 remote-runner session exec \
   --session <session-id> \
   --cmd 'pwd && whoami' \
+  --mode wait \
   --json
 ```
 
 Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command.
+
+For long-running or persistent commands, do not compensate by using very large synchronous
+timeouts. Start the command in background mode and keep the returned `command_id`:
+
+```bash
+remote-runner session exec \
+  --session <session-id> \
+  --cmd '<long-running-command>' \
+  --mode background \
+  --json
+```
+
+Then inspect or wait explicitly:
+
+```bash
+remote-runner session command show \
+  --session <session-id> \
+  --command-id <command-id> \
+  --json
+
+remote-runner session command wait \
+  --session <session-id> \
+  --command-id <command-id> \
+  --timeout 30 \
+  --json
+```
+
+Use `session command stop` when a running background command should be terminated. A session with
+running background commands cannot be destroyed until those commands finish or are stopped.
 
 6. Clean up when finished:
 

@@ -210,6 +210,9 @@ remote-runner session exec \
   --json
 ```
 
+This is the default synchronous path. `--mode wait` runs the command and returns only after the
+remote process finishes. It preserves the existing short-command behavior.
+
 Optional cwd override:
 
 ```bash
@@ -225,12 +228,17 @@ Return shape:
 ```json
 {
   "session_id": "sess_abc123",
+  "command_id": "cmd_abc123",
   "machine_id": "lab-gpu-01",
   "cwd": "/home/ely/project",
   "command": "pytest -q",
+  "mode": "wait",
+  "status": "completed",
   "exit_code": 0,
   "stdout": "...",
   "stderr": "",
+  "stdout_truncated": false,
+  "stderr_truncated": false,
   "started_at": "2026-05-07T10:00:00Z",
   "ended_at": "2026-05-07T10:00:08Z",
   "duration_ms": 8123,
@@ -243,8 +251,49 @@ Behavior requirements:
 - Preserve logs even when `exit_code` is non-zero.
 - Do not destroy the session on command failure.
 - Return a clear busy/timeout state when a command cannot be accepted.
-- Allow stdout/stderr truncation in JSON only if the full content is available in `log_file_local`.
+- Allow stdout/stderr truncation in JSON only if the full content is available through
+  `log_file_local` or a recoverable remote log reference.
 - Do not require sshfs, FUSE, reverse SSH, or mount setup.
+- `session exec` defaults to synchronous wait mode; long-running jobs should use
+  `--mode background`.
+
+### Background Command Start
+
+```bash
+remote-runner session exec \
+  --session sess_abc123 \
+  --cmd "docker compose up" \
+  --mode background \
+  --json
+```
+
+Background start returns immediately after the command is accepted. The response includes
+`command_id`, `status=running`, `remote_state_dir`, `remote_pid`, remote log/status file
+references, timestamps, and `log_file_local` for the local summary record.
+
+Background commands persist their own remote state under the session cwd in
+`.remote-runner/commands/<command_id>/`. The CLI can be restarted later and still recover the
+command state from local session records plus those remote files.
+
+### Session Commands
+
+```bash
+remote-runner session command list --session sess_abc123 --json
+remote-runner session command show --session sess_abc123 --command-id cmd_abc123 --json
+remote-runner session command wait --session sess_abc123 --command-id cmd_abc123 --timeout 20 --json
+remote-runner session command stop --session sess_abc123 --command-id cmd_abc123 --json
+```
+
+`show` returns the current command status, bounded stdout/stderr excerpts, truncation flags, exit
+code when available, timestamps, local log path, and remote state references when the command was
+started in background mode.
+
+`wait` only limits the wait call itself. It does not kill the remote command on timeout. The
+returned JSON includes `wait_timed_out` so callers can distinguish "still running" from
+"finished".
+
+`stop` sends a stop request for a background command. Repeating `stop` on a finished command must
+return a clear result without losing logs or state.
 
 ### Logs
 

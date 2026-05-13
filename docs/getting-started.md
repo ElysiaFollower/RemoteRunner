@@ -63,6 +63,32 @@ remote-runner session destroy --session <SESSION_ID> --json
 
 建议把可写测试目录固定在 `/home/ely/tmp` 或其他你确认可写的目录。若该目录是 root-owned 或不可写，就换成别的安全目录，不要默认假设它能写。
 
+如果任务是长时间运行的，先用后台模式启动，再用 `session command show/wait/stop` 查询：
+
+```bash
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'python long_job.py' \
+  --mode background \
+  --json
+
+remote-runner session command show \
+  --session <SESSION_ID> \
+  --command-id <COMMAND_ID> \
+  --json
+
+remote-runner session command wait \
+  --session <SESSION_ID> \
+  --command-id <COMMAND_ID> \
+  --timeout 30 \
+  --json
+
+remote-runner session command stop \
+  --session <SESSION_ID> \
+  --command-id <COMMAND_ID> \
+  --json
+```
+
 ## 4. 文件传输
 
 ```bash
