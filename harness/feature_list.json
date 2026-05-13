@@ -189,6 +189,17 @@
       "verification": "python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_launch_suite.py tests/test_remote_runner_real_integration.py -q",
       "evidence": "2026-05-11: 新增 tests/test_remote_runner_launch_suite.py、tests/remote_runner_launch_support.py 和 docs/testing/remote-runner-launch-acceptance.md；默认 launch suite 2 passed, 1 skipped；默认真实集成测试 1 skipped；完整 pytest 49 passed, 3 skipped；harness-check 0 warnings；git diff --check 通过；显式 opt-in 真实机器 launch+integration smoke 4 passed，写入范围限制在已配置安全测试目录，未记录真实机器细节。",
       "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md。真实机器验收默认 skip，显式 opt-in 后只允许写 REMOTE_RUNNER_REAL_TEST_CWD。"
+    },
+    {
+      "id": "F-018",
+      "priority": "P0",
+      "area": "session-command",
+      "title": "Remote Runner 后台会话命令",
+      "behavior": "用户或上层 agent 能在 session 下启动长时间运行的远程命令并立即获得 command_id，之后用 CLI 查询状态、读取有界输出、等待完成或停止命令；现有同步 session exec 行为继续可用。",
+      "status": "active",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q",
+      "evidence": "",
+      "notes": "Active plan: plans/active/2026-05-13-remote-runner-background-session-commands.md。第一切片聚焦 durable background command，不做完整 attach shell、stdin streaming、PTY、daemon 或 profile/report 层。"
     }
   ]
 }
