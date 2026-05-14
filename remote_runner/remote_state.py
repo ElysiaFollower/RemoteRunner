@@ -1,12 +1,16 @@
 """Persistent state helpers for the mount-free Remote Runner core."""
 
 from contextlib import contextmanager
-import fcntl
 import json
 import os
 from typing import Any, Dict, Iterator, List
 
 from remote_runner.utils import append_file, ensure_dir, read_file, write_file
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 def get_remote_state_dir() -> str:
@@ -21,17 +25,39 @@ def get_remote_state_lock_file() -> str:
     return os.path.join(get_remote_state_dir(), "state.lock")
 
 
+def _lock_fd(fd: int) -> None:
+    if os.name == "nt":
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        os.lseek(fd, 0, os.SEEK_SET)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock_fd(fd: int) -> None:
+    os.lseek(fd, 0, os.SEEK_SET)
+    if os.name == "nt":
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 @contextmanager
 def remote_state_lock() -> Iterator[None]:
     """Acquire an exclusive lock for Remote Runner state mutations."""
     lock_file = get_remote_state_lock_file()
     ensure_dir(os.path.dirname(lock_file))
     fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _lock_fd(fd)
+        locked = True
         yield
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        if locked:
+            _unlock_fd(fd)
         os.close(fd)
 
 

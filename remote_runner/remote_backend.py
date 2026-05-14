@@ -1,5 +1,6 @@
 """SSH/SFTP backend for the mount-free Remote Runner core."""
 
+import codecs
 from dataclasses import dataclass
 import hashlib
 import os
@@ -298,10 +299,12 @@ class ParamikoRemoteBackend:
 
             deadline = time.time() + timeout
             marker_pattern = re.compile(rf"{re.escape(exit_marker)}:(\d+)")
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             while time.time() < deadline:
                 if channel.recv_ready():
-                    output += channel.recv(4096).decode("utf-8", errors="replace")
-                    matches = marker_pattern.findall(output)
+                    output += decoder.decode(channel.recv(4096))
+                    search_window = output[-(len(exit_marker) + 100) :]
+                    matches = marker_pattern.findall(search_window)
                     if matches:
                         exit_code = int(matches[-1])
                         break
@@ -310,6 +313,7 @@ class ParamikoRemoteBackend:
                 else:
                     time.sleep(0.05)
 
+            output += decoder.decode(b"", final=True)
             if exit_code is None:
                 matches = marker_pattern.findall(output)
                 if matches:
@@ -588,9 +592,11 @@ class ParamikoRemoteBackend:
         for root, dirs, files in os.walk(local_dir):
             rel = os.path.relpath(root, local_dir)
             remote_root = remote_dir if rel == "." else posixpath.join(remote_dir, rel)
-            self._mkdir_p(sftp, remote_root)
             for dirname in dirs:
-                self._mkdir_p(sftp, posixpath.join(remote_root, dirname))
+                try:
+                    sftp.mkdir(posixpath.join(remote_root, dirname))
+                except IOError:
+                    pass
             for filename in files:
                 local_file = os.path.join(root, filename)
                 remote_file = posixpath.join(remote_root, filename)
@@ -706,7 +712,7 @@ class ParamikoRemoteBackend:
     ) -> str:
         sftp_path = machine.map_file_path(remote_path)
         try:
-            with sftp.open(sftp_path, "r") as remote_file:
+            with sftp.open(sftp_path, "rb") as remote_file:
                 data = remote_file.read()
         except IOError:
             if missing_ok:
@@ -726,7 +732,7 @@ class ParamikoRemoteBackend:
         sftp_path = machine.map_file_path(remote_path)
         read_limit = max(0, limit) + 1
         try:
-            with sftp.open(sftp_path, "r") as remote_file:
+            with sftp.open(sftp_path, "rb") as remote_file:
                 data = remote_file.read(read_limit)
         except IOError:
             return "", False
