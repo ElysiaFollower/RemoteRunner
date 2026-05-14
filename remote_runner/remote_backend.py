@@ -528,9 +528,10 @@ class ParamikoRemoteBackend:
         script = " && ".join(
             [
                 "command -v tmux >/dev/null 2>&1",
+                "command -v bash >/dev/null 2>&1",
                 (
                     f"tmux new-session -d -s {shlex.quote(tmux_session)} "
-                    f"-c {shlex.quote(cwd)}"
+                    f"-c {shlex.quote(cwd)} bash --noprofile --norc"
                 ),
                 (
                     f"tmux resize-window -t {shlex.quote(tmux_session)} "
@@ -560,6 +561,172 @@ class ParamikoRemoteBackend:
             }
         finally:
             client.close()
+
+    def start_session_command(
+        self,
+        machine: RemoteMachine,
+        session_record: Dict[str, Any],
+        command: str,
+        command_id: str,
+        cwd: Optional[str] = None,
+        cwd_override: bool = False,
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("persistent session commands do not yet support startup_commands machines")
+
+        paths = self._session_command_paths(session_record["cwd"], command_id)
+        sftp_paths = {key: machine.map_file_path(value) for key, value in paths.items()}
+        wrapper_script = self._session_command_wrapper_script(
+            paths=paths,
+            command=command,
+            command_id=command_id,
+            cwd=cwd,
+            cwd_override=cwd_override,
+        )
+
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            self._mkdir_p(sftp, sftp_paths["remote_state_dir"])
+            self._write_remote_script(sftp, sftp_paths["remote_wrapper_file"], wrapper_script)
+        finally:
+            sftp.close()
+            client.close()
+
+        self.send_terminal_input(
+            machine=machine,
+            terminal_record=session_record,
+            input_text=f"source {shlex.quote(paths['remote_wrapper_file'])}",
+            enter=True,
+        )
+        return {
+            "command_backend": "tmux",
+            **paths,
+        }
+
+    def wait_session_command(
+        self,
+        machine: RemoteMachine,
+        command_record: Dict[str, Any],
+        timeout: int = 300,
+        stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
+        stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
+    ) -> Dict[str, Any]:
+        deadline = time.time() + max(0, timeout)
+        while True:
+            result = self.inspect_session_command(
+                machine=machine,
+                command_record=command_record,
+                stdout_limit=stdout_limit,
+                stderr_limit=stderr_limit,
+            )
+            if result["status"] != "running":
+                return result
+            if time.time() >= deadline:
+                raise TimeoutError("persistent session command did not finish before timeout")
+            time.sleep(min(0.2, max(0, deadline - time.time())))
+
+    def inspect_session_command(
+        self,
+        machine: RemoteMachine,
+        command_record: Dict[str, Any],
+        stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
+        stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("persistent session commands do not yet support startup_commands machines")
+
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            status = self._read_remote_text(
+                sftp,
+                machine,
+                command_record["remote_status_file"],
+                missing_ok=True,
+            ).strip()
+            status = status or "running"
+            exit_code_text = self._read_remote_text(
+                sftp,
+                machine,
+                command_record["remote_exit_code_file"],
+                missing_ok=True,
+            ).strip()
+            started_at = self._read_remote_text(
+                sftp,
+                machine,
+                command_record["remote_started_at_file"],
+                missing_ok=True,
+            ).strip()
+            ended_at = self._read_remote_text(
+                sftp,
+                machine,
+                command_record["remote_ended_at_file"],
+                missing_ok=True,
+            ).strip()
+            stdout, stdout_truncated = self._read_remote_text_limited(
+                sftp,
+                machine,
+                command_record["remote_stdout_file"],
+                stdout_limit,
+            )
+            stderr, stderr_truncated = self._read_remote_text_limited(
+                sftp,
+                machine,
+                command_record["remote_stderr_file"],
+                stderr_limit,
+            )
+            exit_code = int(exit_code_text) if exit_code_text else None
+            return {
+                "status": status,
+                "exit_code": exit_code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "started_at": started_at or None,
+                "ended_at": ended_at or None,
+            }
+        finally:
+            sftp.close()
+            client.close()
+
+    def stop_session_command(
+        self,
+        machine: RemoteMachine,
+        session_record: Dict[str, Any],
+        command_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("persistent session commands do not yet support startup_commands machines")
+
+        target = session_record["remote_terminal_name"]
+        client = self._connect(machine)
+        try:
+            stop_script = (
+                f"tmux send-keys -t {shlex.quote(target)} C-c; "
+                "sleep 0.2; "
+                f"printf '%s\\n' stopped > {shlex.quote(command_record['remote_status_file'])}; "
+                f"printf '%s\\n' 143 > {shlex.quote(command_record['remote_exit_code_file'])}; "
+                f"date -u +'%Y-%m-%dT%H:%M:%SZ' > {shlex.quote(command_record['remote_ended_at_file'])}"
+            )
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(stop_script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            exit_code = stdout_file.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError(stderr or stdout or "session command stop failed")
+        finally:
+            client.close()
+
+        deadline = time.time() + 5
+        latest: Dict[str, Any] = {"status": "running"}
+        while time.time() < deadline:
+            latest = self.inspect_session_command(machine, command_record)
+            if latest["status"] != "running":
+                break
+            time.sleep(0.2)
+        return {"stop_result": latest.get("status", "unknown")}
 
     def send_terminal_input(
         self,
@@ -888,6 +1055,83 @@ class ParamikoRemoteBackend:
     def _tmux_session_name(self, terminal_id: str) -> str:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", terminal_id)
         return f"rr_{safe}"
+
+    def _session_command_paths(self, session_cwd: str, command_id: str) -> Dict[str, str]:
+        remote_state_dir = posixpath.join(session_cwd, ".remote-runner", "commands", command_id)
+        return {
+            "remote_state_dir": remote_state_dir,
+            "remote_stdout_file": posixpath.join(remote_state_dir, "stdout.log"),
+            "remote_stderr_file": posixpath.join(remote_state_dir, "stderr.log"),
+            "remote_status_file": posixpath.join(remote_state_dir, "status"),
+            "remote_exit_code_file": posixpath.join(remote_state_dir, "exit_code"),
+            "remote_started_at_file": posixpath.join(remote_state_dir, "started_at"),
+            "remote_ended_at_file": posixpath.join(remote_state_dir, "ended_at"),
+            "remote_wrapper_file": posixpath.join(remote_state_dir, "run.sh"),
+        }
+
+    def _session_command_wrapper_script(
+        self,
+        paths: Dict[str, str],
+        command: str,
+        command_id: str,
+        cwd: Optional[str],
+        cwd_override: bool,
+    ) -> str:
+        begin_marker = f"__REMOTE_RUNNER_CMD_BEGIN_{command_id}__"
+        end_marker = f"__REMOTE_RUNNER_CMD_END_{command_id}__"
+        lines = [
+            "# Remote Runner persistent session command wrapper. Must be sourced in bash.",
+            "set +e",
+            f"__rr_dir={shlex.quote(paths['remote_state_dir'])}",
+            f"__rr_stdout={shlex.quote(paths['remote_stdout_file'])}",
+            f"__rr_stderr={shlex.quote(paths['remote_stderr_file'])}",
+            f"__rr_status={shlex.quote(paths['remote_status_file'])}",
+            f"__rr_exit_code={shlex.quote(paths['remote_exit_code_file'])}",
+            f"__rr_started_at={shlex.quote(paths['remote_started_at_file'])}",
+            f"__rr_ended_at={shlex.quote(paths['remote_ended_at_file'])}",
+            f"__rr_command={shlex.quote(command)}",
+            f"__rr_cwd={shlex.quote(cwd or '')}",
+            f"__rr_cwd_override={'1' if cwd_override else '0'}",
+            "mkdir -p \"$__rr_dir\"",
+            ": > \"$__rr_stdout\"",
+            ": > \"$__rr_stderr\"",
+            "printf '%s\\n' running > \"$__rr_status\"",
+            "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_started_at\"",
+            f"printf '\\n{begin_marker}\\n'",
+            "__rr_stopped=0",
+            "trap '__rr_stopped=1' INT TERM",
+            "if [ \"$__rr_cwd_override\" = 1 ]; then",
+            "  cd \"$__rr_cwd\"",
+            "  __rr_cd_rc=$?",
+            "  if [ \"$__rr_cd_rc\" -ne 0 ]; then",
+            "    printf 'cd failed: %s\\n' \"$__rr_cwd\" | tee -a \"$__rr_stderr\" >&2",
+            "    __rr_rc=$__rr_cd_rc",
+            "    printf '%s\\n' \"$__rr_rc\" > \"$__rr_exit_code\"",
+            "    date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_ended_at\"",
+            "    printf '%s\\n' failed > \"$__rr_status\"",
+            f"    printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
+            "    trap - INT TERM",
+            "    return \"$__rr_rc\" 2>/dev/null || exit \"$__rr_rc\"",
+            "  fi",
+            "fi",
+            "{ eval \"$__rr_command\"; } > >(tee -a \"$__rr_stdout\") 2> >(tee -a \"$__rr_stderr\" >&2)",
+            "__rr_rc=$?",
+            "__rr_existing_status=$(cat \"$__rr_status\" 2>/dev/null || true)",
+            "if [ \"$__rr_existing_status\" = stopped ] || [ \"$__rr_stopped\" = 1 ] || [ \"$__rr_rc\" -eq 130 ] || [ \"$__rr_rc\" -eq 143 ]; then",
+            "  __rr_status_value=stopped",
+            "  __rr_rc=143",
+            "else",
+            "  __rr_status_value=exited",
+            "fi",
+            f"printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
+            "printf '%s\\n' \"$__rr_rc\" > \"$__rr_exit_code\"",
+            "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_ended_at\"",
+            "printf '%s\\n' \"$__rr_status_value\" > \"$__rr_status\"",
+            "trap - INT TERM",
+            "return \"$__rr_rc\" 2>/dev/null || exit \"$__rr_rc\"",
+            "",
+        ]
+        return "\n".join(lines)
 
     def _get_dir(self, sftp: paramiko.SFTPClient, remote_dir: str, local_dir: str) -> int:
         os.makedirs(local_dir, exist_ok=True)

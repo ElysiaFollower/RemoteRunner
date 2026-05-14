@@ -9,7 +9,6 @@ from remote_runner.remote_file import get_remote_file_manager
 from remote_runner.remote_machine import get_remote_machine_manager
 from remote_runner.remote_run import get_remote_run_manager
 from remote_runner.remote_session import get_remote_session_manager
-from remote_runner.remote_terminal import get_remote_terminal_manager
 from remote_runner.utils import json_response
 
 
@@ -275,56 +274,32 @@ def cmd_session_command_stop(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_session_logs(args: argparse.Namespace) -> None:
-    _print(get_remote_session_manager().logs(args.session))
-
-
-def cmd_session_destroy(args: argparse.Namespace) -> None:
-    _print(get_remote_session_manager().destroy(args.session))
-
-
-def cmd_terminal_create(args: argparse.Namespace) -> None:
+def cmd_session_send(args: argparse.Namespace) -> None:
     _print(
-        get_remote_terminal_manager().create(
-            machine_id=args.machine,
-            cwd=args.cwd,
-            backend=args.backend,
-            width=args.width,
-            height=args.height,
-        )
-    )
-
-
-def cmd_terminal_list(args: argparse.Namespace) -> None:
-    _print(get_remote_terminal_manager().list())
-
-
-def cmd_terminal_show(args: argparse.Namespace) -> None:
-    _print(get_remote_terminal_manager().show(args.terminal))
-
-
-def cmd_terminal_send(args: argparse.Namespace) -> None:
-    _print(
-        get_remote_terminal_manager().send(
-            terminal_id=args.terminal,
+        get_remote_session_manager().send(
+            session_id=args.session,
             input_text=args.input,
             enter=not args.no_enter,
         )
     )
 
 
-def cmd_terminal_read(args: argparse.Namespace) -> None:
+def cmd_session_read(args: argparse.Namespace) -> None:
     _print(
-        get_remote_terminal_manager().read(
-            terminal_id=args.terminal,
+        get_remote_session_manager().read(
+            session_id=args.session,
             since=args.since,
             max_chars=args.max_chars,
         )
     )
 
 
-def cmd_terminal_destroy(args: argparse.Namespace) -> None:
-    _print(get_remote_terminal_manager().destroy(args.terminal))
+def cmd_session_logs(args: argparse.Namespace) -> None:
+    _print(get_remote_session_manager().logs(args.session))
+
+
+def cmd_session_destroy(args: argparse.Namespace) -> None:
+    _print(get_remote_session_manager().destroy(args.session))
 
 
 def cmd_file_put(args: argparse.Namespace) -> None:
@@ -519,6 +494,24 @@ def build_parser() -> argparse.ArgumentParser:
     add_json_flag(session_command_stop)
     session_command_stop.set_defaults(func=cmd_session_command_stop)
 
+    session_send = session_sub.add_parser("send", help="Send raw input to a session shell")
+    session_send.add_argument("--session", required=True)
+    session_send.add_argument("--input", required=True)
+    session_send.add_argument(
+        "--no-enter",
+        action="store_true",
+        help="Send input without pressing Enter",
+    )
+    add_json_flag(session_send)
+    session_send.set_defaults(func=cmd_session_send)
+
+    session_read = session_sub.add_parser("read", help="Read session shell transcript")
+    session_read.add_argument("--session", required=True)
+    session_read.add_argument("--since", type=int)
+    session_read.add_argument("--max-chars", type=int)
+    add_json_flag(session_read)
+    session_read.set_defaults(func=cmd_session_read)
+
     session_logs = session_sub.add_parser("logs", help="List session logs")
     session_logs.add_argument("--session", required=True)
     add_json_flag(session_logs)
@@ -528,50 +521,6 @@ def build_parser() -> argparse.ArgumentParser:
     session_destroy.add_argument("--session", required=True)
     add_json_flag(session_destroy)
     session_destroy.set_defaults(func=cmd_session_destroy)
-
-    terminal = subparsers.add_parser("terminal", help="Persistent terminal sessions")
-    terminal_sub = terminal.add_subparsers(dest="terminal_command")
-
-    terminal_create = terminal_sub.add_parser("create", help="Create a persistent terminal")
-    terminal_create.add_argument("--machine", required=True)
-    terminal_create.add_argument("--cwd")
-    terminal_create.add_argument("--backend", choices=["tmux"], default="tmux")
-    terminal_create.add_argument("--width", type=int, default=120)
-    terminal_create.add_argument("--height", type=int, default=40)
-    add_json_flag(terminal_create)
-    terminal_create.set_defaults(func=cmd_terminal_create)
-
-    terminal_list = terminal_sub.add_parser("list", help="List persistent terminals")
-    add_json_flag(terminal_list)
-    terminal_list.set_defaults(func=cmd_terminal_list)
-
-    terminal_show = terminal_sub.add_parser("show", help="Show a persistent terminal")
-    terminal_show.add_argument("--terminal", required=True)
-    add_json_flag(terminal_show)
-    terminal_show.set_defaults(func=cmd_terminal_show)
-
-    terminal_send = terminal_sub.add_parser("send", help="Send input to a terminal")
-    terminal_send.add_argument("--terminal", required=True)
-    terminal_send.add_argument("--input", required=True)
-    terminal_send.add_argument(
-        "--no-enter",
-        action="store_true",
-        help="Send input without pressing Enter",
-    )
-    add_json_flag(terminal_send)
-    terminal_send.set_defaults(func=cmd_terminal_send)
-
-    terminal_read = terminal_sub.add_parser("read", help="Read terminal transcript")
-    terminal_read.add_argument("--terminal", required=True)
-    terminal_read.add_argument("--since", type=int)
-    terminal_read.add_argument("--max-chars", type=int)
-    add_json_flag(terminal_read)
-    terminal_read.set_defaults(func=cmd_terminal_read)
-
-    terminal_destroy = terminal_sub.add_parser("destroy", help="Destroy a persistent terminal")
-    terminal_destroy.add_argument("--terminal", required=True)
-    add_json_flag(terminal_destroy)
-    terminal_destroy.set_defaults(func=cmd_terminal_destroy)
 
     file_parser = subparsers.add_parser("file", help="File transfer")
     file_sub = file_parser.add_subparsers(dest="file_command")

@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：`F-019 Remote Runner 持久 Terminal Session` passing；`F-018 Remote Runner 后台会话命令` passing；`F-005` profile/report 层未开始。
-- 当前任务计划：`plans/archive/2026-05-14-remote-runner-persistent-terminal-sessions.md`。
-- 当前阶段性提交：F-019 收尾提交待生成；分支为 `dev/remote-runner-persistent-terminals`。
+- 当前功能项：`F-020 Remote Runner Session 持久 Terminal 统一模型` passing；`F-019 Remote Runner 持久 Terminal Session` passing；`F-005` profile/report 层未开始。
+- 当前任务计划：`plans/archive/2026-05-14-remote-runner-session-terminal-unification.md`。
+- 当前阶段性提交：F-020 收尾提交待生成；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
 - 上次验证：2026-05-14，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 默认 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；Linux/SSH opt-in 真实集成测试 1 passed。
-- 下一步最佳动作：审阅 F-019 分支 diff，决定是否基于 PR #4 开堆叠 PR，或等 #4 合并后 rebase 再发 PR。
+- 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff，之后可继续做 startup_commands/Windows 持久 session 支持或 F-005 profile/report 层。
 
 ## 状态约定
 
@@ -237,3 +237,18 @@
 - Linux/SSH 第一后端使用 tmux；terminal 多次 send 会进入同一个远程 shell，上下文可保留 `cd`、环境变量等 shell-local state。
 - 现有 `session exec --mode wait/background`、`session command ...`、`file`、`run once` 语义保持不变。
 - 真实验证：Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；同一 terminal 内 `cd/export/pwd/printf` 状态连续保留，destroy 后保留本地 transcript。
+
+### 2026-05-14 - Session 持久 Terminal 统一模型开工
+
+- 用户指出顶层 `terminal` 与 `session` 平级会造成职责不清；项目仍未正式上线，不应积累这个 API 包袱。
+- 新增 active plan：`plans/active/2026-05-14-remote-runner-session-terminal-unification.md`。
+- 新增 `F-020` active：目标是把持久 shell/terminal 语义并入 `session`，让 `session exec/send/read/destroy` 都作用于同一个远程工作上下文。
+- 当前 PR #6 保持 draft，F-019 的 tmux 实现可作为 backend 素材，但公开 API 和文档需要改成 session 统一模型。
+
+### 2026-05-14 - Session 持久 Terminal 统一模型完成
+
+- `session create` 现在创建 tmux-backed 持久 shell，并把 backend、remote tmux 名称、transcript 路径和 cursor 记录在 session state。
+- `session exec` 现在在同一 session shell 内通过 wrapper 执行命令，返回稳定的 `command_id`、stdout/stderr、exit code、timestamps、duration、日志和远端 state 文件引用。
+- `session send/read` 提供原始输入和 transcript/cursor 读取；顶层 `remote-runner terminal ...` CLI 和 `remote_terminal` 模块已移除，不再作为目标公开 API。
+- `session destroy` 会销毁远端 backend shell，同时保留本地 session state、命令日志、传输记录、artifact manifest 和 transcript。
+- 真实验证：Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；同一 session 内 `cd/export/pwd/printf` 状态连续保留，后台命令 wait/stop、文件传输和 cleanup 均通过。

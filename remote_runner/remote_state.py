@@ -65,7 +65,7 @@ def ensure_remote_state_dirs() -> None:
     root = get_remote_state_dir()
     ensure_dir(root)
     os.chmod(root, 0o700)
-    for name in ("sessions", "terminals", "logs", "terminal-logs", "transfers", "artifacts", "runs"):
+    for name in ("sessions", "logs", "transfers", "artifacts", "runs"):
         path = os.path.join(root, name)
         ensure_dir(path)
         os.chmod(path, 0o700)
@@ -127,41 +127,6 @@ def list_session_states() -> List[Dict[str, Any]]:
 
 def get_log_dir(session_id: str) -> str:
     return os.path.join(get_remote_state_dir(), "logs", session_id)
-
-
-def get_terminal_file(terminal_id: str) -> str:
-    return os.path.join(get_remote_state_dir(), "terminals", f"{terminal_id}.json")
-
-
-def load_terminal_state(terminal_id: str) -> Dict[str, Any]:
-    path = get_terminal_file(terminal_id)
-    if not os.path.exists(path):
-        raise KeyError(f"Terminal '{terminal_id}' not found")
-    return json.loads(read_file(path))
-
-
-def save_terminal_state(terminal: Dict[str, Any]) -> None:
-    ensure_remote_state_dirs()
-    path = get_terminal_file(terminal["terminal_id"])
-    temp_path = f"{path}.tmp"
-    write_file(temp_path, json.dumps(terminal, indent=2, sort_keys=True))
-    os.chmod(temp_path, 0o600)
-    os.replace(temp_path, path)
-
-
-def list_terminal_states() -> List[Dict[str, Any]]:
-    ensure_remote_state_dirs()
-    terminals_dir = os.path.join(get_remote_state_dir(), "terminals")
-    terminals: List[Dict[str, Any]] = []
-    for filename in sorted(os.listdir(terminals_dir)):
-        if not filename.endswith(".json"):
-            continue
-        terminals.append(json.loads(read_file(os.path.join(terminals_dir, filename))))
-    return terminals
-
-
-def get_terminal_log_dir(terminal_id: str) -> str:
-    return os.path.join(get_remote_state_dir(), "terminal-logs", terminal_id)
 
 
 def get_transfer_file(session_id: str) -> str:

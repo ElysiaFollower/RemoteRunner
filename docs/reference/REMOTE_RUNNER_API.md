@@ -175,13 +175,17 @@ remote-runner session create \
   "session_id": "sess_abc123",
   "machine_id": "lab-gpu-01",
   "cwd": "/home/ely/project",
-  "status": "ready",
+  "status": "active",
+  "backend": "tmux",
   "created_at": "2026-05-07T10:00:00Z",
-  "log_dir_local": "/Users/ely/.remote-runner/logs/sess_abc123"
+  "log_dir_local": "/Users/ely/.remote-runner/logs/sess_abc123",
+  "transcript_file_local": "/Users/ely/.remote-runner/logs/sess_abc123/transcript.txt"
 }
 ```
 
-If `--cwd` is omitted, use the machine's `default_cwd`.
+If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persistent remote shell
+context for this work area; backend details such as tmux are implementation details, not a separate
+top-level resource.
 
 ### List Sessions
 
@@ -195,7 +199,7 @@ and log directory.
 ### Show Session
 
 ```bash
-remote-runner session show sess_abc123 --json
+remote-runner session show --session sess_abc123 --json
 ```
 
 Returns the session record, last command, last exit code, command count, and log locations.
@@ -210,10 +214,12 @@ remote-runner session exec \
   --json
 ```
 
-This is the default synchronous path. `--mode wait` runs the command and returns only after the
-remote process finishes. It preserves the existing short-command behavior.
+This is the default synchronous path. `--mode wait` runs the command inside the persistent session
+shell and returns only after the command finishes. Shell-local state such as `cd`, exported
+variables, aliases, and shell functions remains available to later commands in the same session.
 
-Optional cwd override:
+Optional cwd override. This changes the persistent shell's current directory before running the
+command:
 
 ```bash
 remote-runner session exec \
@@ -256,6 +262,8 @@ Behavior requirements:
 - Do not require sshfs, FUSE, reverse SSH, or mount setup.
 - `session exec` defaults to synchronous wait mode; long-running jobs should use
   `--mode background`.
+- `session exec` runs in the session shell. It must keep command boundaries and exit codes through
+  Remote Runner command wrappers and state files, not by relying on chat memory.
 
 ### Background Command Start
 
@@ -267,8 +275,8 @@ remote-runner session exec \
   --json
 ```
 
-Background start returns immediately after the command is accepted. The response includes
-`command_id`, `status=running`, `remote_state_dir`, `remote_pid`, remote log/status file
+Background start returns immediately after the command is accepted in the session shell. The
+response includes `command_id`, `status=running`, `remote_state_dir`, remote log/status file
 references, timestamps, and `log_file_local` for the local summary record.
 
 Background commands persist their own remote state under the session cwd in
@@ -296,6 +304,27 @@ returned JSON includes `wait_timed_out` so callers can distinguish "still runnin
 `stop` sends a stop request for a background command. Repeating `stop` on a finished command must
 return a clear result without losing logs or state.
 
+### Session Input and Transcript
+
+```bash
+remote-runner session send \
+  --session sess_abc123 \
+  --input "python" \
+  --json
+
+remote-runner session read --session sess_abc123 --json
+remote-runner session read --session sess_abc123 --since 1200 --json
+```
+
+`session send` sends raw input to the same session shell and presses Enter by default; use
+`--no-enter` for partial input. This is for shell-panel and interactive workflows. For normal agent
+automation, prefer `session exec` because it also records command boundaries, stdout/stderr,
+exit code, timestamps, and logs.
+
+`session read` returns captured transcript text, a `cursor`, and the requested `since` offset.
+Callers can store the cursor and later request only the new transcript region. The local transcript
+file is preserved in Remote Runner state for recovery.
+
 ### Logs
 
 ```bash
@@ -310,64 +339,8 @@ Returns ordered command log metadata and paths. A future text mode may print com
 remote-runner session destroy --session sess_abc123 --json
 ```
 
-Returns final status and preserved log location.
-
-## Terminal Commands
-
-Terminal commands are for terminal-like, transcript-oriented workflows. They intentionally sit
-beside `session exec` instead of replacing it:
-
-- Use `session exec --mode wait|background` for automation-safe structured command records.
-- Use `terminal create/send/read/destroy` when a UI tab should map to one persistent shell context.
-
-The first implementation targets Linux/SSH machines with `tmux` available. Machines that require
-`startup_commands` are not supported by the first terminal backend.
-
-### Create Terminal
-
-```bash
-remote-runner terminal create \
-  --machine lab-gpu-01 \
-  --cwd /home/ely/project \
-  --json
-```
-
-Returns `terminal_id`, machine ID, cwd, backend, status, timestamps, local transcript path, and
-backend references such as the remote tmux session name.
-
-### Send Input
-
-```bash
-remote-runner terminal send \
-  --terminal term_abc123 \
-  --input "cd src" \
-  --json
-```
-
-Sends input to the same terminal shell. By default it presses Enter after the input; use
-`--no-enter` for raw partial input. Shell-local state such as `cd`, exported variables, aliases,
-and foreground/background jobs belongs to that terminal backend, not to `session exec`.
-
-### Read Transcript
-
-```bash
-remote-runner terminal read --terminal term_abc123 --json
-remote-runner terminal read --terminal term_abc123 --since 1200 --json
-```
-
-Returns the captured transcript, a `cursor`, and the requested `since` offset. Callers can store the
-cursor and later request only the new transcript region. The local transcript file is preserved in
-Remote Runner state for recovery.
-
-### List, Show, Destroy
-
-```bash
-remote-runner terminal list --json
-remote-runner terminal show --terminal term_abc123 --json
-remote-runner terminal destroy --terminal term_abc123 --json
-```
-
-Destroying a terminal stops the remote backend session but preserves the local terminal record and
+Returns final status and preserved log/transcript locations. Destroying a session stops the remote
+backend shell but preserves local session records, command logs, transfer records, artifacts, and
 transcript path.
 
 ## File Transfer Commands

@@ -17,14 +17,12 @@ from remote_runner.remote_file import RemoteFileManager
 from remote_runner.remote_machine import RemoteMachineManager
 from remote_runner.remote_run import RemoteRunManager
 from remote_runner.remote_session import RemoteSessionManager
-from remote_runner.remote_terminal import RemoteTerminalManager
 from remote_runner.remote_state import (
     get_machines_file,
     load_artifact_manifest,
     load_machines_state,
     load_run_state,
     load_session_state,
-    load_terminal_state,
     load_transfer_records,
 )
 
@@ -156,7 +154,8 @@ class FakeBackend:
         }
 
     def send_terminal_input(self, machine, terminal_record, input_text, enter=True):
-        terminal = self.terminals[terminal_record["terminal_id"]]
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals[terminal_id]
         terminal["transcript"] += f"$ {input_text}\n"
         if input_text.startswith("cd "):
             path = input_text.split(" ", 1)[1].strip()
@@ -173,13 +172,132 @@ class FakeBackend:
         return {"input_sent": True}
 
     def capture_terminal(self, machine, terminal_record):
-        terminal = self.terminals[terminal_record["terminal_id"]]
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals[terminal_id]
         return {"status": terminal["status"], "transcript": terminal["transcript"]}
 
     def destroy_terminal(self, machine, terminal_record):
-        terminal = self.terminals[terminal_record["terminal_id"]]
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals[terminal_id]
         terminal["status"] = "destroyed"
         return {"destroy_result": "destroyed"}
+
+    def start_session_command(
+        self,
+        machine,
+        session_record,
+        command,
+        command_id,
+        cwd=None,
+        cwd_override=False,
+    ):
+        terminal = self.terminals[session_record["session_id"]]
+        self.commands.append(
+            {
+                "machine_id": machine.machine_id,
+                "cwd": cwd or session_record["cwd"],
+                "command": command,
+                "timeout": None,
+                "cwd_override": cwd_override,
+            }
+        )
+        if command == "backend-error":
+            raise RuntimeError("ssh failed")
+        if command == "block":
+            self.block_started.set()
+            assert self.block_release.wait(timeout=2)
+
+        stdout, stderr, exit_code = self._execute_terminal_command(terminal, command, cwd, cwd_override)
+        status = "running" if command in {"sleep 30", "tail -f app.log"} else "exited"
+        if command in {"sleep 30", "tail -f app.log"}:
+            stdout = "started\n"
+            stderr = ""
+            exit_code = None
+        self.background_commands[command_id] = {
+            "machine_id": machine.machine_id,
+            "cwd": cwd or session_record["cwd"],
+            "command": command,
+            "status": status,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "started_at": "2026-05-08T00:00:01Z",
+            "ended_at": None if status == "running" else "2026-05-08T00:00:02Z",
+        }
+        remote_state_dir = f"{session_record['cwd']}/.remote-runner/commands/{command_id}"
+        return {
+            "command_backend": "tmux",
+            "remote_state_dir": remote_state_dir,
+            "remote_stdout_file": f"{remote_state_dir}/stdout.log",
+            "remote_stderr_file": f"{remote_state_dir}/stderr.log",
+            "remote_status_file": f"{remote_state_dir}/status",
+            "remote_exit_code_file": f"{remote_state_dir}/exit_code",
+            "remote_started_at_file": f"{remote_state_dir}/started_at",
+            "remote_ended_at_file": f"{remote_state_dir}/ended_at",
+            "remote_wrapper_file": f"{remote_state_dir}/run.sh",
+        }
+
+    def wait_session_command(self, machine, command_record, timeout=300, stdout_limit=8192, stderr_limit=8192):
+        self.commands[-1]["timeout"] = timeout
+        return self.inspect_session_command(
+            machine,
+            command_record,
+            stdout_limit=stdout_limit,
+            stderr_limit=stderr_limit,
+        )
+
+    def inspect_session_command(self, machine, command_record, stdout_limit=8192, stderr_limit=8192):
+        record = self.background_commands[command_record["command_id"]]
+        stdout = record["stdout"]
+        stderr = record["stderr"]
+        return {
+            "status": record["status"],
+            "exit_code": record["exit_code"],
+            "stdout": stdout[:stdout_limit],
+            "stderr": stderr[:stderr_limit],
+            "stdout_truncated": len(stdout) > stdout_limit,
+            "stderr_truncated": len(stderr) > stderr_limit,
+            "started_at": record["started_at"],
+            "ended_at": record["ended_at"],
+        }
+
+    def stop_session_command(self, machine, session_record, command_record):
+        record = self.background_commands[command_record["command_id"]]
+        record["status"] = "stopped"
+        record["exit_code"] = 143
+        record["ended_at"] = "2026-05-08T00:00:05Z"
+        return {"stop_result": "stopped"}
+
+    def _execute_terminal_command(self, terminal, command, cwd=None, cwd_override=False):
+        if cwd_override and cwd:
+            terminal["cwd"] = cwd
+        terminal["transcript"] += f"$ {command}\n"
+        if command.startswith("cd "):
+            path = command.split(" ", 1)[1].strip()
+            terminal["cwd"] = path
+            return "", "", 0
+        if command.startswith("export "):
+            key, value = command[len("export ") :].split("=", 1)
+            terminal["env"][key] = value
+            return "", "", 0
+        if command == "pwd":
+            stdout = f"{terminal['cwd']}\n"
+            terminal["transcript"] += stdout
+            return stdout, "", 0
+        if command == 'printf "$RR_TOKEN\\n"':
+            stdout = f"{terminal['env'].get('RR_TOKEN', '')}\n"
+            terminal["transcript"] += stdout
+            return stdout, "", 0
+        if command.startswith("echo "):
+            stdout = command[len("echo ") :] + "\n"
+            terminal["transcript"] += stdout
+            return stdout, "", 0
+        if command == "exit-seven":
+            terminal["transcript"] += "failed\n"
+            return "", "failed\n", 7
+        return f"ran {command}\n", "", 0
 
     def put(self, machine, local_path, remote_path):
         self.puts.append((machine.machine_id, local_path, remote_path))
@@ -248,9 +366,7 @@ def test_remote_runner_modules_own_target_implementation():
     assert RemoteMachineManager.__module__ == "remote_runner.remote_machine"
     assert RemoteRunManager.__module__ == "remote_runner.remote_run"
     assert RemoteSessionManager.__module__ == "remote_runner.remote_session"
-    assert RemoteTerminalManager.__module__ == "remote_runner.remote_terminal"
     assert load_run_state.__module__ == "remote_runner.remote_state"
-    assert load_terminal_state.__module__ == "remote_runner.remote_state"
 
 
 def test_seed_runner_remote_wrappers_reexport_target_implementation():
@@ -259,26 +375,20 @@ def test_seed_runner_remote_wrappers_reexport_target_implementation():
     from remote_runner.remote_machine import RemoteMachineManager as TargetMachineManager
     from remote_runner.remote_run import RemoteRunManager as TargetRunManager
     from remote_runner.remote_session import RemoteSessionManager as TargetSessionManager
-    from remote_runner.remote_terminal import RemoteTerminalManager as TargetTerminalManager
     from remote_runner.remote_state import load_run_state as target_load_run_state
-    from remote_runner.remote_state import load_terminal_state as target_load_terminal_state
     from seed_runner.remote_backend import ParamikoRemoteBackend as LegacyBackend
     from seed_runner.remote_file import RemoteFileManager as LegacyFileManager
     from seed_runner.remote_machine import RemoteMachineManager as LegacyMachineManager
     from seed_runner.remote_run import RemoteRunManager as LegacyRunManager
     from seed_runner.remote_session import RemoteSessionManager as LegacySessionManager
-    from seed_runner.remote_terminal import RemoteTerminalManager as LegacyTerminalManager
     from seed_runner.remote_state import load_run_state as legacy_load_run_state
-    from seed_runner.remote_state import load_terminal_state as legacy_load_terminal_state
 
     assert LegacyBackend is TargetBackend
     assert LegacyMachineManager is TargetMachineManager
     assert LegacySessionManager is TargetSessionManager
-    assert LegacyTerminalManager is TargetTerminalManager
     assert LegacyFileManager is TargetFileManager
     assert LegacyRunManager is TargetRunManager
     assert legacy_load_run_state is target_load_run_state
-    assert legacy_load_terminal_state is target_load_terminal_state
 
 
 def test_seed_runner_utils_wrapper_reexports_target_helpers():
@@ -361,9 +471,9 @@ def test_session_exec_logs_state_and_preserves_nonzero_exit(remote_state_dir, tm
     )
     result = reloaded_manager.exec(session_id, "echo ok", timeout=123)
     assert result["exit_code"] == 0
-    assert result["stdout"] == "ran echo ok\n"
+    assert result["stdout"] == "ok\n"
     assert result["duration_ms"] == 1000
-    assert Path(result["log_file_local"]).read_text().find("ran echo ok") >= 0
+    assert Path(result["log_file_local"]).read_text().find("ok") >= 0
     assert backend.commands[-1]["timeout"] == 123
 
     nonzero = reloaded_manager.exec(session_id, "exit-seven")
@@ -573,55 +683,58 @@ def test_remote_runner_cli_background_command_outputs_json(remote_state_dir, tmp
     assert result_payload["remote_status_file"].endswith("/status")
 
 
-def test_terminal_session_preserves_shell_state_and_incremental_transcript(
+def test_session_preserves_shell_state_and_incremental_transcript(
     remote_state_dir,
     tmp_path,
 ):
     machine_manager = RemoteMachineManager()
     _add_key_machine(machine_manager, tmp_path)
     backend = FakeBackend()
-    terminal_manager = RemoteTerminalManager(machine_manager=machine_manager, backend=backend)
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
 
-    created = terminal_manager.create("lab-gpu-01", cwd="/home/ely/project")
-    terminal_id = created["terminal_id"]
+    created = session_manager.create("lab-gpu-01", cwd="/home/ely/project")
+    session_id = created["session_id"]
 
     assert created["status"] == "active"
     assert created["backend"] == "tmux"
-    assert created["remote_terminal_name"].startswith("rr_term_")
+    assert created["remote_backend_name"].startswith("rr_sess_")
     assert Path(created["transcript_file_local"]).exists()
 
-    reloaded = RemoteTerminalManager(machine_manager=RemoteMachineManager(), backend=backend)
-    reloaded.send(terminal_id, "cd /home/ely/project/subdir")
-    reloaded.send(terminal_id, "export RR_TOKEN=terminal-ok")
-    reloaded.send(terminal_id, "pwd")
-    reloaded.send(terminal_id, 'printf "$RR_TOKEN\\n"')
+    reloaded = RemoteSessionManager(machine_manager=RemoteMachineManager(), backend=backend)
+    reloaded.exec(session_id, "cd /home/ely/project/subdir")
+    reloaded.exec(session_id, "export RR_TOKEN=terminal-ok")
+    pwd = reloaded.exec(session_id, "pwd")
+    token = reloaded.exec(session_id, 'printf "$RR_TOKEN\\n"')
 
-    transcript = reloaded.read(terminal_id)
+    assert pwd["stdout"] == "/home/ely/project/subdir\n"
+    assert token["stdout"] == "terminal-ok\n"
+
+    transcript = reloaded.read(session_id)
     cursor = transcript["cursor"]
 
     assert "/home/ely/project/subdir" in transcript["transcript"]
     assert "terminal-ok" in transcript["transcript"]
-    assert load_terminal_state(terminal_id)["transcript_cursor"] == cursor
+    assert load_session_state(session_id)["transcript_cursor"] == cursor
     assert Path(transcript["transcript_file_local"]).read_text().find("terminal-ok") >= 0
 
-    reloaded.send(terminal_id, "echo after-cursor")
-    incremental = reloaded.read(terminal_id, since=cursor)
+    reloaded.send(session_id, "echo after-cursor")
+    incremental = reloaded.read(session_id, since=cursor)
 
     assert "after-cursor" in incremental["transcript"]
     assert incremental["since"] == cursor
     assert incremental["cursor"] > cursor
 
-    destroyed = reloaded.destroy(terminal_id)
+    destroyed = reloaded.destroy(session_id)
     assert destroyed["status"] == "destroyed"
     assert destroyed["destroy_result"] == "destroyed"
-    destroyed_read = reloaded.read(terminal_id)
+    destroyed_read = reloaded.read(session_id)
     assert "terminal-ok" in destroyed_read["transcript"]
     assert destroyed_read["status"] == "destroyed"
     with pytest.raises(RuntimeError, match="not active"):
-        reloaded.send(terminal_id, "pwd")
+        reloaded.send(session_id, "pwd")
 
 
-def test_remote_runner_cli_terminal_commands_output_json(
+def test_remote_runner_cli_session_send_read_outputs_json(
     remote_state_dir,
     tmp_path,
     monkeypatch,
@@ -630,14 +743,14 @@ def test_remote_runner_cli_terminal_commands_output_json(
     machine_manager = RemoteMachineManager()
     _add_key_machine(machine_manager, tmp_path)
     backend = FakeBackend()
-    manager = RemoteTerminalManager(machine_manager=machine_manager, backend=backend)
-    monkeypatch.setattr("remote_runner.cli.get_remote_terminal_manager", lambda: manager)
+    manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    monkeypatch.setattr("remote_runner.cli.get_remote_session_manager", lambda: manager)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "remote-runner",
-            "terminal",
+            "session",
             "create",
             "--machine",
             "lab-gpu-01",
@@ -655,10 +768,10 @@ def test_remote_runner_cli_terminal_commands_output_json(
         "argv",
         [
             "remote-runner",
-            "terminal",
+            "session",
             "send",
-            "--terminal",
-            created["terminal_id"],
+            "--session",
+            created["session_id"],
             "--input",
             "pwd",
             "--json",
@@ -672,17 +785,17 @@ def test_remote_runner_cli_terminal_commands_output_json(
         "argv",
         [
             "remote-runner",
-            "terminal",
+            "session",
             "read",
-            "--terminal",
-            created["terminal_id"],
+            "--session",
+            created["session_id"],
             "--json",
         ],
     )
     remote_cli_main()
     read = json.loads(capsys.readouterr().out)
 
-    assert created["terminal_id"].startswith("term_")
+    assert created["session_id"].startswith("sess_")
     assert sent["input_sent"] is True
     assert "/home/ely/project" in read["transcript"]
 

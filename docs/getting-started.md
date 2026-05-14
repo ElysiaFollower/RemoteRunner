@@ -110,42 +110,43 @@ remote-runner file get \
   --json
 ```
 
-## 5. 持久 Terminal
+## 5. 持久 Session Transcript
 
-如果需要一个更接近真实 shell tab 的连续 transcript，用 `terminal`，不要把 `session exec`
-当作持久 shell。第一版 terminal 后端要求 Linux/SSH 机器上有 `tmux`。
+`session` 本身就是持久 shell 工作上下文。连续的 `session exec` 会保留 `cd`、`export`
+等 shell-local state；如果需要原始 shell panel 输入和 transcript，用 `session send/read`。
+第一版持久 session 后端要求 Linux/SSH 机器上有 `tmux`。
 
 ```bash
-remote-runner terminal create \
+remote-runner session create \
   --machine linux-01 \
   --cwd /home/ely/tmp \
   --json
 
-remote-runner terminal send \
-  --terminal <TERMINAL_ID> \
-  --input 'cd /home/ely/tmp' \
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'cd /home/ely/tmp' \
   --json
 
-remote-runner terminal send \
-  --terminal <TERMINAL_ID> \
-  --input 'export RR_DEMO=ok' \
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'export RR_DEMO=ok' \
   --json
 
-remote-runner terminal send \
-  --terminal <TERMINAL_ID> \
-  --input 'pwd && printf "$RR_DEMO\n"' \
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'pwd && printf "$RR_DEMO\n"' \
   --json
 
-remote-runner terminal read \
-  --terminal <TERMINAL_ID> \
+remote-runner session read \
+  --session <SESSION_ID> \
   --json
 
-remote-runner terminal destroy \
-  --terminal <TERMINAL_ID> \
+remote-runner session destroy \
+  --session <SESSION_ID> \
   --json
 ```
 
-`terminal read` 会返回 transcript 和 cursor；下次可以用 `--since <cursor>` 读取增量输出。
+`session read` 会返回 transcript 和 cursor；下次可以用 `--since <cursor>` 读取增量输出。
 
 ## 6. 一次性闭环
 
@@ -193,5 +194,5 @@ python3 -m pytest tests/test_remote_runner_launch_suite.py tests/test_remote_run
 - `--json` 的 stdout 应该能被 `json.loads()` 直接解析。
 - 密码不会写到日志、handoff 或测试输出里。
 - 所有真实测试都必须只写入你明确指定的安全目录。
-- `session exec` 是结构化命令执行；`terminal` 才是连续 shell transcript。
+- `session` 是连续 shell transcript；`session exec` 在同一 session shell 中提供结构化命令结果。
 - 如果 shell 找不到 `remote-runner`，先确认你在 `seedrunner` 环境里，或者直接用 `conda run -n seedrunner ...`。

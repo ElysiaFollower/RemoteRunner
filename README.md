@@ -67,13 +67,10 @@ remote-runner session exec --session sess_abc123 --cmd "python long_job.py" --mo
 remote-runner session command show --session sess_abc123 --command-id cmd_abc123 --json
 remote-runner session command wait --session sess_abc123 --command-id cmd_abc123 --timeout 30 --json
 remote-runner session command stop --session sess_abc123 --command-id cmd_abc123 --json
+remote-runner session send --session sess_abc123 --input "cd src" --json
+remote-runner session read --session sess_abc123 --json
 remote-runner session logs --session sess_abc123 --json
 remote-runner session destroy --session sess_abc123 --json
-
-remote-runner terminal create --machine lab-gpu-01 --cwd /home/user/project --json
-remote-runner terminal send --terminal term_abc123 --input "cd src" --json
-remote-runner terminal read --terminal term_abc123 --json
-remote-runner terminal destroy --terminal term_abc123 --json
 
 remote-runner file put --session sess_abc123 --local ./input.txt --remote /home/user/project/input.txt --json
 remote-runner file get --session sess_abc123 --remote /home/user/project/output.txt --local ./output.txt --json
@@ -88,14 +85,12 @@ remote-runner run once \
   --json
 ```
 
-`session exec --json` defaults to synchronous wait mode and returns the command, remote working
-directory, stdout, stderr, exit code, timestamps, duration, and local log path. Long-running jobs
-should use `--mode background`; later `session command show/wait/stop` calls recover state by
-`command_id`.
-
-`terminal` commands are separate from `session exec`: they create a persistent shell-like transcript
-for UI tabs or student-facing workflows where `cd`, exported variables, aliases, and output history
-should remain connected across multiple inputs.
+`session create` opens the persistent remote shell context for that work area. `session exec --json`
+runs inside that same shell and returns the command, stdout, stderr, exit code, timestamps,
+duration, local log path, and `command_id`; shell-local state such as `cd`, exported variables, and
+aliases carries across later `session exec` calls. Long-running jobs should use `--mode background`;
+later `session command show/wait/stop` calls recover state by `command_id`. `session send/read`
+provide raw input and transcript access for UI-style shell panels.
 
 `remote-runner machine add --json` prompts for missing SSH machine fields and writes prompts to
 stderr, so stdout remains one JSON object. Password auth uses hidden input in the recommended

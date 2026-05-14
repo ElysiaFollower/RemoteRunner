@@ -60,8 +60,6 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
     background_finished = False
     stop_command_id = None
     stop_requested = False
-    terminal_id = None
-    terminal_destroyed = False
     try:
         doctor = _run_remote_runner("machine", "doctor", machine_id, "--json")
         assert doctor["reachable"] is True
@@ -185,61 +183,68 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
         assert stop_show["status"] == "stopped"
         assert stop_show["exit_code"] == 143
 
-        terminal = _run_remote_runner(
-            "terminal",
-            "create",
-            "--machine",
-            machine_id,
-            "--cwd",
-            remote_cwd,
+        session_token = f"rr-session-{probe_id}"
+        session_cd = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            f"cd {shlex.quote(remote_cwd)}",
             "--json",
         )
-        terminal_id = terminal["terminal_id"]
-        assert terminal["status"] == "active"
+        assert session_cd["exit_code"] == 0
 
-        terminal_token = f"rr-terminal-{probe_id}"
-        for terminal_input in (
-            f"cd {shlex.quote(remote_cwd)}",
-            f"export RR_TERMINAL_TOKEN={shlex.quote(terminal_token)}",
+        session_export = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            f"export RR_SESSION_TOKEN={shlex.quote(session_token)}",
+            "--json",
+        )
+        assert session_export["exit_code"] == 0
+
+        session_pwd = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
             "pwd",
-            'printf "$RR_TERMINAL_TOKEN\\n"',
-        ):
-            sent = _run_remote_runner(
-                "terminal",
-                "send",
-                "--terminal",
-                terminal_id,
-                "--input",
-                terminal_input,
-                "--json",
-            )
-            assert sent["input_sent"] is True
+            "--json",
+        )
+        assert session_pwd["exit_code"] == 0
+        assert remote_cwd in session_pwd["stdout"]
 
-        terminal_read = None
+        session_token_result = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            'printf "$RR_SESSION_TOKEN\\n"',
+            "--json",
+        )
+        assert session_token_result["exit_code"] == 0
+        assert session_token in session_token_result["stdout"]
+
+        session_read = None
         for _ in range(20):
-            terminal_read = _run_remote_runner(
-                "terminal",
+            session_read = _run_remote_runner(
+                "session",
                 "read",
-                "--terminal",
-                terminal_id,
+                "--session",
+                session_id,
                 "--json",
             )
-            if terminal_token in terminal_read["transcript"]:
+            if session_token in session_read["transcript"]:
                 break
             time.sleep(0.2)
-        assert terminal_read is not None
-        assert remote_cwd in terminal_read["transcript"]
-        assert terminal_token in terminal_read["transcript"]
-
-        terminal_destroy = _run_remote_runner(
-            "terminal",
-            "destroy",
-            "--terminal",
-            terminal_id,
-            "--json",
-        )
-        terminal_destroyed = terminal_destroy["status"] == "destroyed"
-        assert terminal_destroyed is True
+        assert session_read is not None
+        assert remote_cwd in session_read["transcript"]
+        assert session_token in session_read["transcript"]
 
         put = _run_remote_runner(
             "file",
@@ -317,14 +322,6 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
                 session_id,
                 "--command-id",
                 stop_command_id,
-                "--json",
-            )
-        if terminal_id and not terminal_destroyed:
-            _run_remote_runner(
-                "terminal",
-                "destroy",
-                "--terminal",
-                terminal_id,
                 "--json",
             )
         if session_id and not cleanup_done:

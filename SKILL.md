@@ -15,8 +15,7 @@ Use `remote-runner` as the stable interface:
 
 - machine registry and diagnostics: `machine list/show/doctor`
 - remote command context: `session create/exec`, `session command list/show/wait/stop`,
-  `session logs/destroy`
-- persistent shell transcript: `terminal create/send/read/destroy`
+  `session send/read/logs/destroy`
 - explicit file movement: `file put/get/list`
 - one-shot closed loop: `run once`
 
@@ -68,7 +67,8 @@ Do not continue if `reachable`, `auth_ok`, or `default_cwd_ok` is false. Report 
 remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
 ```
 
-`session create` records local state; it does not by itself prove SSH auth. `machine doctor` and the first `session exec` are the real connectivity checks.
+`session create` opens the persistent remote shell context for this work area. `machine doctor` and
+the first `session exec` are still the practical connectivity checks.
 
 5. Run bounded commands through the session:
 
@@ -81,6 +81,8 @@ remote-runner session exec \
 ```
 
 Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command.
+Commands in the same session share shell-local state: a prior `cd`, `export`, or alias can affect
+later `session exec` calls.
 
 For long-running or persistent commands, do not compensate by using very large synchronous
 timeouts. Start the command in background mode and keep the returned `command_id`:
@@ -117,34 +119,24 @@ running background commands cannot be destroyed until those commands finish or a
 remote-runner session destroy --session <session-id> --json
 ```
 
-## Persistent Terminal
+## Persistent Session Transcript
 
-Use `terminal` only when the task needs a real shell-like transcript where commands in the same tab
-share state, such as a student-facing shell panel. Do not use it as the default automation path.
+Use `session send/read` when the task needs raw shell-panel behavior in the existing session. Do
+not create a separate top-level terminal resource.
 
 ```bash
-remote-runner terminal create \
-  --machine <machine-id> \
-  --cwd <remote-dir> \
-  --json
-
-remote-runner terminal send \
-  --terminal <terminal-id> \
+remote-runner session send \
+  --session <session-id> \
   --input 'cd src' \
   --json
 
-remote-runner terminal read \
-  --terminal <terminal-id> \
-  --json
-
-remote-runner terminal destroy \
-  --terminal <terminal-id> \
+remote-runner session read \
+  --session <session-id> \
   --json
 ```
 
-The first terminal backend uses `tmux` on Linux/SSH machines. If terminal creation reports that the
-backend is unavailable, fall back to `session exec` for automation tasks and report the terminal
-backend blocker for interactive UI tasks.
+`session read` returns transcript text and a cursor for incremental reads. `session destroy` stops
+the remote backend shell and preserves local command logs and transcript state.
 
 ## File Transfer
 

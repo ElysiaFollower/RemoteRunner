@@ -226,24 +226,22 @@ Returns ordered command log metadata and local log paths.
 
 ### `remote-runner session destroy --session <session_id> --json`
 
-Marks or removes the active session from the active list while preserving local logs, command
-records, transfer records, and artifacts.
+Destroys the remote backend shell while preserving local logs, transcript, command records,
+transfer records, and artifacts.
 
-## Terminal Commands
+## Persistent Session Shell
 
-Terminal commands provide persistent shell/terminal semantics for transcript-oriented workflows.
-They do not replace the command lifecycle above. `session exec` remains the automation-safe path
-for structured command records; `terminal` is the human/student-facing shell path where context and
-transcript matter.
+`session` is the public persistent shell/terminal abstraction. Backend choices such as tmux are
+implementation details. A separate top-level `terminal` resource is not part of the target API.
 
-### `remote-runner terminal create --machine <machine_id> [--cwd <remote_cwd>] --json`
+### `remote-runner session create --machine <machine_id> [--cwd <remote_cwd>] --json`
 
-Creates a recoverable terminal record and a remote terminal backend session. If `--cwd` is omitted,
-use the machine's `default_cwd`.
+Creates a recoverable session record and remote backend shell. If `--cwd` is omitted, use the
+machine's `default_cwd`.
 
 Minimum response fields:
 
-- `terminal_id`
+- `session_id`
 - `machine_id`
 - `cwd`
 - `backend`
@@ -253,24 +251,27 @@ Minimum response fields:
 - `transcript_file_local`
 - `log_dir_local`
 
-The first backend is Linux/SSH + `tmux`. Machines with `startup_commands` may be explicitly
-rejected until interactive startup terminal semantics are designed.
+The first persistent backend is Linux/SSH + `tmux`. Machines with `startup_commands` may be
+explicitly rejected until interactive startup terminal semantics are designed.
 
-### `remote-runner terminal send --terminal <terminal_id> --input <text> [--no-enter] --json`
+### `remote-runner session exec --session <session_id> --cmd <cmd> --json`
 
-Sends input into the selected terminal. Multiple sends to the same terminal must preserve
-shell-local state such as `cd`, exported environment variables, aliases, and jobs.
+Runs the command in the same session shell. Multiple exec calls to the same session must preserve
+shell-local state such as `cd`, exported environment variables, aliases, and jobs. `session exec`
+must still return structured `command_id`, `exit_code`, stdout/stderr, timestamps, duration, and
+log references. Command boundary and exit code recovery are handled by Remote Runner wrappers and
+state files, not by parsing chat history.
 
-### `remote-runner terminal read --terminal <terminal_id> [--since <cursor>] [--max-chars <n>] --json`
+### `remote-runner session send --session <session_id> --input <text> [--no-enter] --json`
 
-Captures the terminal transcript. The response includes `transcript`, `cursor`, `since`,
+Sends raw input into the selected session shell. This is for UI shell panels or unusual interactive
+flows. Normal agent automation should prefer `session exec`.
+
+### `remote-runner session read --session <session_id> [--since <cursor>] [--max-chars <n>] --json`
+
+Captures the session transcript. The response includes `transcript`, `cursor`, `since`,
 `transcript_truncated`, and the local transcript path. A new CLI process must be able to recover and
-read the terminal transcript from local state plus the remote terminal backend.
-
-### `remote-runner terminal list/show/destroy --json`
-
-Lists terminals, shows one terminal record, or destroys the remote backend session while preserving
-the local terminal record and transcript path.
+read the transcript from local state plus the remote backend.
 
 ## File Transfer Commands
 
