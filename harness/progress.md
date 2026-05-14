@@ -10,7 +10,7 @@
 - 当前功能项：`F-020 Remote Runner Session 持久 Terminal 统一模型` passing；`F-019 Remote Runner 持久 Terminal Session` passing；`F-005` profile/report 层未开始。
 - 当前任务计划：`plans/archive/2026-05-14-remote-runner-session-terminal-unification.md`。
 - 当前阶段性提交：F-020 已提交并推送；平台边界文档清理已完成并进入当前分支；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
-- 上次验证：2026-05-14，平台边界文档清理后 `./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过。此前同分支 Linux/SSH opt-in 真实集成测试 1 passed。
+- 上次验证：2026-05-14，PR review 修复后 `./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`git diff --check` 通过。此前同分支 Linux/SSH opt-in 真实集成测试 1 passed。
 - 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff；上线主路径按 Linux/SSH + tmux 验收。Windows/WSL 持久 session 只有在明确需要时才作为独立 backend 任务推进。
 
 ## 状态约定
@@ -259,3 +259,10 @@
 - 新增 `docs/platform-support.md`，同步 README、需求、overview、核心灯塔、API、spec、getting-started、skill 和 launch acceptance 文档。
 - `startup_commands` 与 `path_mappings` 保留为兼容/未来 backend 输入；当前持久 session backend 可拒绝依赖这些启动链路的机器。
 - 验证：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过。
+
+### 2026-05-14 - PR #6 review transcript 持久化修复
+
+- 针对 reviewer 提出的 transcript 覆盖风险，`session read` 改为把远端 tmux capture 增量合并到本地累计 transcript，不再用有限 tmux buffer 覆盖本地文件。
+- 本地 transcript 文件读写和 session state 更新统一放入 `remote_state_lock`，并避免无变化时重复写文件。
+- 新增回归测试模拟远端 capture 因 history rotation 只剩尾部内容时，本地 transcript 仍保留旧历史并只追加新增行。
+- 验证：`python3 -m py_compile remote_runner/remote_session.py` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。

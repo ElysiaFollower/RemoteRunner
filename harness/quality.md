@@ -17,7 +17,7 @@
 - WIP limit：1。
 - 功能清单有效性：`./scripts/harness-check.sh` 通过。
 - 交接新鲜度：2026-05-14 已更新。
-- 验证命令健康度：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过；Remote Runner Linux/SSH opt-in 真实集成测试通过 1 passed。
+- 验证命令健康度：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`git diff --check` 通过；Remote Runner Linux/SSH opt-in 真实集成测试通过 1 passed。
 - 冷启动测试：`./init.sh` 已运行通过，指向事实来源和验证命令。
 - 端到端覆盖：真实 VM opt-in 测试存在但本次未运行。
 - 重复失败是否已执行化：已增加 `tests/test_remote_runner_mvp.py` 覆盖 no-mount machine/session/file 核心行为和 legacy 回归；已增加 `tests/test_remote_runner_launch_suite.py` 作为上线前长期复用验收资产。

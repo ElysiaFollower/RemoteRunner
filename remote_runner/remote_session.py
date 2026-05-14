@@ -34,6 +34,43 @@ class RemoteSessionManager:
         self.machine_manager = machine_manager or get_remote_machine_manager()
         self.backend = backend or ParamikoRemoteBackend()
 
+    @staticmethod
+    def _transcript_overlap(existing: str, captured: str) -> int:
+        max_len = min(len(existing), len(captured))
+        if max_len == 0:
+            return 0
+
+        pattern = captured[:max_len]
+        text = existing[-max_len:]
+        combined = pattern + "\0" + text
+        prefix = [0] * len(combined)
+        for index in range(1, len(combined)):
+            length = prefix[index - 1]
+            while length > 0 and combined[index] != combined[length]:
+                length = prefix[length - 1]
+            if combined[index] == combined[length]:
+                length += 1
+            prefix[index] = length
+        return prefix[-1]
+
+    @classmethod
+    def _merge_transcript_capture(cls, existing: str, captured: str) -> str:
+        if not captured:
+            return existing
+        if not existing:
+            return captured
+        if captured == existing or captured in existing or existing.endswith(captured):
+            return existing
+        if captured.startswith(existing):
+            return captured
+
+        overlap = cls._transcript_overlap(existing, captured)
+        if overlap > 0:
+            return existing + captured[overlap:]
+
+        separator = "" if existing.endswith("\n") or captured.startswith("\n") else "\n"
+        return existing + separator + captured
+
     def create(self, machine_id: str, cwd: Optional[str] = None) -> Dict[str, Any]:
         machine = self.machine_manager.get(machine_id)
         session_id = generate_id("sess")
@@ -413,14 +450,44 @@ class RemoteSessionManager:
     ) -> Dict[str, Any]:
         session = load_session_state(session_id)
         transcript_file = session["transcript_file_local"]
+        captured_transcript: Optional[str] = None
         if session.get("status") == "active":
             machine = self.machine_manager.get(session["machine_id"])
             capture = self.backend.capture_terminal(machine=machine, terminal_record=session)
-            transcript = capture.get("transcript", "")
+            captured_transcript = capture.get("transcript", "")
             status = capture.get("status") or session.get("status", "active")
         else:
-            transcript = read_file(transcript_file)
             status = session.get("status", "destroyed")
+
+        with remote_state_lock():
+            session = load_session_state(session_id)
+            transcript_file_exists = os.path.exists(transcript_file)
+            if transcript_file_exists:
+                existing_transcript = read_file(transcript_file)
+            else:
+                existing_transcript = ""
+            if captured_transcript is None:
+                transcript = existing_transcript
+            else:
+                transcript = self._merge_transcript_capture(
+                    existing_transcript,
+                    captured_transcript,
+                )
+            cursor = len(transcript)
+            state_changed = (
+                transcript != existing_transcript
+                or status != session.get("status")
+                or cursor != session.get("transcript_cursor", 0)
+            )
+            if state_changed:
+                write_file(transcript_file, transcript)
+                if not transcript_file_exists:
+                    os.chmod(transcript_file, 0o600)
+                session["status"] = status
+                session["transcript_cursor"] = cursor
+                session["updated_at"] = get_timestamp()
+                save_session_state(session)
+
         cursor = len(transcript)
         start = max(0, since or 0)
         chunk = transcript[start:]
@@ -428,14 +495,6 @@ class RemoteSessionManager:
         if max_chars is not None and max_chars >= 0 and len(chunk) > max_chars:
             chunk = chunk[:max_chars]
             truncated = True
-
-        session["status"] = status
-        session["transcript_cursor"] = cursor
-        session["updated_at"] = get_timestamp()
-        write_file(transcript_file, transcript)
-        os.chmod(transcript_file, 0o600)
-        with remote_state_lock():
-            save_session_state(session)
 
         result = self._public_session(session)
         result.update(

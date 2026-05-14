@@ -734,6 +734,30 @@ def test_session_preserves_shell_state_and_incremental_transcript(
         reloaded.send(session_id, "pwd")
 
 
+def test_session_read_appends_rotated_remote_transcript(
+    remote_state_dir,
+    tmp_path,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    created = session_manager.create("lab-gpu-01", cwd="/home/ely/project")
+    session_id = created["session_id"]
+    transcript_file = Path(created["transcript_file_local"])
+
+    backend.terminals[session_id]["transcript"] = "line-1\nline-2\nline-3\n"
+    first_read = session_manager.read(session_id)
+
+    backend.terminals[session_id]["transcript"] = "line-3\nline-4\n"
+    second_read = session_manager.read(session_id, since=first_read["cursor"])
+
+    assert second_read["transcript"] == "line-4\n"
+    assert second_read["cursor"] > first_read["cursor"]
+    assert transcript_file.read_text() == "line-1\nline-2\nline-3\nline-4\n"
+
+
 def test_remote_runner_cli_session_send_read_outputs_json(
     remote_state_dir,
     tmp_path,
