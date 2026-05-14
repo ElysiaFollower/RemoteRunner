@@ -1,335 +1,278 @@
-# SEEDRunner 需求文档
+# Remote Runner 需求文档
 
 ## 1. 项目目标
 
-构建一个智能体系统，能够**自主完成单个 SEED 实验**，并生成可审计的正式报告。
+Remote Runner 要构建一个安装在本地的轻量级 CLI 工具，让用户把远程机器配置成可查询、可诊断、可调用的稳定接口。它不局限于科研：实验、开发、运维、模型训练、benchmark、远程调试等场景都应该能建立在同一套远程交互接口之上。
 
-**核心价值**：将 SEED 实验从"手工操作 + 手工报告"转变为"一键执行 + 自动报告"。
+核心价值不是“少写 SSH 命令”，而是：
 
----
+- 用户或 Agent 不需要反复处理 SSH 凭据、密钥路径、跳板机和连接细节。
+- 上层使用者能通过稳定 CLI 查询机器、创建会话、执行远程命令、读取结构化输出和日志。
+- 命令、退出码、时间戳、日志和产物形成可恢复、可审计的证据链。
+- 科研实验闭环、SEED profile、运维 runbook、训练任务和 benchmark 都是建立在远程会话能力之上的 profile/use case。
 
-## 2. 系统边界
+一句话定义：
 
-### 2.1 输入
+> Remote Runner 是一个本地轻量级远程机器操作 CLI，让用户把远程机器配置成稳定接口；使用者不需要反复处理 SSH 凭据和连接细节，只需要通过 CLI 创建会话、执行远程命令、读取输出并管理日志和产物。
 
-1. **实验文档** (manual.pdf / manual.md)
-   - 实验指导、背景、目标
-   - 验收标准（明确的 pass/fail 条件）
+## 2. 核心不变量
 
-2. **实验环境** (labsetup.zip)
-   - docker-compose.yaml
-   - 代码模板、配置文件
-   - 初始化脚本
+### 2.1 远程交互接口是核心
 
-3. **执行环境信息**
-   - 目标 VM 的 SSH 连接信息（host, port, user, key）
-   - 假设：SSH 已可达，公钥已配置，无需 Agent 处理认证
+稳定抽象是：
 
-### 2.2 输出
-
-1. **实验结果**
-   - 可复现的实验产物（代码、配置、日志）
-   - 验收结论（Pass / Fail + 原因）
-
-2. **过程追踪**
-   - 完整的执行日志（命令、输出、时间戳）
-   - 中间产物和检查点
-
-3. **正式报告**
-   - 结构化的实验报告（Markdown / PDF）
-   - 包含：目标、方法、结果、验收结论、关键截图/日志
-
-### 2.3 不在范围内
-
-- Agent 不负责 SSH 认证、密钥分发、网络配置
-- Agent 不负责 Docker 镜像构建（假设 labsetup 已包含）
-- Agent 不负责实验环境的故障排查（假设环境已就绪）
-
----
-
-## 3. 核心需求
-
-### 3.1 自主执行
-
-**需求**：Agent 必须能够**自主判断任务完成**，不能中途停止或询问用户。
-
-**具体表现**：
-- 读取实验文档，理解目标和验收标准
-- 制定执行计划
-- 在远程 VM 中执行操作
-- 持续检查是否满足验收条件
-- 如果失败，自动迭代（修改代码、调整配置、重新运行）
-- 直到通过验收或达到重试上限
-
-**验收条件**：
-- ✅ Agent 完成实验，生成报告，自动退出
-- ❌ Agent 中途停止，等待用户输入
-- ❌ Agent 做了一半就说"我不知道接下来怎么做"
-
-### 3.2 远程执行
-
-**需求**：Agent 必须能够在远程 VM 中执行命令，并实时获取输出。
-
-**具体表现**：
-- 通过 sshfs 挂载远程实验目录到本地
-- 通过 SSH 执行命令（在 tmux session 中）
-- 通过本地文件读取获取命令输出和日志
-- 支持多进程并发运行（通过 tmux 的多个 pane/window）
-- 支持长时间运行的任务（通过 tmux 的会话持久化）
-
-**约束**：
-- 假设 VM 中有 tmux 和 sshfs（或可以安装）
-- 必须能处理挂载失败、网络中断等异常
-
-### 3.3 可观测性
-
-**需求**：整个执行过程必须**完全可追踪**，便于事后审计和调试。
-
-**具体表现**：
-- 每条命令、每个输出都被记录
-- 记录包含：时间戳、命令、输出、exit code
-- 中间产物（代码、配置、日志）被保存
-- 最终报告能够引用这些记录作为证据
-
-**存储位置**：
-- 本地：挂载根（`--local-dir`）下的保留目录 `artifacts/`（命令日志位于 `artifacts/logs/`，同步产物与中间文件亦落在 `artifacts/`）；挂载根上其余路径由 Agent 组织
-- 远程：VM 中的实验工作目录（`remote_work_dir`，实验代码与运行期输出）
-
-### 3.4 验收判断
-
-**需求**：系统必须能够**自动判断实验是否通过**。
-
-**具体表现**：
-- 从实验文档中提取验收标准
-- 根据执行结果（日志、输出、文件）判断是否满足
-- 如果不满足，自动重试或报告失败原因
-
-**验收标准的形式**（可能包括）：
-- 特定文件的存在性（如 `flag.txt`）
-- 特定输出的出现（如 "Success" 字样）
-- 特定命令的 exit code（如 `echo $?` 返回 0）
-- 日志中的特定模式匹配
-- 多个条件的组合
-
-### 3.5 报告生成
-
-**需求**：系统必须能够**自动生成正式的实验报告**。
-
-**具体表现**：
-- 报告包含：实验目标、方法、关键步骤、结果、验收结论
-- 报告引用执行日志和中间产物作为证据
-- 报告格式规范（Markdown，可转 PDF）
-- 报告可被导师审阅
-
-**报告内容**（最小集合）：
-```
-# 实验报告：[实验名称]
-
-## 1. 实验目标
-[从文档提取]
-
-## 2. 实验方法
-[Agent 执行的步骤]
-
-## 3. 关键步骤和输出
-[执行日志摘要 + 关键截图]
-
-## 4. 验收结论
-[Pass / Fail + 原因]
-
-## 5. 附录：完整日志
-[完整的执行日志]
+```text
+机器配置 -> 会话 -> 远程目录命令执行 -> 显式文件传输 -> 结构化输出/退出码/日志/产物
 ```
 
----
+Research、SEED、运维、训练和 benchmark 都不能反向定义底层产品。底层只承诺把远程机器变成可操作、可观察、可恢复的本地 CLI 资源。
 
-## 4. 系统约束
+### 2.2 MVP 可用性优先
 
-### 4.1 执行约束
+第一版最重要的是能快速配置、快速连接、快速执行、快速排障。安全设计要服务于可用性，而不是把 MVP 卡死在钥匙串、守护进程、权限隔离或企业认证集成上。
 
-| 约束 | 说明 |
-|------|------|
-| **单实验聚焦** | 第一版只支持一个实验的完整执行，不追求"通用所有实验" |
-| **无人工干预** | 执行过程中不能询问用户，必须自主决策 |
-| **有限重试** | 失败后最多重试 N 次（N 待定，建议 3-5），然后报告失败 |
-| **超时保护** | 单条命令超时时间 T（待定，建议 300s），整个实验超时时间 T_total（待定，建议 3600s） |
-| **资源隔离** | 实验在远程 VM 中完全隔离，不影响本地环境 |
+MVP 可以接受本地明文配置，但必须满足底线：
 
-### 4.2 可靠性约束
+- 默认配置目录不在项目仓库内。
+- 创建配置文件时尽量使用较严格的本地文件权限。
+- 不把密码打印到 stdout、stderr、日志、报告或 handoff。
+- 配置格式简单，人类可以直接理解和修改。
 
-| 约束 | 说明 |
-|------|------|
-| **网络中断恢复** | SSH 连接中断后能自动重连（最多 M 次，建议 3 次） |
-| **幂等性** | 重复执行同一命令不会导致不一致的结果 |
-| **日志完整性** | 即使执行失败，所有日志都必须被保存 |
-| **报告可复现** | 基于日志和产物，他人能够理解实验过程 |
+更强安全能力作为后续增强：系统钥匙串、本地加密存储、SSH agent、读取 `~/.ssh/config`、Teleport、Boundary、Tailscale SSH、Cloudflare Access 等。
 
-### 4.3 设计约束
+### 2.3 本地轻量 CLI
 
-| 约束 | 说明 |
-|------|------|
-| **不重造轮子** | 尽量复用 Codex / Claude API，��自己实现 LLM |
-| **最小依赖** | 只依赖标准库 + SSH 客户端，避免重型框架 |
-| **可扩展性** | 架构设计要为未来支持多个实验预留空间 |
+工具运行在用户自己的电脑上。第一版优先做 CLI，后续再考虑 GUI、托盘应用、本地守护进程、MCP 服务或网页控制台。
 
----
+### 2.4 机器与会话是产品抽象
 
-## 5. 技术交互模式
+用户和 Agent 使用机器名、会话 ID、远程目录和命令，不直接依赖 SSH、tmux、sshfs、rsync、Slurm 或容器实现细节。
 
-### 5.1 Agent 和远程 VM 的交互
+会话是产品抽象，不等于 tmux session。底层可以直接 SSH 执行，也可以用 tmux、screen、Slurm、Docker、Kubernetes 或其他机制；API 不应暴露这些 backend 语义。
 
-**确定的设计**：
+### 2.5 上层闭环建立在远程会话之上
 
-```
-Agent (本地 Codex)
-    ↓
-    ├─ 通过 sshfs 挂载远程实验目录到本地
-    ├─ 通过 SSH 执行命令（在 tmux session 中）
-    ├─ tmux 的输出重定向到挂载目录的文件
-    └─ 通过本地文件读写操作获取日志和产物
-    ↓
-远程 VM
-    ├─ 执行命令（在 tmux session 中）
-    ├─ 生成日志和产物
-    └─ 输出写入文件系统（自动同步到本地挂载点）
+第一层能力：
+
+```text
+本地工具 -> 机器配置 -> 会话 -> 命令执行 -> 文件传输 -> 输出和日志
 ```
 
-**关键设计决策**：
-- **使用 sshfs** — 复用 Codex 的文件生态，降低工作量
-- **使用 tmux** — 管理多进程、支持后台任务、会话持久化
-- **日志实时同步** — tmux 输出重定向到文件，sshfs 自动同步到本地
+第二层能力：
 
-### 5.2 Agent 的执行流程
-
-```
-1. 初始化
-   ├─ 解析实验文档 → 提取目标、验收标准
-   ├─ 解析 labsetup → 理解环境结构
-   └─ 连接远程 VM → 验证 SSH 可达
-
-2. 规划
-   ├─ 制定执行计划（步骤序列）
-   └─ 识别关键检查点
-
-3. 执行
-   ├─ 循环：执行步骤 → 检查结果 → 判断是否继续
-   ├─ 记录每一步的命令、输出、时间戳
-   └─ 如果失败，自动调整并重试
-
-4. 验收
-   ├─ 检查是否满足验收标准
-   ├─ 如果不满足，回到步骤 3（重试）
-   └─ 如果满足或达到重试上限，进入步骤 5
-
-5. 报告
-   ├─ 收集执行日志和产物
-   ├─ 生成正式报告
-   └─ 保存到本地 `report/` 目录
-
-6. 退出
-   ├─ 清理临时文件（可选）
-   └─ 返回成功 / 失败状态
+```text
+领域输入 -> 远程执行 -> 日志证据 -> 产物回收 -> 验收判断 -> 报告/运维记录/任务结果
 ```
 
----
+如果第一层不稳定，第二层会变成脆弱的 prompt 工程或脚本拼接。
 
-## 6. 验收标准（项目级）
+## 3. MVP 功能需求
 
-### 6.1 功能验收
+### 3.1 机器管理
 
-- [ ] Agent 能够读取实验文档和 labsetup
-- [ ] Agent 能够通过 SSH 连接到远程 VM
-- [ ] Agent 能够在远程 VM 中执行命令并获取输出
-- [ ] Agent 能够自动判断实验是否通过
-- [ ] Agent 能够自主完成实验，不询问用户
-- [ ] Agent 能够生成结构化的实验报告
-- [ ] 整个过程的日志完整可追踪
+必要命令：
 
-### 6.2 质量验收
+```bash
+remote-runner machine add
+remote-runner machine list
+remote-runner machine show
+remote-runner machine doctor
+remote-runner machine remove
+```
 
-- [ ] 报告内容准确、完整、可审计
-- [ ] 执行日志清晰、时间戳准确
-- [ ] 系统能够处理常见异常（网络中断、命令失败等）
-- [ ] 代码可读、有注释、易维护
+机器配置至少包含：
 
-### 6.3 性能验收
+- `machine_id`
+- `host`
+- `port`
+- `user`
+- `auth_type`
+- `password` 或 `key_path`
+- `startup_commands`
+- `default_cwd`
+- `path_mappings`
 
-- [ ] 单个实验的执行时间 < 1 小时（待调整）
-- [ ] 日志写入不阻塞执行
-- [ ] 报告生成时间 < 5 分钟
+MVP 至少支持两种配置路径：
 
----
+- 交互式添加：用户按提示输入机器名、host/IP、端口、user、认证方式、password 或 key path、SSH 登录后的预置指令序列，以及预置指令执行后的默认远程目录。
+- 手动编辑：用户可以直接打开本地配置文件修改机器信息。
 
-## 7. 开放问题（待决策）
+密码认证的推荐路径是隐藏交互式输入；`--password` 命令行参数只作为兼容和测试入口，不推荐用于真实凭据，因为 shell history 容易泄漏。交互式 prompt 必须写到 stderr，`--json` 的 stdout 必须保持为单个 JSON 对象。同名机器覆盖必须显式确认，不得静默覆盖已有配置，也不得删除既有 session、日志、传输记录或产物索引。
 
-### 7.1 架构层面
+`startup_commands` 用于表达“SSH 连接成功后先按序输入哪些指令”，而不是把远程目录当成黑盒起点。例如 Windows OpenSSH 机器可以先执行 `wsl`，再把 `default_cwd` 设置为 `/mnt/c/Users/example/Desktop/SSHRunner`，随后 `session exec` 才在 WSL/Linux 语义下运行用户命令。已有机器可用 `machine configure-startup` 更新该字段，不需要重新输入账密。
 
-1. **Skill vs Agent**
-   - 是否将 `seed-runner` 封装成一个 Skill？
-   - 还是先做成独立 Agent，后续再考虑 Skill 化？
+当命令执行路径和 SFTP 可见路径不一致时，机器配置可以显式保存 `path_mappings`。例如命令侧使用 `/mnt/c/Users/.../SSHRunner`，而 SFTP 侧使用 `C:/Users/.../SSHRunner`。`file put/get/list` 在传输前应用该映射，但传输记录和 artifact manifest 仍保留用户输入的原始远程路径。路径映射不做自动猜测，必须由用户或配置命令明确写入。
 
-2. **远程运行时**
-   - 是否需要在远程 VM 中部署一个 daemon���
-   - 还是直接 SSH 执行？
+使用者必须能通过 `machine list/show/doctor --json` 查询可用机器和连接诊断结果。
 
-3. **验收逻辑**
-   - 验收标准如何从文档中提取？手工还是自动？
-   - 是否需要一个专门的 verifier 模块？
+### 3.2 会话管理
 
-### 7.2 实现层面
+必要命令：
 
-1. **sshfs vs 直接 SSH**
-   - sshfs 的优点：文件操作透明
-   - sshfs 的缺点：需要额外配置，可能有性能问题
-   - 建议：先用直接 SSH + 文件传输，后续再优化
+```bash
+remote-runner session create
+remote-runner session list
+remote-runner session show
+remote-runner session exec
+remote-runner session logs
+remote-runner session destroy
+```
 
-2. **日志格式**
-   - 是否使用结构化日志（JSON）？
-   - 还是纯文本日志？
+会话至少包含：
 
-3. **重试策略**
-   - 失败后如何判断是"应该重试"还是"应该放弃"？
-   - 是否需要一个 backoff 策略？
+- `session_id`
+- `machine_id`
+- `cwd`
+- `status`
+- `created_at`
+- `last_command`
+- `last_exit_code`
+- `command_count`
+- `log_dir_local`
 
-### 7.3 范围层面
+### 3.3 远程命令执行
 
-1. **第一版支持的实验类型**
-   - 是否只支持特定类型的实验（如 Web 安全）？
-   - 还是尽量通用？
+核心能力：
 
-2. **报告格式**
-   - 是否需要支持多种格式（Markdown、PDF、HTML）？
-   - 还是只支持 Markdown？
+```bash
+remote-runner session exec \
+  --session sess_abc123 \
+  --cwd /home/user/project \
+  --cmd "pytest -q" \
+  --timeout 300 \
+  --json
+```
 
----
+返回结果至少包含：
 
-## 8. 后续步骤
+- `session_id`
+- `machine_id`
+- `cwd`
+- `command`
+- `exit_code`
+- `stdout`
+- `stderr`
+- `started_at`
+- `ended_at`
+- `duration_ms`
+- `log_file_local`
 
-1. **需求评审** → 确认上述需求是否完整、合理
-2. **技术方案设计** → 针对开放问题做出决策，设计具体的接口和流程
-3. **文件框架搭建** → 按照 suggest.md 创建目录结构
-4. **核心模块实现** → 实现输入解析、远程运行时、验收逻辑、报告生成
-5. **集成测试** → 选择一个真实的 SEED 实验进行端到端测试
-6. **迭代优化** → 根据测试结果调整和改进
+命令失败时仍应返回结构化信息。非零退出码是任务失败，不应自动销毁会话。
 
----
+### 3.4 文件传输
 
-## 附录 A：术语表
+必要命令：
 
-| 术语 | 定义 |
-|------|------|
-| **SEED 实验** | 由 SEED Lab 提供的规范化安全实验 |
-| **labsetup** | 实验环境的压缩包，包含 docker-compose 和代码模板 |
-| **验收标准** | 判断实验是否通过的明确条件 |
-| **Agent** | 由 Claude API 驱动的自主执行系统 |
-| **Artifact** | 实验过程中生成的中间产物（日志、代码、配置等） |
-| **Trace** | 完整的执行日志，包含命令、输出、时间戳 |
+```bash
+remote-runner file put
+remote-runner file get
+remote-runner file list
+```
 
----
+要求：
 
-## 附录 B：参考资源
+- 第一版文件传输优先使用 SSH/SFTP，不要求远程机器支持 sshfs、FUSE、反向 SSH 或常驻服务。
+- `file put` 将本地文件或目录上传到远程路径。
+- `file get` 将远程文件或目录下载到本地路径。
+- `file list` 查询远程路径的文件元数据。
+- 如果机器配置了 `path_mappings`，文件传输 backend 应在调用 SFTP 前把命令侧远程路径转换为文件传输侧路径。
+- 每条传输记录必须写入本地状态，至少包含 source、destination、direction、timestamp、status、size/hash if available、error if failed。
 
-- SEED Lab 官网：https://seedsecuritylabs.org/
-- Codex 框架：https://github.com/openai/codex.git
-- Claude API 文档：https://docs.anthropic.com/
+### 3.5 日志和本地状态
 
+建议本地状态目录：
+
+```text
+~/.remote-runner/
+  machines.json
+  sessions/
+  logs/
+  transfers/
+  artifacts/
+  runs/
+```
+
+要求：
+
+- 使用者可以通过 CLI 查询所有机器、会话、命令历史和日志路径。
+- 状态不能只存在于聊天上下文中。
+- 日志必须保留命令、输出、退出码和时间戳。
+- 传输历史必须保留方向、源、目标、状态和失败原因。
+- 输出可截断，但完整内容必须落到日志文件。
+
+### 3.6 文件与产物
+
+MVP 第一阶段不做复杂同步系统，但必须支持显式文件传输：
+
+- 推送输入目录到远程工作目录。
+- 拉回产物目录到本地状态目录。
+- 生成 artifact manifest。
+- 关联命令、日志和产物。
+
+sshfs 和 mount 不是目标核心机制。它们可以保留为 legacy 原型或未来可选 backend，但不应成为 MVP 前提。
+
+### 3.7 通用 Run 闭环
+
+必要命令：
+
+```bash
+remote-runner run once
+remote-runner run list
+remote-runner run show
+```
+
+`run once` 是 machine/session/file 之上的通用编排层，不绑定科研、SEED、运维、训练或 benchmark profile。它至少支持：
+
+- 创建一个临时 session。
+- 通过 `--input LOCAL=REMOTE` 显式上传输入文件或目录，可重复。
+- 在远程 cwd 执行一个命令。
+- 通过 `--artifact REMOTE=LOCAL` 显式拉回产物文件或目录，可重复。
+- 生成本地 run manifest，记录 run_id、machine_id、session_id、cwd、command、inputs、command_result、artifacts、status、started_at、ended_at 和销毁会话结果。
+- 默认销毁临时 session，但保留 session 日志、transfer 记录和 artifact manifest；可通过 `--keep-session` 保留会话。
+
+非零退出码应把 run 标为 failed，但不得丢失命令日志和 run manifest。
+
+## 4. 非目标
+
+- 不重写 OpenSSH。
+- 不做通用密码管理器。
+- 不替代 Slurm、Kubernetes、Docker 或实验追踪平台。
+- 不承诺在无隔离条件下抵御拥有同一系统用户 shell 权限的恶意 Agent。
+- 不优先做复杂 GUI。
+- 不把科研、SEED、实验或运维任一场景当成唯一业务边界。
+- 不把 sshfs、mount、tmux 或某个具体库写成长期需求。
+
+## 5. 与 SEEDRunner 原型的关系
+
+当前仓库里的 `seed-runner` 是早期原型。它验证了用户和 Agent 需要统一工具隐藏 SSH、tmux、sshfs 等复杂性，并获得日志和产物。
+
+后续合理结构是：
+
+```text
+Remote Runner
+  通用远程机器与会话层
+  通用命令执行与日志层
+  通用产物管理层
+  profiles/
+    operations/
+    seed/
+    paper-reproduction/
+    model-training/
+    benchmark/
+```
+
+SEED 应该成为第一个强 demo/profile，而不是项目名称、架构边界或唯一目标用户。
+
+## 6. 项目级验收标准
+
+MVP 通过的最低标准：
+
+- 用户能添加或编辑机器配置。
+- 用户能用 `machine doctor` 测试连接并获得可理解的错误。
+- 使用者能列出机器并创建会话。
+- 使用者能在远程指定目录执行命令。
+- 使用者能显式上传、下载和列出远程文件，不依赖挂载。
+- `session exec --json` 返回 stdout、stderr、退出码、时间戳、耗时和日志路径。
+- 密码不会出现在命令输出、日志、报告或 handoff 中。
+- 会话、命令历史、传输历史和日志可在中断后通过 CLI 恢复。
+- SEED 原型能力可以作为 profile 或兼容层保留，不阻塞通用远程交互能力。

@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "wip_limit": 1,
+  "status_values": ["not_started", "active", "blocked", "passing"],
+  "features": [
+    {
+      "id": "F-001",
+      "priority": "P0",
+      "area": "harness/docs",
+      "title": "项目灯塔、需求和定义统一",
+      "behavior": "仓库内文档能无歧义说明 Remote Runner 的目标、非目标、术语、当前原型和目标 API，并给出冲突裁决规则。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest -q",
+      "evidence": "2026-05-07: Remote Runner 纠偏后，./scripts/harness-check.sh 通过 0 warnings；./init.sh 通过；python3 -m pytest -q 通过 21 passed, 1 skipped, 20 warnings。",
+      "notes": "本项只整理目标、需求、定义和 harness，不迁移业务实现。"
+    },
+    {
+      "id": "F-002",
+      "priority": "P0",
+      "area": "machine-session-file",
+      "title": "Remote Runner 机器+会话+文件传输 MVP",
+      "behavior": "用户能配置机器、创建会话、执行远程目录命令，并通过显式 file put/get/list 传输文件；所有命令、日志和传输记录写入本地状态。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest -q && git diff --check",
+      "evidence": "2026-05-08: 已新增 remote-runner CLI、mount-free state/machine/session/file 模块和 tests/test_remote_runner_mvp.py；./scripts/harness-check.sh 通过 0 warnings；python3 -m pytest -q 通过 27 passed, 1 skipped, 59 warnings；git diff --check 通过。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-08-remote-runner-machine-session-file-mvp.md；ADR 见 docs/adr/0001-no-mount-core.md。真实 VM opt-in 测试未运行。"
+    },
+    {
+      "id": "F-003",
+      "priority": "P0",
+      "area": "session-exec",
+      "title": "Remote Runner 会话与命令执行内部切片",
+      "behavior": "Agent 能创建会话、执行远程目录命令、获取 stdout/stderr/exit_code/timestamps/log_file_local，并查询/销毁会话。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q",
+      "evidence": "2026-05-08: RemoteSessionManager 覆盖 create/show/exec/logs/destroy、非零 exit code、backend error 记录和 busy 保护；新增测试通过，完整 pytest 通过 27 passed, 1 skipped, 59 warnings。",
+      "notes": "由 F-002 umbrella plan 一并实现；会话是目标产品抽象，不依赖 mount/tmux。"
+    },
+    {
+      "id": "F-004",
+      "priority": "P1",
+      "area": "compatibility",
+      "title": "seed-runner 原型兼容与迁移边界",
+      "behavior": "当前 seed-runner mount/session 原型在迁移期间保持可验证；legacy API 文档明确其原型地位。",
+      "status": "passing",
+      "verification": "python3 -m pytest -q",
+      "evidence": "2026-05-08: Remote Runner MVP 新增代码后，完整 pytest 通过 27 passed, 1 skipped, 59 warnings；legacy seed-runner 单元测试继续通过。",
+      "notes": "真实 VM opt-in 测试未运行；legacy mount/session 仍只作为原型兼容层。"
+    },
+    {
+      "id": "F-005",
+      "priority": "P2",
+      "area": "profiles",
+      "title": "上层 profile 与任务闭环层",
+      "behavior": "在稳定远程会话能力之上增加输入推送、产物拉回、验收判断、证据索引，以及面向 operations、SEED、research、training、benchmark 的 profile。",
+      "status": "not_started",
+      "verification": "定义 run/artifact/report 命令后补端到端样例和验证命令。",
+      "evidence": "",
+      "notes": "通用 run once 闭环基础已由 F-011 实现；领域 profile、验收 DSL、报告层仍未开始。"
+    },
+    {
+      "id": "F-006",
+      "priority": "P0",
+      "area": "machine-config",
+      "title": "Remote Runner SSH 机器交互式配置接口",
+      "behavior": "用户能通过 remote-runner machine add 交互式填写真实 SSH 机器名、host/IP、端口、账号、认证方式、密码或 key path 和默认远程目录；同名机器覆盖必须显式确认。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && python3 -m black --check seed_runner/remote_machine.py seed_runner/remote_cli.py tests/test_remote_runner_mvp.py",
+      "evidence": "2026-05-08: 已实现交互式 remote-runner machine add、隐藏密码输入、同名覆盖确认和非交互 --replace --confirm-replace；聚焦测试 13 passed；完整 pytest 34 passed, 1 skipped, 68 warnings；black check 通过；harness-check 通过 0 warnings；尾随空白扫描无结果。git diff --check 因本机 Xcode license 未接受被阻断。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-08-remote-runner-ssh-machine-config.md；本轮未运行真实 SSH/SFTP 集成测试。"
+    },
+    {
+      "id": "F-007",
+      "priority": "P0",
+      "area": "startup-commands",
+      "title": "Remote Runner SSH 后预置指令与 Windows WSL 验证",
+      "behavior": "机器配置能保存 SSH 登录后按序执行的 startup_commands；session exec 和 doctor 在运行用户命令前先执行这些指令，使 Windows OpenSSH 机器可先进入 WSL 再在指定目录执行 Linux 命令。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && Windows SSHRunner 目录内真实验证",
+      "evidence": "2026-05-09: 已新增 startup_commands schema、machine configure-startup、startup-aware interactive SSH backend 和测试；聚焦测试 15 passed；完整 pytest 36 passed, 1 skipped, 73 warnings；harness-check 0 warnings；black check 通过；git diff --check 通过；尾随空白扫描无结果。真实验证：windows-wsl 配置 startup_commands=[wsl]、default_cwd=/mnt/c/Users/example/Desktop/SSHRunner；doctor 通过；session exec 在该目录内创建/读取/删除 rr_probe.txt 后 exit_code=0，并用只读 pwd/printf 复验通过。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-09-remote-runner-startup-commands.md；真实验证未触碰 SSHRunner 外文件。"
+    },
+    {
+      "id": "F-008",
+      "priority": "P0",
+      "area": "file-transfer",
+      "title": "Remote Runner SFTP 路径映射与真实文件传输验证",
+      "behavior": "机器配置能显式记录命令路径前缀到 SFTP 文件路径前缀的映射；file put/get/list 在传输前应用映射，使 Windows OpenSSH + WSL 机器可用 WSL 工作目录路径完成文件传输。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && Windows SSHRunner 目录内真实 file put/list/get 验证",
+      "evidence": "2026-05-11: 已实现 path_mappings schema、machine configure-path-map、SFTP put/get/list 前缀映射、list 响应路径回映射，以及 generate_id 随机后缀避免并行 transfer_id 碰撞；聚焦测试 19 passed；完整 pytest 40 passed, 1 skipped, 79 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。真实验证：windows-wsl 配置 command_prefix=/mnt/c/Users/example/Desktop/SSHRunner 到 file_prefix=C:/Users/example/Desktop/SSHRunner；在 SSHRunner 内完成 rr_sftp_probe_20260511.txt 的 file put/list/get，本地 cmp 内容一致，随后 session exec 删除该文件并复验目录为空；测试 session 已 destroy。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-sftp-path-mapping.md；真实验证未触碰 SSHRunner 外文件。"
+    },
+    {
+      "id": "F-009",
+      "priority": "P0",
+      "area": "session-exec",
+      "title": "Remote Runner 交互式 SSH 输出清理",
+      "behavior": "带 startup_commands 的 session exec 返回用户命令真实 stdout，不把 Windows banner、启动命令回显、cd 回显、sentinel 或 shell prompt 当作用户输出。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && Windows SSHRunner 目录内只读 stdout 清理验证",
+      "evidence": "2026-05-11: startup-aware interactive SSH 增加 begin marker、exit marker、PS1 清空、stty echo 控制和 runtime marker 拆分清理；单元测试覆盖 Windows banner、startup/cd/命令回显、prompt、sentinel 过滤；聚焦测试 19 passed；完整 pytest 40 passed, 1 skipped, 79 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。真实验证：windows-wsl doctor 通过；在 SSHRunner 内只读执行 pwd && printf，stdout 为 /mnt/c/Users/example/Desktop/SSHRunner 和 remote-runner-clean-output，无 Windows banner/wsl/cd/命令回显；测试 session 已 destroy。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-interactive-output-cleanup.md；真实验证未写入远程文件。"
+    },
+    {
+      "id": "F-010",
+      "priority": "P0",
+      "area": "integration-tests",
+      "title": "Remote Runner 真实机器 Opt-in 集成测试",
+      "behavior": "提供默认跳过的真实机器集成测试；显式配置机器和测试目录后，自动验证 doctor、session exec、file put/list/get、远程 cleanup 和 session destroy。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_real_integration.py -q && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh",
+      "evidence": "2026-05-11: 新增 tests/test_remote_runner_real_integration.py，默认未设置 REMOTE_RUNNER_RUN_REAL_TESTS=1 时 skip；显式设置真实机器和 REMOTE_RUNNER_REAL_TEST_CWD 后验证 doctor、session create/exec、file put/list/get、内容比对、远程 rm cleanup、session destroy。默认 skip 测试 1 skipped；真实 Windows SSHRunner 验证 1 passed；完整 pytest 40 passed, 2 skipped, 79 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-real-integration-tests.md；真实测试仅写入显式 REMOTE_RUNNER_REAL_TEST_CWD。"
+    },
+    {
+      "id": "F-011",
+      "priority": "P1",
+      "area": "run",
+      "title": "Remote Runner Run Once 闭环 MVP",
+      "behavior": "用户能用 remote-runner run once 编排一次远程工作：可选上传输入、执行命令、可选拉回产物、记录 run manifest、默认销毁会话并保留日志。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && Windows SSHRunner 目录内真实 run once 验证",
+      "evidence": "2026-05-11: 新增 run state、RemoteRunManager、remote-runner run once/list/show；run once 支持 --input LOCAL=REMOTE、--artifact REMOTE=LOCAL、默认销毁会话并保存 run manifest；新增单元测试覆盖成功闭环和非零退出码失败保留日志；聚焦测试 21 passed；完整 pytest 42 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。真实验证：windows-wsl 的 SSHRunner 目录内 run once 上传输入、执行命令生成输出、拉回 artifact、本地 cmp 成功；随后清理远程 input/output 探针文件并销毁 cleanup session；run list/show 可恢复查询 manifest。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-run-once-mvp.md；本轮只做通用 run，不绑定 profile。"
+    },
+    {
+      "id": "F-012",
+      "priority": "P1",
+      "area": "packaging",
+      "title": "Remote Runner 包名 Facade 迁移切片",
+      "behavior": "提供 remote_runner 包名 facade，并让 remote-runner console script 指向 remote_runner.cli:main；legacy seed-runner 和 seed_runner 实现继续可用。",
+      "status": "passing",
+      "verification": "python3 -m remote_runner.cli --help && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh",
+      "evidence": "2026-05-11: 新增 remote_runner package facade，remote_runner.cli 委托 seed_runner.remote_cli.main；pyproject remote-runner console script 改为 remote_runner.cli:main，seed-runner 入口保持 seed_runner.cli:main；README 和 overview 同步目标包名边界；python3 -m remote_runner.cli --help 通过；聚焦测试 22 passed；完整 pytest 43 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-package-facade.md；本轮不做完整包迁移。"
+    },
+    {
+      "id": "F-013",
+      "priority": "P1",
+      "area": "packaging",
+      "title": "Remote Runner 公共模块 Facade 迁移切片",
+      "behavior": "remote_runner 包名暴露 remote_machine、remote_session、remote_file、remote_run、remote_backend、remote_state 等公共模块 facade，并 re-export 当前 seed_runner.remote_* 实现。",
+      "status": "passing",
+      "verification": "python3 -m remote_runner.cli --help && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh",
+      "evidence": "2026-05-11: 新增 remote_runner.remote_backend、remote_machine、remote_session、remote_file、remote_run、remote_state facade 模块，均 re-export seed_runner.remote_* 当前实现；测试验证 facade 公共对象与 seed_runner 实现对象一致；python3 -m remote_runner.cli --help 通过；目标 import path smoke 通过；聚焦测试 23 passed；完整 pytest 44 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-11-remote-runner-public-module-facade.md；本轮不搬移实现文件。"
+    },
+    {
+      "id": "F-014",
+      "priority": "P1",
+      "area": "packaging",
+      "title": "Remote Runner 包实现迁移第一切片",
+      "behavior": "remote_runner 包名承载 Remote Runner 真实实现，seed_runner.remote_* 退为兼容 wrapper；remote-runner CLI 和 legacy import 都继续可用。",
+      "status": "passing",
+      "verification": "python3 -m remote_runner.cli --help && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-05-11: 已将 Remote Runner 真实实现迁移到 remote_runner.cli 和 remote_runner.remote_*；seed_runner.remote_* 改为 legacy compatibility wrappers 并 re-export 同一批目标实现对象；remote-runner 与 python3 -m seed_runner.remote_cli 入口均可用；聚焦测试 24 passed；默认真实集成测试 1 skipped；完整 pytest 45 passed, 2 skipped, 101 warnings；black check 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-package-implementation-migration.md。本轮未改 CLI schema，未运行真实机器 opt-in 测试，未删除 legacy seed-runner 原型。"
+    },
+    {
+      "id": "F-015",
+      "priority": "P2",
+      "area": "quality",
+      "title": "Timezone-aware 时间戳清理",
+      "behavior": "使用 timezone-aware UTC 时间生成 timestamp 和 ID，移除 datetime.utcnow() deprecation warnings，同时保持现有输出格式兼容。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-05-11: seed_runner.utils 改为使用 datetime.now(timezone.utc) 生成 UTC timestamp 和 ID；get_timestamp 仍输出 Z 后缀；utcnow 搜索无结果；聚焦测试 25 passed 且无 warnings；完整 pytest 46 passed, 2 skipped 且无 warnings；remote_runner 和 legacy seed_runner.remote_cli help 通过；harness-check 0 warnings；git diff --check 通过。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-timezone-aware-timestamps.md。本轮未改变状态 schema、CLI 输出合同或真实机器测试行为。"
+    },
+    {
+      "id": "F-016",
+      "priority": "P1",
+      "area": "packaging",
+      "title": "Remote Runner shared utils 迁移切片",
+      "behavior": "remote_runner 实现不再依赖 seed_runner.utils；共享 helper 实现迁移到 remote_runner.utils，seed_runner.utils 退为兼容 wrapper。",
+      "status": "passing",
+      "verification": "rg -n \"from seed_runner|import seed_runner\" remote_runner -S && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-05-11: remote_runner 包内不再从 seed_runner.utils 导入；shared helper 已迁移到 remote_runner.utils；seed_runner.utils 保持兼容 wrapper 并 re-export 目标 helper；新增测试验证 legacy wrapper 与 target helper 同一对象；聚焦测试 26 passed；完整 pytest 47 passed, 2 skipped；black check 通过；harness-check 0 warnings；git diff --check 通过；remote_runner import 边界检查无残留 seed_runner.utils 引用。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-utils-migration.md。本轮不改变 helper 行为、不删除 seed_runner.utils、不运行真实机器 opt-in 测试。"
+    },
+    {
+      "id": "F-017",
+      "priority": "P0",
+      "area": "testing",
+      "title": "Remote Runner 上线验收测试资产",
+      "behavior": "提供长期可复用的 launch acceptance suite，覆盖公共接口、fake-backed 核心闭环和真实机器 opt-in 烟雾测试，作为上线前门禁。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_launch_suite.py tests/test_remote_runner_real_integration.py -q",
+      "evidence": "2026-05-11: 新增 tests/test_remote_runner_launch_suite.py、tests/remote_runner_launch_support.py 和 docs/testing/remote-runner-launch-acceptance.md；默认 launch suite 2 passed, 1 skipped；默认真实集成测试 1 skipped；完整 pytest 49 passed, 3 skipped；harness-check 0 warnings；git diff --check 通过；显式 opt-in 真实机器 launch+integration smoke 4 passed，写入范围限制在已配置安全测试目录，未记录真实机器细节。",
+      "notes": "任务合同归档至 plans/archive/2026-05-11-remote-runner-launch-acceptance-suite.md。真实机器验收默认 skip，显式 opt-in 后只允许写 REMOTE_RUNNER_REAL_TEST_CWD。"
+    },
+    {
+      "id": "F-018",
+      "priority": "P0",
+      "area": "session-command",
+      "title": "Remote Runner 后台会话命令",
+      "behavior": "用户或上层 agent 能在 session 下启动长时间运行的远程命令并立即获得 command_id，之后用 CLI 查询状态、读取有界输出、等待完成或停止命令；现有同步 session exec 行为继续可用。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=seed-lab REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
+      "evidence": "2026-05-14: 已实现 session exec --mode background、session command list/show/result/wait/stop、远端 command state 文件与本地持久化 command record；聚焦测试 29 passed；launch suite 2 passed, 1 skipped；完整 pytest 52 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；seed-lab Linux/SSH opt-in 真实集成测试 1 passed，验证后台命令可启动、show/result 可见中间输出、wait 可回收最终结果、stop 可终止运行中命令，测试目录限制在 /tmp。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-13-remote-runner-background-session-commands.md。第一切片聚焦 durable background command，不做完整 attach shell、stdin streaming、PTY、daemon 或 profile/report 层。"
+    }
+  ]
+}

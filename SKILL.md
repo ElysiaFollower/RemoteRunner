@@ -1,133 +1,235 @@
 ---
-name: seed-runner
-description: Use when a task should be executed inside a preconfigured remote VM through the seed-runner CLI, especially for SEED experiments that require running shell commands, inspecting logs and artifacts from the local shared directory, iterating on failures, and cleaning up remote sessions without using raw ssh, tmux, or sshfs directly.
+name: remote-runner
+description: Use when a task should be executed on a preconfigured remote machine through the remote-runner CLI, especially when an agent must run commands, transfer files, collect structured stdout/stderr/exit codes, inspect logs/artifacts, iterate on failures, and clean up sessions without using raw ssh, scp, rsync, tmux, sshfs, or mounted folders directly.
 metadata:
-  short-description: Run remote VM tasks through seed-runner
+  short-description: Operate remote machines through Remote Runner
 ---
 
-# Seed Runner
+# Remote Runner
 
-Use this skill when the work must happen on a remote VM and the environment has already been prepared for `seed-runner`.
+Use this skill when work must happen on a remote machine through the `remote-runner` CLI. This skill is for application-layer execution on top of Remote Runner, not for changing Remote Runner's implementation.
 
-Do not use this skill to modify or debug the `seed-runner` implementation itself. This skill is for application-layer execution on top of the tool.
+## Core Rule
 
-## Read First
+Use `remote-runner` as the stable interface:
 
-- Read `docs/reference/SEED_RUNNER_API.md` for exact command forms and JSON fields.
-- Read `AGENTS.md` for system boundaries and agent expectations.
-- Read the chosen experiment materials under `runs/<experiment-name>/`, especially `docs/*.tex` and `Labsetup/docker-compose.yml`.
-- Read `runs/SKILL.md` only when drafting or polishing the final Chinese report.
+- machine registry and diagnostics: `machine list/show/doctor`
+- remote command context: `session create/exec`, `session command list/show/wait/stop`,
+  `session logs/destroy`
+- explicit file movement: `file put/get/list`
+- one-shot closed loop: `run once`
 
-## Preconditions
+Do not use raw `ssh`, `scp`, `rsync`, `tmux`, `sshfs`, or mount workflows unless the user explicitly asks you to debug the platform itself. Remote Runner no longer uses mounted folders as its core abstraction.
 
-- Assume `.env.machines` is already correct.
-- Assume SSH, remote sshfs, tmux, and keys are preconfigured by humans.
-- Do not reconfigure SSH, keys, ports, tmux, or sshfs unless the user explicitly asks you to debug the platform.
-- Prefer `seed-runner` CLI over raw `ssh`, `tmux`, or `sshfs`.
-- Unless the user says otherwise, create and use a dedicated workspace under `runs/<experiment-name>/` and do not run experiments from the repository root.
-- Treat this skill as a complete end-to-end workflow: understand the lab, execute it, verify the result, write the report, and clean up in one pass.
-- Do not assume a human is supervising between steps or will manually stitch together partial outputs for you.
-- Treat `remote_work_dir` as the real remote working directory on local disk, not as an sshfs mount path you need to reason about.
+## Environment
 
-## Standard Workflow
-
-1. Choose the target experiment directory under `runs/`, for example `runs/ARP_Attack/` or `runs/Sniffing_Spoofing/`.
-2. Read the experiment manual and lab setup files in that directory before issuing commands.
-3. Choose a **mount root** directory (this is `--local-dir`): for example `./workspace`. That directory is the full sshfs mount root. Under it, only `artifacts/` is reserved (command logs under `artifacts/logs/<session-name>/`, plus synced outputs under `artifacts/`). The rest of the mount root is yours (e.g. `Labsetup/`, scripts). Prefer a name other than `artifacts` for the mount root so paths stay readable; if the mount root is literally `./artifacts`, logs appear at `./artifacts/artifacts/logs/...`.
-4. Create a mount:
+The normal local environment is the `seedrunner` conda environment.
 
 ```bash
-seed-runner mount create --machine <machine-id> --local-dir ./workspace
+conda activate seedrunner
+remote-runner --help
 ```
 
-If the default remote mount point is occupied by another experiment, retry with
-an explicit per-experiment path such as:
+If the shell is not activated:
 
 ```bash
-seed-runner mount create \
+conda run -n seedrunner remote-runner --help
+```
+
+If `remote-runner` is missing, install the tool from the Remote Runner repo:
+
+```bash
+cd /Users/ely/workspace/research/agent/SEEDRunner
+conda run -n seedrunner python -m pip install -e .
+```
+
+## Start Workflow
+
+1. List machines:
+
+```bash
+remote-runner machine list --json
+```
+
+2. Diagnose the chosen machine before doing work:
+
+```bash
+remote-runner machine doctor <machine-id> --json
+```
+
+Do not continue if `reachable`, `auth_ok`, or `default_cwd_ok` is false. Report the machine-level blocker.
+
+3. Choose an explicit remote working directory. It must be safe and writable for this task. Do not assume `/home/ely/tmp` is writable; verify it first or use a known-good directory such as `/tmp` for probes.
+
+4. Create a session:
+
+```bash
+remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
+```
+
+`session create` records local state; it does not by itself prove SSH auth. `machine doctor` and the first `session exec` are the real connectivity checks.
+
+5. Run bounded commands through the session:
+
+```bash
+remote-runner session exec \
+  --session <session-id> \
+  --cmd 'pwd && whoami' \
+  --mode wait \
+  --json
+```
+
+Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command.
+
+For long-running or persistent commands, do not compensate by using very large synchronous
+timeouts. Start the command in background mode and keep the returned `command_id`:
+
+```bash
+remote-runner session exec \
+  --session <session-id> \
+  --cmd '<long-running-command>' \
+  --mode background \
+  --json
+```
+
+Then inspect or wait explicitly:
+
+```bash
+remote-runner session command show \
+  --session <session-id> \
+  --command-id <command-id> \
+  --json
+
+remote-runner session command wait \
+  --session <session-id> \
+  --command-id <command-id> \
+  --timeout 30 \
+  --json
+```
+
+Use `session command stop` when a running background command should be terminated. A session with
+running background commands cannot be destroyed until those commands finish or are stopped.
+
+6. Clean up when finished:
+
+```bash
+remote-runner session destroy --session <session-id> --json
+```
+
+## File Transfer
+
+Use explicit Remote Runner file commands:
+
+```bash
+remote-runner file put \
+  --session <session-id> \
+  --local ./input.txt \
+  --remote <remote-dir>/input.txt \
+  --json
+
+remote-runner file list \
+  --session <session-id> \
+  --remote <remote-dir> \
+  --json
+
+remote-runner file get \
+  --session <session-id> \
+  --remote <remote-dir>/output.txt \
+  --local ./output.txt \
+  --json
+```
+
+File transfer is built into Remote Runner through SSH/SFTP. It does not require mounted folders, sshfs, rsync, or scp.
+
+If file transfer fails, classify before retrying:
+
+- `machine doctor` fails: machine auth/connectivity problem.
+- `session exec` fails similarly: not an SFTP-only issue.
+- `session exec` succeeds but `file put` fails with permission denied: remote path permissions problem.
+- `session exec` succeeds but SFTP cannot open paths: check SFTP subsystem and path mappings.
+- Windows OpenSSH + WSL path mismatch: use `machine configure-path-map`.
+
+## Run Once
+
+Use `run once` when the task is one closed loop: upload inputs, run one command, pull artifacts, preserve manifest/logs, destroy the temporary session.
+
+```bash
+remote-runner run once \
   --machine <machine-id> \
-  --local-dir ./workspace \
-  --remote-dir /home/seed/seed-experiments/<experiment-name>
+  --cwd <remote-dir> \
+  --input ./input.txt=<remote-dir>/input.txt \
+  --cmd 'cp input.txt output.txt' \
+  --artifact <remote-dir>/output.txt=./output.txt \
+  --json
 ```
 
-5. Create a session with a descriptive name:
+Use `run list` and `run show` to recover run state:
 
 ```bash
-seed-runner session create --machine <machine-id> --mount-id <mount-id> --name <session-name>
+remote-runner run list --json
+remote-runner run show <run-id> --json
 ```
 
-6. Execute commands through the session:
+## Machine Configuration
+
+Only configure machines when the user explicitly asks. Never print passwords, key contents, host-sensitive details, or private paths in reports or handoffs.
+
+Password-auth Linux machine:
 
 ```bash
-seed-runner session exec --session <session-id> --cmd "<shell-command>"
+remote-runner machine add \
+  --machine-id <machine-id> \
+  --host <host-or-ip> \
+  --user <user> \
+  --auth-type password \
+  --default-cwd /home/<user> \
+  --json
 ```
 
-7. After each command:
-- inspect the returned `exit_code`
-- read `log_file_local` (under `<local-dir>/artifacts/logs/<session-name>/` by convention)
-- inspect files under `<local-dir>/artifacts/` for synced outputs and evidence (paths besides `logs/` are experiment-dependent)
+To update a stale machine record:
 
-8. Use `seed-runner session status --session <session-id>` when you need current status, command count, or the last command context.
-9. Save a complete Chinese report under `./report/`, grounded in logs and artifacts from the run.
-10. When the task is complete, destroy the session and then destroy the mount.
+```bash
+remote-runner machine add \
+  --machine-id <machine-id> \
+  --host <host-or-ip> \
+  --user <user> \
+  --auth-type password \
+  --default-cwd /home/<user> \
+  --replace \
+  --confirm-replace <machine-id> \
+  --json
+```
 
-## Command Discipline
+Windows OpenSSH that must enter WSL first:
 
-- Send complete shell commands, not partial fragments.
-- Prefer non-interactive commands.
-- Use relative paths inside the remote work directory unless there is a clear reason not to.
-- Assume `seed-runner` handles sync/staging before command execution. You should operate on the returned `remote_work_dir` as if it were a normal remote directory.
-- If a task is long-running, set a larger `--timeout` instead of assuming the default is enough.
-- Command logs: use the returned `log_file_local` (under `<local-dir>/artifacts/logs/`). Other durable outputs from the remote run appear under `<local-dir>/artifacts/` after sync. You may add your own files anywhere under the mount root (for example next to `Labsetup/`) as long as you avoid colliding with tool-managed paths under `artifacts/`.
-- Keep notes, reports, and intermediate files inside the current `runs/<experiment-name>/` workspace so the tool repository stays clean.
-- A successful run is not just command execution. It must end with a usable report that a human can read without replaying the entire session.
+```bash
+remote-runner machine configure-startup <machine-id> \
+  --startup-command wsl \
+  --default-cwd /mnt/c/Users/<user>/Desktop/SSHRunner \
+  --json
+
+remote-runner machine configure-path-map <machine-id> \
+  --command-prefix /mnt/c/Users/<user>/Desktop/SSHRunner \
+  --file-prefix C:/Users/<user>/Desktop/SSHRunner \
+  --json
+```
 
 ## Failure Handling
 
-- If `mount create` fails, treat it as an environment blocker. Surface the exact JSON error and stop. Do not silently fall back to raw SSH.
-- If `mount create` fails because the default remote path is already occupied by another experiment, it is acceptable to retry once with a unique `--remote-dir` such as `/home/seed/seed-experiments/<experiment-name>`.
-- If `session create` fails, report the exact error and stop.
-- If `session exec` reports that the session is busy, do not assume platform failure. Wait for the current command to finish or inspect its log/status before retrying.
-- If `seed-runner session exec` returns a non-zero `exit_code`, this is usually a task-level failure, not a platform failure. Read the log, diagnose, and retry strategically.
-- If a command times out, inspect the partial log first. Then either increase `--timeout`, split the work into smaller commands, or report the blocker.
-- If a session is gone or a mount is unmounted, recreate what you need instead of assuming hidden state still exists.
+- Always surface the exact JSON error.
+- Do not continue after failed `doctor` unless the user asks to debug configuration.
+- Non-zero command exit codes are task evidence, not necessarily platform failure. Read logs before retrying.
+- A busy session means another command is active; inspect logs/state before retrying.
+- If a session was created during a failed task, destroy it unless the user asks to keep it.
+- If credentials are stale, update the machine record; do not work around it with raw SSH.
 
-## Completion Rules
+## Completion
 
-A task using this skill is complete only when:
-- the requested remote action has been carried out
-- the result is supported by logs or artifacts
-- a Chinese report has been written under `./report/`
-- session and mount cleanup has been performed, unless the user asked to keep them for inspection
+A remote task is complete only when:
 
-In the final report, include:
-- `mount_id`
-- `session_id`
-- the key command or commands run
-- relevant `log_file_local` paths
-- important artifact paths
-- final success or failure status
-- whether the acceptance criteria were met, partially met, or blocked
+- the requested action ran or a precise blocker was identified
+- result evidence is captured from JSON output, logs, transfer records, or artifacts
+- created remote probe files are cleaned up unless intentionally retained
+- sessions are destroyed unless the user asked to keep them
 
-## Practical Pattern
-
-For a typical experiment loop:
-
-1. create mount
-2. create session
-3. run one command
-4. inspect `log_file_local`
-5. inspect generated artifacts
-6. decide whether to continue, retry, or conclude
-7. write the report under `./report/`
-8. clean up
-
-Keep the loop tight. Do not queue many blind commands before reading the evidence from the previous one.
-
-## Notes
-
-- `seed-runner` already handles the remote working directory and log placement. Use the returned paths instead of guessing.
-- The sync directory is an internal detail. The only remote path the agent should rely on is `remote_work_dir`.
-- Logs are the primary source of truth for command behavior.
-- Artifacts in the local shared directory are the primary source of truth for produced files.
-- `runs/SKILL.md` is an auxiliary writing guide for report polish, not the primary execution workflow.
+Final answers should include the machine id, session id or run id when useful, key log/artifact paths, final status, and any residual risk. Do not include secrets.
