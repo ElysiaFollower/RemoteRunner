@@ -512,6 +512,140 @@ class ParamikoRemoteBackend:
         finally:
             client.close()
 
+    def create_terminal(
+        self,
+        machine: RemoteMachine,
+        cwd: str,
+        terminal_id: str,
+        width: int = 120,
+        height: int = 40,
+        history_limit: int = 10000,
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("terminal sessions do not yet support startup_commands machines")
+
+        tmux_session = self._tmux_session_name(terminal_id)
+        script = " && ".join(
+            [
+                "command -v tmux >/dev/null 2>&1",
+                (
+                    f"tmux new-session -d -s {shlex.quote(tmux_session)} "
+                    f"-c {shlex.quote(cwd)}"
+                ),
+                (
+                    f"tmux resize-window -t {shlex.quote(tmux_session)} "
+                    f"-x {int(width)} -y {int(height)}"
+                ),
+                (
+                    f"tmux set-option -t {shlex.quote(tmux_session)} "
+                    f"history-limit {int(history_limit)}"
+                ),
+                f"printf '%s\\n' {shlex.quote(tmux_session)}",
+            ]
+        )
+        client = self._connect(machine)
+        try:
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            exit_code = stdout_file.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError(stderr or stdout or "terminal create failed")
+            return {
+                "backend": "tmux",
+                "remote_terminal_name": stdout or tmux_session,
+                "history_limit": history_limit,
+                "width": width,
+                "height": height,
+            }
+        finally:
+            client.close()
+
+    def send_terminal_input(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+        input_text: str,
+        enter: bool = True,
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("terminal sessions do not yet support startup_commands machines")
+
+        target = terminal_record["remote_terminal_name"]
+        commands = [
+            (
+                f"tmux send-keys -t {shlex.quote(target)} "
+                f"-l -- {shlex.quote(input_text)}"
+            )
+        ]
+        if enter:
+            commands.append(f"tmux send-keys -t {shlex.quote(target)} C-m")
+        script = " && ".join(commands)
+        client = self._connect(machine)
+        try:
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            exit_code = stdout_file.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError(stderr or stdout or "terminal send failed")
+            return {"input_sent": True}
+        finally:
+            client.close()
+
+    def capture_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("terminal sessions do not yet support startup_commands machines")
+
+        target = terminal_record["remote_terminal_name"]
+        history_limit = int(terminal_record.get("history_limit") or 10000)
+        script = (
+            f"tmux has-session -t {shlex.quote(target)} >/dev/null 2>&1 && "
+            f"tmux capture-pane -t {shlex.quote(target)} -p -S -{history_limit}"
+        )
+        client = self._connect(machine)
+        try:
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace")
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            exit_code = stdout_file.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError(stderr or "terminal capture failed")
+            return {"status": "active", "transcript": stdout}
+        finally:
+            client.close()
+
+    def destroy_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("terminal sessions do not yet support startup_commands machines")
+
+        target = terminal_record["remote_terminal_name"]
+        script = (
+            f"if tmux has-session -t {shlex.quote(target)} >/dev/null 2>&1; then "
+            f"tmux kill-session -t {shlex.quote(target)}; "
+            "printf '%s\\n' destroyed; "
+            "else printf '%s\\n' not_found; fi"
+        )
+        client = self._connect(machine)
+        try:
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            exit_code = stdout_file.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError(stderr or stdout or "terminal destroy failed")
+            return {"destroy_result": stdout or "unknown"}
+        finally:
+            client.close()
+
     def put(self, machine: RemoteMachine, local_path: str, remote_path: str) -> Dict[str, Any]:
         remote_path = machine.map_file_path(remote_path)
         client = self._connect(machine)
@@ -750,6 +884,10 @@ class ParamikoRemoteBackend:
         command = f"kill -0 {shlex.quote(str(pid))} >/dev/null 2>&1"
         _, stdout_file, _ = client.exec_command(command)
         return stdout_file.channel.recv_exit_status() == 0
+
+    def _tmux_session_name(self, terminal_id: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", terminal_id)
+        return f"rr_{safe}"
 
     def _get_dir(self, sftp: paramiko.SFTPClient, remote_dir: str, local_dir: str) -> int:
         os.makedirs(local_dir, exist_ok=True)

@@ -70,6 +70,11 @@ remote-runner session command stop --session sess_abc123 --command-id cmd_abc123
 remote-runner session logs --session sess_abc123 --json
 remote-runner session destroy --session sess_abc123 --json
 
+remote-runner terminal create --machine lab-gpu-01 --cwd /home/user/project --json
+remote-runner terminal send --terminal term_abc123 --input "cd src" --json
+remote-runner terminal read --terminal term_abc123 --json
+remote-runner terminal destroy --terminal term_abc123 --json
+
 remote-runner file put --session sess_abc123 --local ./input.txt --remote /home/user/project/input.txt --json
 remote-runner file get --session sess_abc123 --remote /home/user/project/output.txt --local ./output.txt --json
 remote-runner file list --session sess_abc123 --remote /home/user/project --json
@@ -87,6 +92,10 @@ remote-runner run once \
 directory, stdout, stderr, exit code, timestamps, duration, and local log path. Long-running jobs
 should use `--mode background`; later `session command show/wait/stop` calls recover state by
 `command_id`.
+
+`terminal` commands are separate from `session exec`: they create a persistent shell-like transcript
+for UI tabs or student-facing workflows where `cd`, exported variables, aliases, and output history
+should remain connected across multiple inputs.
 
 `remote-runner machine add --json` prompts for missing SSH machine fields and writes prompts to
 stderr, so stdout remains one JSON object. Password auth uses hidden input in the recommended

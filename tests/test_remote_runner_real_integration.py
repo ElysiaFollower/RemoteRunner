@@ -60,6 +60,8 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
     background_finished = False
     stop_command_id = None
     stop_requested = False
+    terminal_id = None
+    terminal_destroyed = False
     try:
         doctor = _run_remote_runner("machine", "doctor", machine_id, "--json")
         assert doctor["reachable"] is True
@@ -183,6 +185,62 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
         assert stop_show["status"] == "stopped"
         assert stop_show["exit_code"] == 143
 
+        terminal = _run_remote_runner(
+            "terminal",
+            "create",
+            "--machine",
+            machine_id,
+            "--cwd",
+            remote_cwd,
+            "--json",
+        )
+        terminal_id = terminal["terminal_id"]
+        assert terminal["status"] == "active"
+
+        terminal_token = f"rr-terminal-{probe_id}"
+        for terminal_input in (
+            f"cd {shlex.quote(remote_cwd)}",
+            f"export RR_TERMINAL_TOKEN={shlex.quote(terminal_token)}",
+            "pwd",
+            'printf "$RR_TERMINAL_TOKEN\\n"',
+        ):
+            sent = _run_remote_runner(
+                "terminal",
+                "send",
+                "--terminal",
+                terminal_id,
+                "--input",
+                terminal_input,
+                "--json",
+            )
+            assert sent["input_sent"] is True
+
+        terminal_read = None
+        for _ in range(20):
+            terminal_read = _run_remote_runner(
+                "terminal",
+                "read",
+                "--terminal",
+                terminal_id,
+                "--json",
+            )
+            if terminal_token in terminal_read["transcript"]:
+                break
+            time.sleep(0.2)
+        assert terminal_read is not None
+        assert remote_cwd in terminal_read["transcript"]
+        assert terminal_token in terminal_read["transcript"]
+
+        terminal_destroy = _run_remote_runner(
+            "terminal",
+            "destroy",
+            "--terminal",
+            terminal_id,
+            "--json",
+        )
+        terminal_destroyed = terminal_destroy["status"] == "destroyed"
+        assert terminal_destroyed is True
+
         put = _run_remote_runner(
             "file",
             "put",
@@ -259,6 +317,14 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
                 session_id,
                 "--command-id",
                 stop_command_id,
+                "--json",
+            )
+        if terminal_id and not terminal_destroyed:
+            _run_remote_runner(
+                "terminal",
+                "destroy",
+                "--terminal",
+                terminal_id,
                 "--json",
             )
         if session_id and not cleanup_done:

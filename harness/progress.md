@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：`F-018 Remote Runner 后台会话命令` passing；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
-- 当前任务计划：`plans/archive/2026-05-13-remote-runner-background-session-commands.md`。
-- 当前阶段性提交：本轮收尾提交记录 `F-018` 完成状态；截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`。
-- 上次验证：2026-05-13，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 29 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 52 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；`REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=seed-lab REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 passed。
-- 下一步最佳动作：等待下一轮需求；如果继续演进，优先考虑更完整的 attach/stdin streaming 语义或 `F-005` profile/report 层。
+- 当前功能项：`F-019 Remote Runner 持久 Terminal Session` passing；`F-018 Remote Runner 后台会话命令` passing；`F-005` profile/report 层未开始。
+- 当前任务计划：`plans/archive/2026-05-14-remote-runner-persistent-terminal-sessions.md`。
+- 当前阶段性提交：F-019 收尾提交待生成；分支为 `dev/remote-runner-persistent-terminals`。
+- 上次验证：2026-05-14，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 默认 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；Linux/SSH opt-in 真实集成测试 1 passed。
+- 下一步最佳动作：审阅 F-019 分支 diff，决定是否基于 PR #4 开堆叠 PR，或等 #4 合并后 rebase 再发 PR。
 
 ## 状态约定
 
@@ -222,3 +222,18 @@
 - 新增 `remote-runner session command list/show/wait/stop`，可跨 CLI 进程恢复后台命令状态、查看有界输出、等待完成或停止命令。
 - 代码与文档同步更新：API contract、spec、getting-started、README 和 Remote Runner skill 都已补齐后台命令语义。
 - 真实验证：`seed-lab` Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；背景命令可启动、show 可见中间输出、wait 可收回最终结果，cleanup 与 session destroy 均成功。
+
+### 2026-05-14 - 持久 Terminal Session 开工
+
+- 创建分支 `dev/remote-runner-persistent-terminals`。
+- 读取 GitHub issue #5，确认需求是面向 Socratic 学生 shell panel 的真实 terminal transcript：同一个 UI tab 对应同一个持续 shell，上下文和 transcript 在多次输入之间保留。
+- 新增 active plan：`plans/active/2026-05-14-remote-runner-persistent-terminal-sessions.md`。
+- 新增 `F-019` active：目标是新增 `terminal` 能力，而不是把现有 automation-safe `session exec` 改为持久 shell。
+
+### 2026-05-14 - 持久 Terminal Session 完成
+
+- 新增 `remote-runner terminal create/list/show/send/read/destroy`。
+- 新增 terminal 本地状态和 transcript 保存；`terminal read` 返回 transcript、cursor、since 和截断标记，支持新 CLI 进程恢复读取。
+- Linux/SSH 第一后端使用 tmux；terminal 多次 send 会进入同一个远程 shell，上下文可保留 `cd`、环境变量等 shell-local state。
+- 现有 `session exec --mode wait/background`、`session command ...`、`file`、`run once` 语义保持不变。
+- 真实验证：Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；同一 terminal 内 `cd/export/pwd/printf` 状态连续保留，destroy 后保留本地 transcript。

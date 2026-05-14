@@ -16,6 +16,7 @@ Use `remote-runner` as the stable interface:
 - machine registry and diagnostics: `machine list/show/doctor`
 - remote command context: `session create/exec`, `session command list/show/wait/stop`,
   `session logs/destroy`
+- persistent shell transcript: `terminal create/send/read/destroy`
 - explicit file movement: `file put/get/list`
 - one-shot closed loop: `run once`
 
@@ -115,6 +116,35 @@ running background commands cannot be destroyed until those commands finish or a
 ```bash
 remote-runner session destroy --session <session-id> --json
 ```
+
+## Persistent Terminal
+
+Use `terminal` only when the task needs a real shell-like transcript where commands in the same tab
+share state, such as a student-facing shell panel. Do not use it as the default automation path.
+
+```bash
+remote-runner terminal create \
+  --machine <machine-id> \
+  --cwd <remote-dir> \
+  --json
+
+remote-runner terminal send \
+  --terminal <terminal-id> \
+  --input 'cd src' \
+  --json
+
+remote-runner terminal read \
+  --terminal <terminal-id> \
+  --json
+
+remote-runner terminal destroy \
+  --terminal <terminal-id> \
+  --json
+```
+
+The first terminal backend uses `tmux` on Linux/SSH machines. If terminal creation reports that the
+backend is unavailable, fall back to `session exec` for automation tasks and report the terminal
+backend blocker for interactive UI tasks.
 
 ## File Transfer
 

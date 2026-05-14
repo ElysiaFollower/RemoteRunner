@@ -229,6 +229,49 @@ Returns ordered command log metadata and local log paths.
 Marks or removes the active session from the active list while preserving local logs, command
 records, transfer records, and artifacts.
 
+## Terminal Commands
+
+Terminal commands provide persistent shell/terminal semantics for transcript-oriented workflows.
+They do not replace the command lifecycle above. `session exec` remains the automation-safe path
+for structured command records; `terminal` is the human/student-facing shell path where context and
+transcript matter.
+
+### `remote-runner terminal create --machine <machine_id> [--cwd <remote_cwd>] --json`
+
+Creates a recoverable terminal record and a remote terminal backend session. If `--cwd` is omitted,
+use the machine's `default_cwd`.
+
+Minimum response fields:
+
+- `terminal_id`
+- `machine_id`
+- `cwd`
+- `backend`
+- `status`
+- `created_at`
+- `updated_at`
+- `transcript_file_local`
+- `log_dir_local`
+
+The first backend is Linux/SSH + `tmux`. Machines with `startup_commands` may be explicitly
+rejected until interactive startup terminal semantics are designed.
+
+### `remote-runner terminal send --terminal <terminal_id> --input <text> [--no-enter] --json`
+
+Sends input into the selected terminal. Multiple sends to the same terminal must preserve
+shell-local state such as `cd`, exported environment variables, aliases, and jobs.
+
+### `remote-runner terminal read --terminal <terminal_id> [--since <cursor>] [--max-chars <n>] --json`
+
+Captures the terminal transcript. The response includes `transcript`, `cursor`, `since`,
+`transcript_truncated`, and the local transcript path. A new CLI process must be able to recover and
+read the terminal transcript from local state plus the remote terminal backend.
+
+### `remote-runner terminal list/show/destroy --json`
+
+Lists terminals, shows one terminal record, or destroys the remote backend session while preserving
+the local terminal record and transcript path.
+
 ## File Transfer Commands
 
 ### `remote-runner file put --session <session_id> --local <path> --remote <path> --json`

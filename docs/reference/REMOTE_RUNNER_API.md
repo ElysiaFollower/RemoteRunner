@@ -312,6 +312,64 @@ remote-runner session destroy --session sess_abc123 --json
 
 Returns final status and preserved log location.
 
+## Terminal Commands
+
+Terminal commands are for terminal-like, transcript-oriented workflows. They intentionally sit
+beside `session exec` instead of replacing it:
+
+- Use `session exec --mode wait|background` for automation-safe structured command records.
+- Use `terminal create/send/read/destroy` when a UI tab should map to one persistent shell context.
+
+The first implementation targets Linux/SSH machines with `tmux` available. Machines that require
+`startup_commands` are not supported by the first terminal backend.
+
+### Create Terminal
+
+```bash
+remote-runner terminal create \
+  --machine lab-gpu-01 \
+  --cwd /home/ely/project \
+  --json
+```
+
+Returns `terminal_id`, machine ID, cwd, backend, status, timestamps, local transcript path, and
+backend references such as the remote tmux session name.
+
+### Send Input
+
+```bash
+remote-runner terminal send \
+  --terminal term_abc123 \
+  --input "cd src" \
+  --json
+```
+
+Sends input to the same terminal shell. By default it presses Enter after the input; use
+`--no-enter` for raw partial input. Shell-local state such as `cd`, exported variables, aliases,
+and foreground/background jobs belongs to that terminal backend, not to `session exec`.
+
+### Read Transcript
+
+```bash
+remote-runner terminal read --terminal term_abc123 --json
+remote-runner terminal read --terminal term_abc123 --since 1200 --json
+```
+
+Returns the captured transcript, a `cursor`, and the requested `since` offset. Callers can store the
+cursor and later request only the new transcript region. The local transcript file is preserved in
+Remote Runner state for recovery.
+
+### List, Show, Destroy
+
+```bash
+remote-runner terminal list --json
+remote-runner terminal show --terminal term_abc123 --json
+remote-runner terminal destroy --terminal term_abc123 --json
+```
+
+Destroying a terminal stops the remote backend session but preserves the local terminal record and
+transcript path.
+
 ## File Transfer Commands
 
 ### Put

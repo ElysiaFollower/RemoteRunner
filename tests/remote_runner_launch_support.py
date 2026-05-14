@@ -17,6 +17,7 @@ from remote_runner.remote_file import RemoteFileManager
 from remote_runner.remote_machine import RemoteMachineManager
 from remote_runner.remote_run import RemoteRunManager
 from remote_runner.remote_session import RemoteSessionManager
+from remote_runner.remote_terminal import RemoteTerminalManager
 from remote_runner.remote_state import (
     load_artifact_manifest,
     load_machines_state,
@@ -35,6 +36,7 @@ class LaunchBackend:
         self.puts: List[Dict[str, str]] = []
         self.gets: List[Dict[str, str]] = []
         self.lists: List[Dict[str, str]] = []
+        self.terminals: Dict[str, Dict[str, Any]] = {}
         self.files: Dict[str, str] = {}
 
     def doctor(self, machine):
@@ -125,6 +127,46 @@ class LaunchBackend:
         record["exit_code"] = 143
         record["ended_at"] = "2026-05-11T00:00:04Z"
         return {"stop_result": "stopped"}
+
+    def create_terminal(self, machine, cwd, terminal_id, width=120, height=40, history_limit=10000):
+        self.terminals[terminal_id] = {
+            "machine_id": machine.machine_id,
+            "cwd": cwd,
+            "env": {},
+            "status": "active",
+            "transcript": f"$ cd {cwd}\n",
+            "remote_terminal_name": f"rr_{terminal_id}",
+        }
+        return {
+            "backend": "tmux",
+            "remote_terminal_name": f"rr_{terminal_id}",
+            "history_limit": history_limit,
+            "width": width,
+            "height": height,
+        }
+
+    def send_terminal_input(self, machine, terminal_record, input_text, enter=True):
+        terminal = self.terminals[terminal_record["terminal_id"]]
+        terminal["transcript"] += f"$ {input_text}\n"
+        if input_text.startswith("cd "):
+            terminal["cwd"] = input_text.split(" ", 1)[1].strip()
+        elif input_text.startswith("export "):
+            key, value = input_text[len("export ") :].split("=", 1)
+            terminal["env"][key] = value
+        elif input_text == "pwd":
+            terminal["transcript"] += f"{terminal['cwd']}\n"
+        elif input_text == 'printf "$LAUNCH_TOKEN\\n"':
+            terminal["transcript"] += f"{terminal['env'].get('LAUNCH_TOKEN', '')}\n"
+        return {"input_sent": True}
+
+    def capture_terminal(self, machine, terminal_record):
+        terminal = self.terminals[terminal_record["terminal_id"]]
+        return {"status": terminal["status"], "transcript": terminal["transcript"]}
+
+    def destroy_terminal(self, machine, terminal_record):
+        terminal = self.terminals[terminal_record["terminal_id"]]
+        terminal["status"] = "destroyed"
+        return {"destroy_result": "destroyed"}
 
     def put(self, machine, local_path, remote_path):
         file_path = machine.map_file_path(remote_path)
@@ -242,6 +284,7 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
         session_manager=session_manager,
         backend=backend,
     )
+    terminal_manager = RemoteTerminalManager(machine_manager=machine_manager, backend=backend)
     run_manager = RemoteRunManager(
         session_manager=session_manager,
         file_manager=file_manager,
@@ -253,6 +296,13 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
     background = session_manager.exec(session_id, "sleep 30", mode="background")
     background_show = session_manager.command_show(session_id, background["command_id"])
     background_stop = session_manager.command_stop(session_id, background["command_id"])
+    terminal = terminal_manager.create("launch-lab-01", cwd="/srv/app")
+    terminal_manager.send(terminal["terminal_id"], "cd /srv/app/subdir")
+    terminal_manager.send(terminal["terminal_id"], "export LAUNCH_TOKEN=launch-terminal")
+    terminal_manager.send(terminal["terminal_id"], "pwd")
+    terminal_manager.send(terminal["terminal_id"], 'printf "$LAUNCH_TOKEN\\n"')
+    terminal_read = terminal_manager.read(terminal["terminal_id"])
+    terminal_destroy = terminal_manager.destroy(terminal["terminal_id"])
 
     local_input = tmp_path / "launch_input.txt"
     local_input.write_text("launch input\n")
@@ -295,6 +345,9 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
         "background": background,
         "background_show": background_show,
         "background_stop": background_stop,
+        "terminal": terminal,
+        "terminal_read": terminal_read,
+        "terminal_destroy": terminal_destroy,
         "put": put,
         "list": listing,
         "get": get,
