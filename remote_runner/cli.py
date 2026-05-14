@@ -274,6 +274,26 @@ def cmd_session_command_stop(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_session_send(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_session_manager().send(
+            session_id=args.session,
+            input_text=args.input,
+            enter=not args.no_enter,
+        )
+    )
+
+
+def cmd_session_read(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_session_manager().read(
+            session_id=args.session,
+            since=args.since,
+            max_chars=args.max_chars,
+        )
+    )
+
+
 def cmd_session_logs(args: argparse.Namespace) -> None:
     _print(get_remote_session_manager().logs(args.session))
 
@@ -473,6 +493,24 @@ def build_parser() -> argparse.ArgumentParser:
     session_command_stop.add_argument("--command-id", required=True)
     add_json_flag(session_command_stop)
     session_command_stop.set_defaults(func=cmd_session_command_stop)
+
+    session_send = session_sub.add_parser("send", help="Send raw input to a session shell")
+    session_send.add_argument("--session", required=True)
+    session_send.add_argument("--input", required=True)
+    session_send.add_argument(
+        "--no-enter",
+        action="store_true",
+        help="Send input without pressing Enter",
+    )
+    add_json_flag(session_send)
+    session_send.set_defaults(func=cmd_session_send)
+
+    session_read = session_sub.add_parser("read", help="Read session shell transcript")
+    session_read.add_argument("--session", required=True)
+    session_read.add_argument("--since", type=int)
+    session_read.add_argument("--max-chars", type=int)
+    add_json_flag(session_read)
+    session_read.set_defaults(func=cmd_session_read)
 
     session_logs = session_sub.add_parser("logs", help="List session logs")
     session_logs.add_argument("--session", required=True)

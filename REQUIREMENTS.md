@@ -50,7 +50,15 @@ MVP 可以接受本地明文配置，但必须满足底线：
 
 会话是产品抽象，不等于 tmux session。底层可以直接 SSH 执行，也可以用 tmux、screen、Slurm、Docker、Kubernetes 或其他机制；API 不应暴露这些 backend 语义。
 
-### 2.5 上层闭环建立在远程会话之上
+### 2.5 当前平台边界
+
+当前 MVP 采用 Linux-first 支持策略。主支持和上线验收目标是通过 SSH/SFTP 访问的 Linux 机器，并且第一版持久 session backend 要求远端有 `tmux`。
+
+Windows OpenSSH + WSL 不是当前主支持平台。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
+
+详细平台边界见 `docs/platform-support.md`。
+
+### 2.6 上层闭环建立在远程会话之上
 
 第一层能力：
 
@@ -99,7 +107,7 @@ MVP 至少支持两种配置路径：
 
 密码认证的推荐路径是隐藏交互式输入；`--password` 命令行参数只作为兼容和测试入口，不推荐用于真实凭据，因为 shell history 容易泄漏。交互式 prompt 必须写到 stderr，`--json` 的 stdout 必须保持为单个 JSON 对象。同名机器覆盖必须显式确认，不得静默覆盖已有配置，也不得删除既有 session、日志、传输记录或产物索引。
 
-`startup_commands` 用于表达“SSH 连接成功后先按序输入哪些指令”，而不是把远程目录当成黑盒起点。例如 Windows OpenSSH 机器可以先执行 `wsl`，再把 `default_cwd` 设置为 `/mnt/c/Users/example/Desktop/SSHRunner`，随后 `session exec` 才在 WSL/Linux 语义下运行用户命令。已有机器可用 `machine configure-startup` 更新该字段，不需要重新输入账密。
+`startup_commands` 用于表达“SSH 连接成功后先按序输入哪些指令”，而不是把远程目录当成黑盒起点。例如 Windows OpenSSH 机器可以先执行 `wsl`，再把 `default_cwd` 设置为 `/mnt/c/Users/example/Desktop/SSHRunner`。已有机器可用 `machine configure-startup` 更新该字段，不需要重新输入账密。当前持久 session backend 对 `startup_commands` 机器可明确拒绝；Windows/WSL 不作为当前上线主路径。
 
 当命令执行路径和 SFTP 可见路径不一致时，机器配置可以显式保存 `path_mappings`。例如命令侧使用 `/mnt/c/Users/.../SSHRunner`，而 SFTP 侧使用 `C:/Users/.../SSHRunner`。`file put/get/list` 在传输前应用该映射，但传输记录和 artifact manifest 仍保留用户输入的原始远程路径。路径映射不做自动猜测，必须由用户或配置命令明确写入。
 

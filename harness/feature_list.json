@@ -200,6 +200,28 @@
       "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=seed-lab REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
       "evidence": "2026-05-14: 已实现 session exec --mode background、session command list/show/result/wait/stop、远端 command state 文件与本地持久化 command record；聚焦测试 29 passed；launch suite 2 passed, 1 skipped；完整 pytest 52 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；seed-lab Linux/SSH opt-in 真实集成测试 1 passed，验证后台命令可启动、show/result 可见中间输出、wait 可回收最终结果、stop 可终止运行中命令，测试目录限制在 /tmp。",
       "notes": "任务合同已归档至 plans/archive/2026-05-13-remote-runner-background-session-commands.md。第一切片聚焦 durable background command，不做完整 attach shell、stdin streaming、PTY、daemon 或 profile/report 层。"
+    },
+    {
+      "id": "F-019",
+      "priority": "P0",
+      "area": "terminal-session",
+      "title": "Remote Runner 持久 Terminal Session",
+      "behavior": "用户或上层 UI 能创建真实远程 terminal/shell session，多次输入在同一 shell 上下文中连续执行，并可读取同一 transcript；现有 automation-safe session exec 行为继续可用。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=linux-01 REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
+      "evidence": "2026-05-14: 已新增 terminal create/list/show/send/read/destroy、terminal state、tmux backend、transcript 本地保存和 cursor 增量读取；聚焦测试 31 passed；launch suite 2 passed, 1 skipped；默认真实集成入口 1 skipped；完整 pytest 54 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；Linux/SSH opt-in 真实集成测试 1 passed，验证同一 terminal 内 cd/export/pwd/printf 状态连续保留，测试目录限制在 /tmp。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-14-remote-runner-persistent-terminal-sessions.md。对应 GitHub issue #5；本任务新增 terminal 能力，不把现有 session exec 改成持久 shell。第一后端为 Linux/SSH + tmux；startup_commands 机器暂不支持。"
+    },
+    {
+      "id": "F-020",
+      "priority": "P0",
+      "area": "session-terminal",
+      "title": "Remote Runner Session 持久 Terminal 统一模型",
+      "behavior": "用户创建 session 后获得唯一远程工作上下文；session exec/send/read/destroy 都作用于同一个持久 shell，命令结果仍有 command_id、exit_code、日志和可恢复 transcript。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=linux-01 REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
+      "evidence": "2026-05-14: 已将 F-019 顶层 terminal 能力并入 session；session create 创建 tmux-backed 持久 shell，session exec 在同一 shell 内通过 wrapper 记录 command_id/stdout/stderr/exit_code/timestamps/log，session send/read 提供原始输入和 transcript/cursor，session destroy 销毁远端 backend 并保留本地日志/transcript；删除公开 terminal CLI 和 remote_terminal 模块；PR #6 review 后补齐 transcript 增量合并，避免有限 tmux buffer 覆盖本地累计 transcript；聚焦测试 32 passed；launch suite 2 passed, 1 skipped；默认真实集成入口 1 skipped；完整 pytest 55 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；Linux/SSH opt-in 真实集成测试 1 passed，验证 session 内 cd/export 状态连续、后台命令 wait/stop、文件传输和 cleanup。",
+      "notes": "任务合同已归档至 plans/archive/2026-05-14-remote-runner-session-terminal-unification.md。F-019 作为实现 spike 保留历史记录；目标公开 API 是 session，不是顶层 terminal。第一后端为 Linux/SSH + tmux；startup_commands 机器暂不支持持久 session backend。"
     }
   ]
 }

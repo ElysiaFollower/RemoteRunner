@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：`F-018 Remote Runner 后台会话命令` passing；`F-017 Remote Runner 上线验收测试资产` passing；`F-005` profile/report 层未开始。
-- 当前任务计划：`plans/archive/2026-05-13-remote-runner-background-session-commands.md`。
-- 当前阶段性提交：本轮收尾提交记录 `F-018` 完成状态；截至 `F-016` 为 `7d46f53 refactor(remote-runner): migrate shared utils into target package`。
-- 上次验证：2026-05-13，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 29 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 52 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；`REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=seed-lab REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 passed。
-- 下一步最佳动作：等待下一轮需求；如果继续演进，优先考虑更完整的 attach/stdin streaming 语义或 `F-005` profile/report 层。
+- 当前功能项：`F-020 Remote Runner Session 持久 Terminal 统一模型` passing；`F-019 Remote Runner 持久 Terminal Session` passing；`F-005` profile/report 层未开始。
+- 当前任务计划：`plans/archive/2026-05-14-remote-runner-session-terminal-unification.md`。
+- 当前阶段性提交：F-020 已提交并推送；平台边界文档清理已完成并进入当前分支；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
+- 上次验证：2026-05-14，PR review 修复后 `./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`git diff --check` 通过。此前同分支 Linux/SSH opt-in 真实集成测试 1 passed。
+- 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff；上线主路径按 Linux/SSH + tmux 验收。Windows/WSL 持久 session 只有在明确需要时才作为独立 backend 任务推进。
 
 ## 状态约定
 
@@ -222,3 +222,47 @@
 - 新增 `remote-runner session command list/show/wait/stop`，可跨 CLI 进程恢复后台命令状态、查看有界输出、等待完成或停止命令。
 - 代码与文档同步更新：API contract、spec、getting-started、README 和 Remote Runner skill 都已补齐后台命令语义。
 - 真实验证：`seed-lab` Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；背景命令可启动、show 可见中间输出、wait 可收回最终结果，cleanup 与 session destroy 均成功。
+
+### 2026-05-14 - 持久 Terminal Session 开工
+
+- 创建分支 `dev/remote-runner-persistent-terminals`。
+- 读取 GitHub issue #5，确认需求是面向 Socratic 学生 shell panel 的真实 terminal transcript：同一个 UI tab 对应同一个持续 shell，上下文和 transcript 在多次输入之间保留。
+- 新增 active plan：`plans/active/2026-05-14-remote-runner-persistent-terminal-sessions.md`。
+- 新增 `F-019` active：目标是新增 `terminal` 能力，而不是把现有 automation-safe `session exec` 改为持久 shell。
+
+### 2026-05-14 - 持久 Terminal Session 完成
+
+- 新增 `remote-runner terminal create/list/show/send/read/destroy`。
+- 新增 terminal 本地状态和 transcript 保存；`terminal read` 返回 transcript、cursor、since 和截断标记，支持新 CLI 进程恢复读取。
+- Linux/SSH 第一后端使用 tmux；terminal 多次 send 会进入同一个远程 shell，上下文可保留 `cd`、环境变量等 shell-local state。
+- 现有 `session exec --mode wait/background`、`session command ...`、`file`、`run once` 语义保持不变。
+- 真实验证：Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；同一 terminal 内 `cd/export/pwd/printf` 状态连续保留，destroy 后保留本地 transcript。
+
+### 2026-05-14 - Session 持久 Terminal 统一模型开工
+
+- 用户指出顶层 `terminal` 与 `session` 平级会造成职责不清；项目仍未正式上线，不应积累这个 API 包袱。
+- 新增 active plan：`plans/active/2026-05-14-remote-runner-session-terminal-unification.md`。
+- 新增 `F-020` active：目标是把持久 shell/terminal 语义并入 `session`，让 `session exec/send/read/destroy` 都作用于同一个远程工作上下文。
+- 当前 PR #6 保持 draft，F-019 的 tmux 实现可作为 backend 素材，但公开 API 和文档需要改成 session 统一模型。
+
+### 2026-05-14 - Session 持久 Terminal 统一模型完成
+
+- `session create` 现在创建 tmux-backed 持久 shell，并把 backend、remote tmux 名称、transcript 路径和 cursor 记录在 session state。
+- `session exec` 现在在同一 session shell 内通过 wrapper 执行命令，返回稳定的 `command_id`、stdout/stderr、exit code、timestamps、duration、日志和远端 state 文件引用。
+- `session send/read` 提供原始输入和 transcript/cursor 读取；顶层 `remote-runner terminal ...` CLI 和 `remote_terminal` 模块已移除，不再作为目标公开 API。
+- `session destroy` 会销毁远端 backend shell，同时保留本地 session state、命令日志、传输记录、artifact manifest 和 transcript。
+- 真实验证：Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；同一 session 内 `cd/export/pwd/printf` 状态连续保留，后台命令 wait/stop、文件传输和 cleanup 均通过。
+
+### 2026-05-14 - 平台边界文档收束
+
+- 明确当前 MVP 主支持平台为 Linux/SSH + tmux；Windows OpenSSH + WSL 不作为当前上线主路径。
+- 新增 `docs/platform-support.md`，同步 README、需求、overview、核心灯塔、API、spec、getting-started、skill 和 launch acceptance 文档。
+- `startup_commands` 与 `path_mappings` 保留为兼容/未来 backend 输入；当前持久 session backend 可拒绝依赖这些启动链路的机器。
+- 验证：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过。
+
+### 2026-05-14 - PR #6 review transcript 持久化修复
+
+- 针对 reviewer 提出的 transcript 覆盖风险，`session read` 改为把远端 tmux capture 增量合并到本地累计 transcript，不再用有限 tmux buffer 覆盖本地文件。
+- 本地 transcript 文件读写和 session state 更新统一放入 `remote_state_lock`，并避免无变化时重复写文件。
+- 新增回归测试模拟远端 capture 因 history rotation 只剩尾部内容时，本地 transcript 仍保留旧历史并只追加新增行。
+- 验证：`python3 -m py_compile remote_runner/remote_session.py` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。

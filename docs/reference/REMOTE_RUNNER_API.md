@@ -1,7 +1,8 @@
 # Remote Runner API Contract v0
 
-This document describes the target user- and agent-facing CLI contract. The current repository still
-implements the legacy `seed-runner` prototype; see `SEED_RUNNER_API.md` for that current API.
+This document describes the current target user- and agent-facing CLI contract for
+`remote-runner`. The repository still contains the legacy `seed-runner` prototype; see
+`SEED_RUNNER_API.md` for that older API.
 
 ## Design Goals
 
@@ -11,6 +12,16 @@ implements the legacy `seed-runner` prototype; see `SEED_RUNNER_API.md` for that
 - No credentials in stdout, stderr, logs, reports, or JSON payloads.
 - Recoverable state: machines, sessions, commands, logs, transfers, and artifacts can be queried after an interruption.
 - Backend flexibility: SSH, tmux, rsync, SFTP, Slurm, Docker, or other mechanisms are implementation details.
+
+## Platform Support
+
+The current MVP is Linux-first. The actively supported persistent session path targets Linux
+machines reachable over SSH/SFTP with `tmux` available on the remote host.
+
+Windows OpenSSH + WSL is not the current primary support target. `startup_commands` and
+`path_mappings` remain in the machine schema because they are useful for compatibility and future
+backend work, but machines that require startup commands may be explicitly rejected by the current
+persistent session backend. See [Platform Support](../platform-support.md).
 
 ## Global Options
 
@@ -69,7 +80,7 @@ Minimum stored fields:
 }
 ```
 
-For a Windows OpenSSH machine that should enter WSL before Linux commands:
+For a future or compatibility Windows OpenSSH machine that should enter WSL before Linux commands:
 
 ```bash
 remote-runner machine configure-startup lab-win-01 \
@@ -94,7 +105,8 @@ remote-runner machine configure-path-map lab-win-01 \
 ```
 
 `file put/get/list` apply this mapping before SFTP. Transfer records and artifact manifests keep
-the original user-supplied remote path, not the backend-specific path.
+the original user-supplied remote path, not the backend-specific path. This compatibility path is
+not the current primary persistent-session support target.
 
 ### List Machines
 
@@ -175,13 +187,17 @@ remote-runner session create \
   "session_id": "sess_abc123",
   "machine_id": "lab-gpu-01",
   "cwd": "/home/ely/project",
-  "status": "ready",
+  "status": "active",
+  "backend": "tmux",
   "created_at": "2026-05-07T10:00:00Z",
-  "log_dir_local": "/Users/ely/.remote-runner/logs/sess_abc123"
+  "log_dir_local": "/Users/ely/.remote-runner/logs/sess_abc123",
+  "transcript_file_local": "/Users/ely/.remote-runner/logs/sess_abc123/transcript.txt"
 }
 ```
 
-If `--cwd` is omitted, use the machine's `default_cwd`.
+If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persistent remote shell
+context for this work area; backend details such as tmux are implementation details, not a separate
+top-level resource. In the current MVP, this persistent backend is Linux/SSH + tmux.
 
 ### List Sessions
 
@@ -195,7 +211,7 @@ and log directory.
 ### Show Session
 
 ```bash
-remote-runner session show sess_abc123 --json
+remote-runner session show --session sess_abc123 --json
 ```
 
 Returns the session record, last command, last exit code, command count, and log locations.
@@ -210,10 +226,12 @@ remote-runner session exec \
   --json
 ```
 
-This is the default synchronous path. `--mode wait` runs the command and returns only after the
-remote process finishes. It preserves the existing short-command behavior.
+This is the default synchronous path. `--mode wait` runs the command inside the persistent session
+shell and returns only after the command finishes. Shell-local state such as `cd`, exported
+variables, aliases, and shell functions remains available to later commands in the same session.
 
-Optional cwd override:
+Optional cwd override. This changes the persistent shell's current directory before running the
+command:
 
 ```bash
 remote-runner session exec \
@@ -256,6 +274,8 @@ Behavior requirements:
 - Do not require sshfs, FUSE, reverse SSH, or mount setup.
 - `session exec` defaults to synchronous wait mode; long-running jobs should use
   `--mode background`.
+- `session exec` runs in the session shell. It must keep command boundaries and exit codes through
+  Remote Runner command wrappers and state files, not by relying on chat memory.
 
 ### Background Command Start
 
@@ -267,8 +287,8 @@ remote-runner session exec \
   --json
 ```
 
-Background start returns immediately after the command is accepted. The response includes
-`command_id`, `status=running`, `remote_state_dir`, `remote_pid`, remote log/status file
+Background start returns immediately after the command is accepted in the session shell. The
+response includes `command_id`, `status=running`, `remote_state_dir`, remote log/status file
 references, timestamps, and `log_file_local` for the local summary record.
 
 Background commands persist their own remote state under the session cwd in
@@ -296,6 +316,27 @@ returned JSON includes `wait_timed_out` so callers can distinguish "still runnin
 `stop` sends a stop request for a background command. Repeating `stop` on a finished command must
 return a clear result without losing logs or state.
 
+### Session Input and Transcript
+
+```bash
+remote-runner session send \
+  --session sess_abc123 \
+  --input "python" \
+  --json
+
+remote-runner session read --session sess_abc123 --json
+remote-runner session read --session sess_abc123 --since 1200 --json
+```
+
+`session send` sends raw input to the same session shell and presses Enter by default; use
+`--no-enter` for partial input. This is for shell-panel and interactive workflows. For normal agent
+automation, prefer `session exec` because it also records command boundaries, stdout/stderr,
+exit code, timestamps, and logs.
+
+`session read` returns captured transcript text, a `cursor`, and the requested `since` offset.
+Callers can store the cursor and later request only the new transcript region. The local transcript
+file is preserved in Remote Runner state for recovery.
+
 ### Logs
 
 ```bash
@@ -310,7 +351,9 @@ Returns ordered command log metadata and paths. A future text mode may print com
 remote-runner session destroy --session sess_abc123 --json
 ```
 
-Returns final status and preserved log location.
+Returns final status and preserved log/transcript locations. Destroying a session stops the remote
+backend shell but preserves local session records, command logs, transfer records, artifacts, and
+transcript path.
 
 ## File Transfer Commands
 

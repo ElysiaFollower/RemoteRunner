@@ -183,6 +183,69 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
         assert stop_show["status"] == "stopped"
         assert stop_show["exit_code"] == 143
 
+        session_token = f"rr-session-{probe_id}"
+        session_cd = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            f"cd {shlex.quote(remote_cwd)}",
+            "--json",
+        )
+        assert session_cd["exit_code"] == 0
+
+        session_export = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            f"export RR_SESSION_TOKEN={shlex.quote(session_token)}",
+            "--json",
+        )
+        assert session_export["exit_code"] == 0
+
+        session_pwd = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            "pwd",
+            "--json",
+        )
+        assert session_pwd["exit_code"] == 0
+        assert remote_cwd in session_pwd["stdout"]
+
+        session_token_result = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            'printf "$RR_SESSION_TOKEN\\n"',
+            "--json",
+        )
+        assert session_token_result["exit_code"] == 0
+        assert session_token in session_token_result["stdout"]
+
+        session_read = None
+        for _ in range(20):
+            session_read = _run_remote_runner(
+                "session",
+                "read",
+                "--session",
+                session_id,
+                "--json",
+            )
+            if session_token in session_read["transcript"]:
+                break
+            time.sleep(0.2)
+        assert session_read is not None
+        assert remote_cwd in session_read["transcript"]
+        assert session_token in session_read["transcript"]
+
         put = _run_remote_runner(
             "file",
             "put",

@@ -13,7 +13,14 @@ from remote_runner.remote_state import (
     remote_state_lock,
     save_session_state,
 )
-from remote_runner.utils import ensure_dir, generate_id, get_timestamp, parse_timestamp, write_file
+from remote_runner.utils import (
+    ensure_dir,
+    generate_id,
+    get_timestamp,
+    parse_timestamp,
+    read_file,
+    write_file,
+)
 
 
 class RemoteSessionManager:
@@ -27,27 +34,80 @@ class RemoteSessionManager:
         self.machine_manager = machine_manager or get_remote_machine_manager()
         self.backend = backend or ParamikoRemoteBackend()
 
+    @staticmethod
+    def _transcript_overlap(existing: str, captured: str) -> int:
+        max_len = min(len(existing), len(captured))
+        if max_len == 0:
+            return 0
+
+        pattern = captured[:max_len]
+        text = existing[-max_len:]
+        combined = pattern + "\0" + text
+        prefix = [0] * len(combined)
+        for index in range(1, len(combined)):
+            length = prefix[index - 1]
+            while length > 0 and combined[index] != combined[length]:
+                length = prefix[length - 1]
+            if combined[index] == combined[length]:
+                length += 1
+            prefix[index] = length
+        return prefix[-1]
+
+    @classmethod
+    def _merge_transcript_capture(cls, existing: str, captured: str) -> str:
+        if not captured:
+            return existing
+        if not existing:
+            return captured
+        if captured == existing or captured in existing or existing.endswith(captured):
+            return existing
+        if captured.startswith(existing):
+            return captured
+
+        overlap = cls._transcript_overlap(existing, captured)
+        if overlap > 0:
+            return existing + captured[overlap:]
+
+        separator = "" if existing.endswith("\n") or captured.startswith("\n") else "\n"
+        return existing + separator + captured
+
     def create(self, machine_id: str, cwd: Optional[str] = None) -> Dict[str, Any]:
         machine = self.machine_manager.get(machine_id)
         session_id = generate_id("sess")
         remote_cwd = cwd or machine.default_cwd
         log_dir = get_log_dir(session_id)
         ensure_dir(log_dir)
+        transcript_file = os.path.join(log_dir, "transcript.txt")
+        created_at = get_timestamp()
+        backend_record = self.backend.create_terminal(
+            machine=machine,
+            cwd=remote_cwd,
+            terminal_id=session_id,
+        )
         session = {
             "session_id": session_id,
             "machine_id": machine_id,
             "cwd": remote_cwd,
+            "backend": backend_record.get("backend", "tmux"),
             "status": "active",
             "busy": False,
             "active_command": None,
-            "created_at": get_timestamp(),
+            "created_at": created_at,
+            "updated_at": created_at,
+            "destroyed_at": None,
             "last_command": None,
+            "last_input": None,
             "last_exit_code": None,
             "command_count": 0,
             "transfer_count": 0,
             "log_dir_local": log_dir,
+            "transcript_file_local": transcript_file,
+            "transcript_cursor": 0,
             "commands": [],
+            **backend_record,
         }
+        write_file(transcript_file, "")
+        os.chmod(transcript_file, 0o600)
         with remote_state_lock():
             save_session_state(session)
         return self._public_session(session)
@@ -84,24 +144,59 @@ class RemoteSessionManager:
         log_file = os.path.join(reservation["log_dir_local"], log_filename)
         ensure_dir(reservation["log_dir_local"])
 
+        started_at = get_timestamp()
         try:
-            result = self.backend.run(machine, remote_cwd, command, timeout=timeout)
+            backend_record = self.backend.start_session_command(
+                machine=machine,
+                session_record=load_session_state(session_id),
+                command=command,
+                command_id=command_id,
+                cwd=remote_cwd,
+                cwd_override=reservation["cwd_override"],
+            )
+            running_record = {
+                "index": command_index,
+                "command_id": command_id,
+                "command": command,
+                "cwd": remote_cwd,
+                "mode": "wait",
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "started_at": started_at,
+                "ended_at": None,
+                "duration_ms": None,
+                "log_file_local": log_file,
+                "status": "running",
+                **backend_record,
+            }
+            result = self.backend.wait_session_command(
+                machine=machine,
+                command_record=running_record,
+                timeout=timeout,
+            )
+            ended_at = result.get("ended_at") or get_timestamp()
+            started_at = result.get("started_at") or started_at
+            status = result.get("status", "exited")
             record = {
                 "index": command_index,
                 "command_id": command_id,
                 "command": command,
                 "cwd": remote_cwd,
                 "mode": "wait",
-                "exit_code": result.exit_code,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-                "started_at": result.started_at,
-                "ended_at": result.ended_at,
-                "duration_ms": result.duration_ms,
+                "exit_code": result.get("exit_code"),
+                "stdout": result.get("stdout", ""),
+                "stderr": result.get("stderr", ""),
+                "stdout_truncated": result.get("stdout_truncated", False),
+                "stderr_truncated": result.get("stderr_truncated", False),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_ms": self._duration_ms(started_at, ended_at),
                 "log_file_local": log_file,
-                "status": "completed",
+                "status": "completed" if status == "exited" else status,
+                **backend_record,
             }
             self._write_command_log(record)
         except Exception as exc:
@@ -165,12 +260,13 @@ class RemoteSessionManager:
         started_at = get_timestamp()
 
         try:
-            backend_record = self.backend.start_background(
+            backend_record = self.backend.start_session_command(
                 machine=machine,
-                cwd=remote_cwd,
+                session_record=load_session_state(session_id),
                 command=command,
                 command_id=command_id,
-                timeout=timeout,
+                cwd=remote_cwd,
+                cwd_override=reservation["cwd_override"],
             )
             record = {
                 "index": command_index,
@@ -244,12 +340,20 @@ class RemoteSessionManager:
 
         machine = self.machine_manager.get(self._session_machine_id(session_id))
         try:
-            update = self.backend.inspect_background(
-                machine=machine,
-                command_record=record,
-                stdout_limit=stdout_limit,
-                stderr_limit=stderr_limit,
-            )
+            if record.get("command_backend") == "tmux":
+                update = self.backend.inspect_session_command(
+                    machine=machine,
+                    command_record=record,
+                    stdout_limit=stdout_limit,
+                    stderr_limit=stderr_limit,
+                )
+            else:
+                update = self.backend.inspect_background(
+                    machine=machine,
+                    command_record=record,
+                    stdout_limit=stdout_limit,
+                    stderr_limit=stderr_limit,
+                )
         except Exception:
             return self._public_command_result(
                 session_id,
@@ -308,11 +412,100 @@ class RemoteSessionManager:
             return result
 
         machine = self.machine_manager.get(machine_id)
-        stop_result = self.backend.stop_background(machine, record)
+        if record.get("command_backend") == "tmux":
+            session = load_session_state(session_id)
+            stop_result = self.backend.stop_session_command(machine, session, record)
+        else:
+            stop_result = self.backend.stop_background(machine, record)
         refreshed = self.command_show(session_id, command_id)
         refreshed["stop_requested"] = True
         refreshed.update(stop_result)
         return refreshed
+
+    def send(self, session_id: str, input_text: str, enter: bool = True) -> Dict[str, Any]:
+        session = load_session_state(session_id)
+        if session.get("status") != "active":
+            raise RuntimeError(f"Session '{session_id}' is not active")
+        machine = self.machine_manager.get(session["machine_id"])
+        send_result = self.backend.send_terminal_input(
+            machine=machine,
+            terminal_record=session,
+            input_text=input_text,
+            enter=enter,
+        )
+        session["last_input"] = input_text
+        session["updated_at"] = get_timestamp()
+        with remote_state_lock():
+            save_session_state(session)
+        result = self._public_session(session)
+        result.update(send_result)
+        result["enter"] = enter
+        return result
+
+    def read(
+        self,
+        session_id: str,
+        since: Optional[int] = None,
+        max_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        session = load_session_state(session_id)
+        transcript_file = session["transcript_file_local"]
+        captured_transcript: Optional[str] = None
+        if session.get("status") == "active":
+            machine = self.machine_manager.get(session["machine_id"])
+            capture = self.backend.capture_terminal(machine=machine, terminal_record=session)
+            captured_transcript = capture.get("transcript", "")
+            status = capture.get("status") or session.get("status", "active")
+        else:
+            status = session.get("status", "destroyed")
+
+        with remote_state_lock():
+            session = load_session_state(session_id)
+            transcript_file_exists = os.path.exists(transcript_file)
+            if transcript_file_exists:
+                existing_transcript = read_file(transcript_file)
+            else:
+                existing_transcript = ""
+            if captured_transcript is None:
+                transcript = existing_transcript
+            else:
+                transcript = self._merge_transcript_capture(
+                    existing_transcript,
+                    captured_transcript,
+                )
+            cursor = len(transcript)
+            state_changed = (
+                transcript != existing_transcript
+                or status != session.get("status")
+                or cursor != session.get("transcript_cursor", 0)
+            )
+            if state_changed:
+                write_file(transcript_file, transcript)
+                if not transcript_file_exists:
+                    os.chmod(transcript_file, 0o600)
+                session["status"] = status
+                session["transcript_cursor"] = cursor
+                session["updated_at"] = get_timestamp()
+                save_session_state(session)
+
+        cursor = len(transcript)
+        start = max(0, since or 0)
+        chunk = transcript[start:]
+        truncated = False
+        if max_chars is not None and max_chars >= 0 and len(chunk) > max_chars:
+            chunk = chunk[:max_chars]
+            truncated = True
+
+        result = self._public_session(session)
+        result.update(
+            {
+                "transcript": chunk,
+                "cursor": cursor,
+                "since": start,
+                "transcript_truncated": truncated,
+            }
+        )
+        return result
 
     def logs(self, session_id: str) -> Dict[str, Any]:
         session = load_session_state(session_id)
@@ -335,30 +528,48 @@ class RemoteSessionManager:
         }
 
     def destroy(self, session_id: str) -> Dict[str, Any]:
+        session = load_session_state(session_id)
+        if session.get("busy"):
+            raise RuntimeError(f"Session '{session_id}' is busy")
+        running_commands = [
+            command.get("command_id") or str(command.get("index"))
+            for command in session.get("commands", [])
+            if command.get("status") == "running"
+        ]
+        if running_commands:
+            raise RuntimeError(
+                f"Session '{session_id}' has running background commands: "
+                + ", ".join(running_commands)
+            )
+
+        capture_error = None
+        destroy_result: Dict[str, Any] = {"destroy_result": "already_destroyed"}
+        if session.get("status") == "active":
+            try:
+                self.read(session_id)
+            except Exception as exc:
+                capture_error = str(exc)
+            machine = self.machine_manager.get(session["machine_id"])
+            destroy_result = self.backend.destroy_terminal(machine, session)
+
         with remote_state_lock():
             session = load_session_state(session_id)
-            if session.get("busy"):
-                raise RuntimeError(f"Session '{session_id}' is busy")
-            running_commands = [
-                command.get("command_id") or str(command.get("index"))
-                for command in session.get("commands", [])
-                if command.get("status") == "running"
-            ]
-            if running_commands:
-                raise RuntimeError(
-                    f"Session '{session_id}' has running background commands: "
-                    + ", ".join(running_commands)
-                )
             session["status"] = "destroyed"
             session["destroyed_at"] = get_timestamp()
+            session["updated_at"] = session["destroyed_at"]
             save_session_state(session)
-        return {
+        result = {
             "session_id": session_id,
             "status": "destroyed",
             "destroyed_at": session["destroyed_at"],
             "logs_preserved": True,
             "logs_location": session["log_dir_local"],
+            "transcript_file_local": session.get("transcript_file_local"),
+            **destroy_result,
         }
+        if capture_error:
+            result["transcript_capture_error"] = capture_error
+        return result
 
     def _reserve_command(
         self,
@@ -372,6 +583,16 @@ class RemoteSessionManager:
                 raise RuntimeError(f"Session '{session_id}' has been destroyed")
             if session.get("busy"):
                 raise RuntimeError(f"Session '{session_id}' is busy")
+            running_commands = [
+                command.get("command_id") or str(command.get("index"))
+                for command in session.get("commands", [])
+                if command.get("status") == "running"
+            ]
+            if running_commands:
+                raise RuntimeError(
+                    f"Session '{session_id}' has running commands: "
+                    + ", ".join(running_commands)
+                )
             remote_cwd = cwd or session["cwd"]
             command_index = int(session.get("command_count", 0)) + 1
             command_id = generate_id("cmd")
@@ -389,6 +610,7 @@ class RemoteSessionManager:
             "command_id": command_id,
             "machine_id": session["machine_id"],
             "cwd": remote_cwd,
+            "cwd_override": cwd is not None,
             "log_dir_local": session["log_dir_local"],
         }
 
@@ -400,6 +622,7 @@ class RemoteSessionManager:
             session["last_exit_code"] = record["exit_code"]
             session["busy"] = False
             session["active_command"] = None
+            session["updated_at"] = get_timestamp()
             session.setdefault("commands", []).append(record)
             save_session_state(session)
 
@@ -452,6 +675,7 @@ class RemoteSessionManager:
                     commands[index] = updated
                     session["last_command"] = updated["command"]
                     session["last_exit_code"] = updated.get("exit_code")
+                    session["updated_at"] = get_timestamp()
                     save_session_state(session)
                     return
         raise KeyError(f"Command '{command_id}' not found in session '{session_id}'")
@@ -511,8 +735,11 @@ class RemoteSessionManager:
             "remote_status_file",
             "remote_pid_file",
             "remote_exit_code_file",
+            "remote_started_at_file",
             "remote_ended_at_file",
             "remote_worker_file",
+            "remote_wrapper_file",
+            "command_backend",
         ):
             if key in record:
                 result[key] = record[key]
@@ -525,12 +752,19 @@ class RemoteSessionManager:
             "cwd": session["cwd"],
             "status": session["status"],
             "busy": session.get("busy", False),
+            "backend": session.get("backend"),
             "created_at": session["created_at"],
+            "updated_at": session.get("updated_at"),
+            "destroyed_at": session.get("destroyed_at"),
             "last_command": session.get("last_command"),
+            "last_input": session.get("last_input"),
             "last_exit_code": session.get("last_exit_code"),
             "command_count": session.get("command_count", 0),
             "transfer_count": session.get("transfer_count", 0),
             "log_dir_local": session["log_dir_local"],
+            "transcript_cursor": session.get("transcript_cursor", 0),
+            "transcript_file_local": session.get("transcript_file_local"),
+            "remote_backend_name": session.get("remote_terminal_name"),
         }
 
 

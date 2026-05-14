@@ -36,6 +36,7 @@ class FakeBackend:
         self.puts = []
         self.gets = []
         self.lists = []
+        self.terminals = {}
         self.block_started = threading.Event()
         self.block_release = threading.Event()
 
@@ -134,6 +135,169 @@ class FakeBackend:
         record["stdout"] = stdout
         record["stderr"] = stderr
         record["ended_at"] = "2026-05-08T00:00:04Z"
+
+    def create_terminal(self, machine, cwd, terminal_id, width=120, height=40, history_limit=10000):
+        self.terminals[terminal_id] = {
+            "machine_id": machine.machine_id,
+            "cwd": cwd,
+            "env": {},
+            "status": "active",
+            "transcript": f"$ cd {cwd}\n",
+            "remote_terminal_name": f"rr_{terminal_id}",
+        }
+        return {
+            "backend": "tmux",
+            "remote_terminal_name": f"rr_{terminal_id}",
+            "history_limit": history_limit,
+            "width": width,
+            "height": height,
+        }
+
+    def send_terminal_input(self, machine, terminal_record, input_text, enter=True):
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals[terminal_id]
+        terminal["transcript"] += f"$ {input_text}\n"
+        if input_text.startswith("cd "):
+            path = input_text.split(" ", 1)[1].strip()
+            terminal["cwd"] = path
+        elif input_text.startswith("export "):
+            key, value = input_text[len("export ") :].split("=", 1)
+            terminal["env"][key] = value
+        elif input_text == "pwd":
+            terminal["transcript"] += f"{terminal['cwd']}\n"
+        elif input_text == 'printf "$RR_TOKEN\\n"':
+            terminal["transcript"] += f"{terminal['env'].get('RR_TOKEN', '')}\n"
+        elif input_text.startswith("echo "):
+            terminal["transcript"] += input_text[len("echo ") :] + "\n"
+        return {"input_sent": True}
+
+    def capture_terminal(self, machine, terminal_record):
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals[terminal_id]
+        return {"status": terminal["status"], "transcript": terminal["transcript"]}
+
+    def destroy_terminal(self, machine, terminal_record):
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals[terminal_id]
+        terminal["status"] = "destroyed"
+        return {"destroy_result": "destroyed"}
+
+    def start_session_command(
+        self,
+        machine,
+        session_record,
+        command,
+        command_id,
+        cwd=None,
+        cwd_override=False,
+    ):
+        terminal = self.terminals[session_record["session_id"]]
+        self.commands.append(
+            {
+                "machine_id": machine.machine_id,
+                "cwd": cwd or session_record["cwd"],
+                "command": command,
+                "timeout": None,
+                "cwd_override": cwd_override,
+            }
+        )
+        if command == "backend-error":
+            raise RuntimeError("ssh failed")
+        if command == "block":
+            self.block_started.set()
+            assert self.block_release.wait(timeout=2)
+
+        stdout, stderr, exit_code = self._execute_terminal_command(terminal, command, cwd, cwd_override)
+        status = "running" if command in {"sleep 30", "tail -f app.log"} else "exited"
+        if command in {"sleep 30", "tail -f app.log"}:
+            stdout = "started\n"
+            stderr = ""
+            exit_code = None
+        self.background_commands[command_id] = {
+            "machine_id": machine.machine_id,
+            "cwd": cwd or session_record["cwd"],
+            "command": command,
+            "status": status,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "started_at": "2026-05-08T00:00:01Z",
+            "ended_at": None if status == "running" else "2026-05-08T00:00:02Z",
+        }
+        remote_state_dir = f"{session_record['cwd']}/.remote-runner/commands/{command_id}"
+        return {
+            "command_backend": "tmux",
+            "remote_state_dir": remote_state_dir,
+            "remote_stdout_file": f"{remote_state_dir}/stdout.log",
+            "remote_stderr_file": f"{remote_state_dir}/stderr.log",
+            "remote_status_file": f"{remote_state_dir}/status",
+            "remote_exit_code_file": f"{remote_state_dir}/exit_code",
+            "remote_started_at_file": f"{remote_state_dir}/started_at",
+            "remote_ended_at_file": f"{remote_state_dir}/ended_at",
+            "remote_wrapper_file": f"{remote_state_dir}/run.sh",
+        }
+
+    def wait_session_command(self, machine, command_record, timeout=300, stdout_limit=8192, stderr_limit=8192):
+        self.commands[-1]["timeout"] = timeout
+        return self.inspect_session_command(
+            machine,
+            command_record,
+            stdout_limit=stdout_limit,
+            stderr_limit=stderr_limit,
+        )
+
+    def inspect_session_command(self, machine, command_record, stdout_limit=8192, stderr_limit=8192):
+        record = self.background_commands[command_record["command_id"]]
+        stdout = record["stdout"]
+        stderr = record["stderr"]
+        return {
+            "status": record["status"],
+            "exit_code": record["exit_code"],
+            "stdout": stdout[:stdout_limit],
+            "stderr": stderr[:stderr_limit],
+            "stdout_truncated": len(stdout) > stdout_limit,
+            "stderr_truncated": len(stderr) > stderr_limit,
+            "started_at": record["started_at"],
+            "ended_at": record["ended_at"],
+        }
+
+    def stop_session_command(self, machine, session_record, command_record):
+        record = self.background_commands[command_record["command_id"]]
+        record["status"] = "stopped"
+        record["exit_code"] = 143
+        record["ended_at"] = "2026-05-08T00:00:05Z"
+        return {"stop_result": "stopped"}
+
+    def _execute_terminal_command(self, terminal, command, cwd=None, cwd_override=False):
+        if cwd_override and cwd:
+            terminal["cwd"] = cwd
+        terminal["transcript"] += f"$ {command}\n"
+        if command.startswith("cd "):
+            path = command.split(" ", 1)[1].strip()
+            terminal["cwd"] = path
+            return "", "", 0
+        if command.startswith("export "):
+            key, value = command[len("export ") :].split("=", 1)
+            terminal["env"][key] = value
+            return "", "", 0
+        if command == "pwd":
+            stdout = f"{terminal['cwd']}\n"
+            terminal["transcript"] += stdout
+            return stdout, "", 0
+        if command == 'printf "$RR_TOKEN\\n"':
+            stdout = f"{terminal['env'].get('RR_TOKEN', '')}\n"
+            terminal["transcript"] += stdout
+            return stdout, "", 0
+        if command.startswith("echo "):
+            stdout = command[len("echo ") :] + "\n"
+            terminal["transcript"] += stdout
+            return stdout, "", 0
+        if command == "exit-seven":
+            terminal["transcript"] += "failed\n"
+            return "", "failed\n", 7
+        return f"ran {command}\n", "", 0
 
     def put(self, machine, local_path, remote_path):
         self.puts.append((machine.machine_id, local_path, remote_path))
@@ -307,9 +471,9 @@ def test_session_exec_logs_state_and_preserves_nonzero_exit(remote_state_dir, tm
     )
     result = reloaded_manager.exec(session_id, "echo ok", timeout=123)
     assert result["exit_code"] == 0
-    assert result["stdout"] == "ran echo ok\n"
+    assert result["stdout"] == "ok\n"
     assert result["duration_ms"] == 1000
-    assert Path(result["log_file_local"]).read_text().find("ran echo ok") >= 0
+    assert Path(result["log_file_local"]).read_text().find("ok") >= 0
     assert backend.commands[-1]["timeout"] == 123
 
     nonzero = reloaded_manager.exec(session_id, "exit-seven")
@@ -517,6 +681,147 @@ def test_remote_runner_cli_background_command_outputs_json(remote_state_dir, tmp
     assert result_payload["status"] == "running"
     assert result_payload["command_id"] == payload["command_id"]
     assert result_payload["remote_status_file"].endswith("/status")
+
+
+def test_session_preserves_shell_state_and_incremental_transcript(
+    remote_state_dir,
+    tmp_path,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    created = session_manager.create("lab-gpu-01", cwd="/home/ely/project")
+    session_id = created["session_id"]
+
+    assert created["status"] == "active"
+    assert created["backend"] == "tmux"
+    assert created["remote_backend_name"].startswith("rr_sess_")
+    assert Path(created["transcript_file_local"]).exists()
+
+    reloaded = RemoteSessionManager(machine_manager=RemoteMachineManager(), backend=backend)
+    reloaded.exec(session_id, "cd /home/ely/project/subdir")
+    reloaded.exec(session_id, "export RR_TOKEN=terminal-ok")
+    pwd = reloaded.exec(session_id, "pwd")
+    token = reloaded.exec(session_id, 'printf "$RR_TOKEN\\n"')
+
+    assert pwd["stdout"] == "/home/ely/project/subdir\n"
+    assert token["stdout"] == "terminal-ok\n"
+
+    transcript = reloaded.read(session_id)
+    cursor = transcript["cursor"]
+
+    assert "/home/ely/project/subdir" in transcript["transcript"]
+    assert "terminal-ok" in transcript["transcript"]
+    assert load_session_state(session_id)["transcript_cursor"] == cursor
+    assert Path(transcript["transcript_file_local"]).read_text().find("terminal-ok") >= 0
+
+    reloaded.send(session_id, "echo after-cursor")
+    incremental = reloaded.read(session_id, since=cursor)
+
+    assert "after-cursor" in incremental["transcript"]
+    assert incremental["since"] == cursor
+    assert incremental["cursor"] > cursor
+
+    destroyed = reloaded.destroy(session_id)
+    assert destroyed["status"] == "destroyed"
+    assert destroyed["destroy_result"] == "destroyed"
+    destroyed_read = reloaded.read(session_id)
+    assert "terminal-ok" in destroyed_read["transcript"]
+    assert destroyed_read["status"] == "destroyed"
+    with pytest.raises(RuntimeError, match="not active"):
+        reloaded.send(session_id, "pwd")
+
+
+def test_session_read_appends_rotated_remote_transcript(
+    remote_state_dir,
+    tmp_path,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    created = session_manager.create("lab-gpu-01", cwd="/home/ely/project")
+    session_id = created["session_id"]
+    transcript_file = Path(created["transcript_file_local"])
+
+    backend.terminals[session_id]["transcript"] = "line-1\nline-2\nline-3\n"
+    first_read = session_manager.read(session_id)
+
+    backend.terminals[session_id]["transcript"] = "line-3\nline-4\n"
+    second_read = session_manager.read(session_id, since=first_read["cursor"])
+
+    assert second_read["transcript"] == "line-4\n"
+    assert second_read["cursor"] > first_read["cursor"]
+    assert transcript_file.read_text() == "line-1\nline-2\nline-3\nline-4\n"
+
+
+def test_remote_runner_cli_session_send_read_outputs_json(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    monkeypatch.setattr("remote_runner.cli.get_remote_session_manager", lambda: manager)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "create",
+            "--machine",
+            "lab-gpu-01",
+            "--cwd",
+            "/home/ely/project",
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    created = json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "send",
+            "--session",
+            created["session_id"],
+            "--input",
+            "pwd",
+            "--json",
+        ],
+    )
+    remote_cli_main()
+    sent = json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "read",
+            "--session",
+            created["session_id"],
+            "--json",
+        ],
+    )
+    remote_cli_main()
+    read = json.loads(capsys.readouterr().out)
+
+    assert created["session_id"].startswith("sess_")
+    assert sent["input_sent"] is True
+    assert "/home/ely/project" in read["transcript"]
 
 
 def test_file_transfer_records_success_and_failure(remote_state_dir, tmp_path):

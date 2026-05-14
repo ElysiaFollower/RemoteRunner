@@ -63,6 +63,8 @@ recommended path for real credentials because shell history can leak it.
 Machine records may include ordered `startup_commands`. These commands are sent after SSH login and
 before the normal cwd change and user command. This covers hosts where the first usable shell is not
 the SSH default shell, such as a Windows OpenSSH host that must run `wsl` before Linux commands.
+They are compatibility inputs, not the current launch path for persistent sessions: the first
+persistent backend is Linux/SSH + `tmux` and may reject machines that require startup commands.
 
 Existing machines can update startup behavior without re-entering credentials:
 
@@ -84,7 +86,9 @@ remote-runner machine configure-path-map <machine_id> \
   --json
 ```
 
-This is an explicit configuration, not automatic path discovery.
+This is an explicit configuration, not automatic path discovery. Path mappings are retained for
+compatibility and future backend work; they do not make Windows/WSL a primary support target for the
+current persistent session backend.
 
 Same-name machines are rejected by default. `--replace` allows overwriting an existing machine only
 after exact machine ID confirmation, either through interactive prompt or
@@ -226,8 +230,53 @@ Returns ordered command log metadata and local log paths.
 
 ### `remote-runner session destroy --session <session_id> --json`
 
-Marks or removes the active session from the active list while preserving local logs, command
-records, transfer records, and artifacts.
+Destroys the remote backend shell while preserving local logs, transcript, command records,
+transfer records, and artifacts.
+
+## Persistent Session Shell
+
+`session` is the public persistent shell/terminal abstraction. Backend choices such as tmux are
+implementation details. A separate top-level `terminal` resource is not part of the target API.
+
+### `remote-runner session create --machine <machine_id> [--cwd <remote_cwd>] --json`
+
+Creates a recoverable session record and remote backend shell. If `--cwd` is omitted, use the
+machine's `default_cwd`.
+
+Minimum response fields:
+
+- `session_id`
+- `machine_id`
+- `cwd`
+- `backend`
+- `status`
+- `created_at`
+- `updated_at`
+- `transcript_file_local`
+- `log_dir_local`
+
+The first persistent backend is Linux/SSH + `tmux`. Machines with `startup_commands` may be
+explicitly rejected until interactive startup terminal semantics are designed. See
+`docs/platform-support.md` for the current Linux-first platform boundary.
+
+### `remote-runner session exec --session <session_id> --cmd <cmd> --json`
+
+Runs the command in the same session shell. Multiple exec calls to the same session must preserve
+shell-local state such as `cd`, exported environment variables, aliases, and jobs. `session exec`
+must still return structured `command_id`, `exit_code`, stdout/stderr, timestamps, duration, and
+log references. Command boundary and exit code recovery are handled by Remote Runner wrappers and
+state files, not by parsing chat history.
+
+### `remote-runner session send --session <session_id> --input <text> [--no-enter] --json`
+
+Sends raw input into the selected session shell. This is for UI shell panels or unusual interactive
+flows. Normal agent automation should prefer `session exec`.
+
+### `remote-runner session read --session <session_id> [--since <cursor>] [--max-chars <n>] --json`
+
+Captures the session transcript. The response includes `transcript`, `cursor`, `since`,
+`transcript_truncated`, and the local transcript path. A new CLI process must be able to recover and
+read the transcript from local state plus the remote backend.
 
 ## File Transfer Commands
 

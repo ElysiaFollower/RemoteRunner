@@ -15,11 +15,18 @@ Use `remote-runner` as the stable interface:
 
 - machine registry and diagnostics: `machine list/show/doctor`
 - remote command context: `session create/exec`, `session command list/show/wait/stop`,
-  `session logs/destroy`
+  `session send/read/logs/destroy`
 - explicit file movement: `file put/get/list`
 - one-shot closed loop: `run once`
 
 Do not use raw `ssh`, `scp`, `rsync`, `tmux`, `sshfs`, or mount workflows unless the user explicitly asks you to debug the platform itself. Remote Runner no longer uses mounted folders as its core abstraction.
+
+## Platform Boundary
+
+For normal work, choose a Linux machine reachable over SSH/SFTP with `tmux` available. The current
+persistent session backend is Linux-first. Windows OpenSSH + WSL records that depend on
+`startup_commands` and `path_mappings` are compatibility/future-backend inputs, not the primary path
+for `session create/exec/send/read/destroy`.
 
 ## Environment
 
@@ -67,7 +74,9 @@ Do not continue if `reachable`, `auth_ok`, or `default_cwd_ok` is false. Report 
 remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
 ```
 
-`session create` records local state; it does not by itself prove SSH auth. `machine doctor` and the first `session exec` are the real connectivity checks.
+`session create` opens the persistent remote shell context for this work area. On the current
+backend, the target machine should be Linux/SSH with `tmux`. `machine doctor` and the first
+`session exec` are still the practical connectivity checks.
 
 5. Run bounded commands through the session:
 
@@ -80,6 +89,8 @@ remote-runner session exec \
 ```
 
 Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command.
+Commands in the same session share shell-local state: a prior `cd`, `export`, or alias can affect
+later `session exec` calls.
 
 For long-running or persistent commands, do not compensate by using very large synchronous
 timeouts. Start the command in background mode and keep the returned `command_id`:
@@ -116,6 +127,25 @@ running background commands cannot be destroyed until those commands finish or a
 remote-runner session destroy --session <session-id> --json
 ```
 
+## Persistent Session Transcript
+
+Use `session send/read` when the task needs raw shell-panel behavior in the existing session. Do
+not create a separate top-level terminal resource.
+
+```bash
+remote-runner session send \
+  --session <session-id> \
+  --input 'cd src' \
+  --json
+
+remote-runner session read \
+  --session <session-id> \
+  --json
+```
+
+`session read` returns transcript text and a cursor for incremental reads. `session destroy` stops
+the remote backend shell and preserves local command logs and transcript state.
+
 ## File Transfer
 
 Use explicit Remote Runner file commands:
@@ -147,7 +177,7 @@ If file transfer fails, classify before retrying:
 - `session exec` fails similarly: not an SFTP-only issue.
 - `session exec` succeeds but `file put` fails with permission denied: remote path permissions problem.
 - `session exec` succeeds but SFTP cannot open paths: check SFTP subsystem and path mappings.
-- Windows OpenSSH + WSL path mismatch: use `machine configure-path-map`.
+- Windows OpenSSH + WSL path mismatch on a compatibility backend: use `machine configure-path-map`.
 
 ## Run Once
 
@@ -200,7 +230,7 @@ remote-runner machine add \
   --json
 ```
 
-Windows OpenSSH that must enter WSL first:
+Windows OpenSSH that must enter WSL first, for compatibility or future backend work:
 
 ```bash
 remote-runner machine configure-startup <machine-id> \
@@ -213,6 +243,9 @@ remote-runner machine configure-path-map <machine-id> \
   --file-prefix C:/Users/<user>/Desktop/SSHRunner \
   --json
 ```
+
+Do not choose this Windows/WSL path for normal persistent session work unless the user explicitly
+asks to test that compatibility boundary.
 
 ## Failure Handling
 

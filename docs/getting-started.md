@@ -2,6 +2,9 @@
 
 这是给本地 agent 和人类共用的最小上手说明。目标是：先把工具装进 `seedrunner` conda 环境，再用稳定命令登记机器、验证连通、跑会话、传文件、执行一次性闭环。
 
+当前主支持平台是 Linux/SSH 机器，并且第一版持久 session 后端要求远端安装 `tmux`。
+Windows OpenSSH + WSL 只保留为兼容/未来 backend 输入，不是当前上线主路径。
+
 ## 1. 安装到 seedrunner 环境
 
 ```bash
@@ -110,7 +113,45 @@ remote-runner file get \
   --json
 ```
 
-## 5. 一次性闭环
+## 5. 持久 Session Transcript
+
+`session` 本身就是持久 shell 工作上下文。连续的 `session exec` 会保留 `cd`、`export`
+等 shell-local state；如果需要原始 shell panel 输入和 transcript，用 `session send/read`。
+第一版持久 session 后端要求 Linux/SSH 机器上有 `tmux`。
+
+```bash
+remote-runner session create \
+  --machine linux-01 \
+  --cwd /home/ely/tmp \
+  --json
+
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'cd /home/ely/tmp' \
+  --json
+
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'export RR_DEMO=ok' \
+  --json
+
+remote-runner session exec \
+  --session <SESSION_ID> \
+  --cmd 'pwd && printf "$RR_DEMO\n"' \
+  --json
+
+remote-runner session read \
+  --session <SESSION_ID> \
+  --json
+
+remote-runner session destroy \
+  --session <SESSION_ID> \
+  --json
+```
+
+`session read` 会返回 transcript 和 cursor；下次可以用 `--since <cursor>` 读取增量输出。
+
+## 6. 一次性闭环
 
 `run once` 适合“上传输入 -> 执行命令 -> 拉回产物 -> 保存 run manifest”的一轮任务。
 
@@ -124,9 +165,9 @@ remote-runner run once \
   --json
 ```
 
-## 6. Windows + WSL 机器
+## 7. Windows + WSL 兼容配置
 
-如果远程机器是 Windows OpenSSH，需要先进入 WSL 再执行 Linux 命令：
+如果远程机器是 Windows OpenSSH，且未来兼容 backend 需要先进入 WSL 再执行 Linux 命令，可以记录：
 
 ```bash
 remote-runner machine configure-startup my-windows \
@@ -140,7 +181,10 @@ remote-runner machine configure-path-map my-windows \
   --json
 ```
 
-## 7. 真实机器验收
+注意：当前持久 session backend 是 Linux/SSH + tmux，不承诺支持依赖 `startup_commands`
+进入 WSL 的机器。正式上线验收应优先使用 Linux/SSH 机器。
+
+## 8. 真实机器验收
 
 默认测试不依赖真实机器。要跑真实门禁，必须显式设置环境变量：
 
@@ -151,9 +195,10 @@ REMOTE_RUNNER_REAL_TEST_CWD=/home/ely/tmp \
 python3 -m pytest tests/test_remote_runner_launch_suite.py tests/test_remote_runner_real_integration.py -q
 ```
 
-## 8. 记住这几个规则
+## 9. 记住这几个规则
 
 - `--json` 的 stdout 应该能被 `json.loads()` 直接解析。
 - 密码不会写到日志、handoff 或测试输出里。
 - 所有真实测试都必须只写入你明确指定的安全目录。
+- `session` 是连续 shell transcript；`session exec` 在同一 session shell 中提供结构化命令结果。
 - 如果 shell 找不到 `remote-runner`，先确认你在 `seedrunner` 环境里，或者直接用 `conda run -n seedrunner ...`。
