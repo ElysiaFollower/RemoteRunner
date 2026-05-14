@@ -15,12 +15,19 @@ tool for operating remote machines without repeatedly handling credentials and c
 
 The project direction is now broader:
 
-- `seed-runner` is the current prototype CLI and implementation.
-- Remote Runner is the provisional product boundary and working name.
+- `remote-runner` is the current target CLI for the Remote Runner path.
+- `seed-runner` remains available as the legacy prototype CLI.
+- Remote Runner is the product boundary and working name.
 - Research, experiments, operations, SEED labs, model training, and benchmarks are use cases above
   the remote-interaction layer.
 - SSH, tmux, sshfs, rsync, SFTP, Slurm, Docker, and Kubernetes are backend details, not product
   identity.
+
+Current MVP support is Linux-first: the actively validated persistent session backend targets
+Linux machines reachable over SSH with `tmux` installed. Windows OpenSSH + WSL compatibility exists
+only as a limited historical path for `startup_commands` and path mapping; it is not the current
+primary support target for persistent sessions. See
+[Platform Support](docs/platform-support.md).
 
 ## One-Sentence Definition
 
@@ -49,14 +56,6 @@ The intended CLI shape is:
 
 ```bash
 remote-runner machine add
-remote-runner machine configure-startup lab-gpu-01 \
-  --startup-command wsl \
-  --default-cwd /mnt/c/Users/example/Desktop/SSHRunner \
-  --json
-remote-runner machine configure-path-map lab-gpu-01 \
-  --command-prefix /mnt/c/Users/example/Desktop/SSHRunner \
-  --file-prefix C:/Users/example/Desktop/SSHRunner \
-  --json
 remote-runner machine list --json
 remote-runner machine show lab-gpu-01 --json
 remote-runner machine doctor lab-gpu-01 --json
@@ -97,13 +96,10 @@ stderr, so stdout remains one JSON object. Password auth uses hidden input in th
 interactive path. The `--password` flag exists for compatibility and tests, but it is not the
 recommended way to enter real credentials because shell history can leak it.
 
-Machines can also store ordered startup commands that run immediately after SSH login and before
-the normal `cd` plus user command. This is for hosts such as Windows OpenSSH where the usable Linux
-shell is reached by first running `wsl`.
-
-Machines can store explicit path mappings when command execution and SFTP use different path
-namespaces. `file put/get/list` apply those mappings before transfer while keeping user-facing
-paths in local state records.
+Machines can store ordered startup commands and explicit path mappings for compatibility backends,
+but the current persistent session backend is Linux/SSH + tmux. Machines that require
+`startup_commands`, such as Windows OpenSSH hosts that first enter WSL, are not the current primary
+support target for persistent sessions.
 
 `run once` is the first generic closed-loop layer above machine/session/file: it can upload inputs,
 execute one command, download artifacts, save a run manifest, and destroy the temporary session
@@ -111,16 +107,16 @@ while preserving logs.
 
 See [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) for the target contract.
 
-## Current Prototype Usage
+## Legacy Prototype Usage
 
-Until the CLI is renamed and the machine/session contract is rebuilt, the working executable is
-still `seed-runner`.
+The current target CLI is `remote-runner`. The older `seed-runner` executable remains available only
+for legacy prototype workflows that still use mount-first assumptions.
 
 ### Prerequisites
 
 - Python 3.8+
 - SSH access to the target VM with key authentication
-- Current prototype backend dependencies on the target VM: `tmux` and `sshfs`
+- Legacy prototype backend dependencies on the target VM: `tmux` and `sshfs`
 
 ### Installation
 
@@ -178,8 +174,9 @@ implementation detail, not the desired long-term public API.
 - [Requirements](REQUIREMENTS.md) - MVP requirements and acceptance criteria
 - [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) - target agent-facing CLI
 - [Getting Started](docs/getting-started.md) - install and basic usage guide
+- [Platform Support](docs/platform-support.md) - current Linux-first support boundary
 - [Launch Acceptance Suite](docs/testing/remote-runner-launch-acceptance.md) - reusable pre-release validation
-- [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - current prototype CLI reference
+- [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - legacy prototype CLI reference
 
 ## Development
 

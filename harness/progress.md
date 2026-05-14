@@ -9,9 +9,9 @@
 
 - 当前功能项：`F-020 Remote Runner Session 持久 Terminal 统一模型` passing；`F-019 Remote Runner 持久 Terminal Session` passing；`F-005` profile/report 层未开始。
 - 当前任务计划：`plans/archive/2026-05-14-remote-runner-session-terminal-unification.md`。
-- 当前阶段性提交：F-020 收尾提交待生成；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
-- 上次验证：2026-05-14，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 默认 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过；Linux/SSH opt-in 真实集成测试 1 passed。
-- 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff，之后可继续做 startup_commands/Windows 持久 session 支持或 F-005 profile/report 层。
+- 当前阶段性提交：F-020 已提交并推送；平台边界文档清理已完成并进入当前分支；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
+- 上次验证：2026-05-14，平台边界文档清理后 `./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过。此前同分支 Linux/SSH opt-in 真实集成测试 1 passed。
+- 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff；上线主路径按 Linux/SSH + tmux 验收。Windows/WSL 持久 session 只有在明确需要时才作为独立 backend 任务推进。
 
 ## 状态约定
 
@@ -252,3 +252,10 @@
 - `session send/read` 提供原始输入和 transcript/cursor 读取；顶层 `remote-runner terminal ...` CLI 和 `remote_terminal` 模块已移除，不再作为目标公开 API。
 - `session destroy` 会销毁远端 backend shell，同时保留本地 session state、命令日志、传输记录、artifact manifest 和 transcript。
 - 真实验证：Linux/SSH 蓝本在 `/tmp` 安全目录中通过 opt-in 集成测试 1 passed；同一 session 内 `cd/export/pwd/printf` 状态连续保留，后台命令 wait/stop、文件传输和 cleanup 均通过。
+
+### 2026-05-14 - 平台边界文档收束
+
+- 明确当前 MVP 主支持平台为 Linux/SSH + tmux；Windows OpenSSH + WSL 不作为当前上线主路径。
+- 新增 `docs/platform-support.md`，同步 README、需求、overview、核心灯塔、API、spec、getting-started、skill 和 launch acceptance 文档。
+- `startup_commands` 与 `path_mappings` 保留为兼容/未来 backend 输入；当前持久 session backend 可拒绝依赖这些启动链路的机器。
+- 验证：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过。

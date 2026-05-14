@@ -21,6 +21,7 @@
 - `seed_runner.remote_*` 与 `seed_runner.utils` 目前是 legacy compatibility wrappers，继续 re-export `remote_runner.*` 目标实现对象。
 - 机器配置支持交互式 SSH 信息录入、隐藏密码输入、同名覆盖确认、`startup_commands` 和 `path_mappings`。
 - session 不依赖 mount；第一持久 backend 为 Linux/SSH + tmux。
+- 平台边界已明确：当前上线主路径是 Linux/SSH + tmux；Windows OpenSSH + WSL 仅作为兼容历史和未来 backend 输入，详见 `docs/platform-support.md`。
 - `session create` 创建持久远程 shell；`session exec` 在同一 shell 内执行并返回 command_id、stdout/stderr、exit_code、timestamps、duration、日志和远端 state 文件引用。
 - `session send/read` 支持原始输入和 transcript/cursor 读取；顶层 `remote-runner terminal ...` 已从公开 CLI/API 文档中移除。
 - `session command show/result/wait/stop` 可恢复后台命令状态、查看有界输出、等待完成或停止命令。
@@ -35,6 +36,7 @@
 - 默认真实集成入口：`python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 skipped。
 - 完整本地验证：`python3 -m pytest -q` 通过 54 passed, 3 skipped。
 - Harness 与格式检查：`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
+- 平台边界文档收束后复验：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 31 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 54 passed, 3 skipped；`git diff --check` 通过。
 - 真实机器 opt-in 验收：`REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=linux-01 REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 1 passed；写入范围限制在已配置安全测试目录，未记录真实机器细节；session 持久 shell、后台命令 wait/stop、文件传输和 cleanup 均已覆盖。
 - 环境入口验证：`conda run -n seedrunner remote-runner --help` 之前已通过；本轮未重跑。
 
@@ -47,14 +49,14 @@
 ## 仍未完成
 
 - `F-005` 上层 profile、验收 DSL、报告层未开始；通用 `run once` 只是基础闭环。
-- 持久 session 第一后端依赖远程 Linux/SSH 机器安装 tmux；带 `startup_commands` 的 Windows/WSL 机器暂不支持持久 session backend。
+- 持久 session 第一后端依赖远程 Linux/SSH 机器安装 tmux；带 `startup_commands` 的 Windows/WSL 机器暂不支持持久 session backend，也不是当前上线主路径。
 - legacy 真实 VM opt-in 测试未运行。
 - 后续上线前仍建议按 `docs/testing/remote-runner-launch-acceptance.md` 重跑默认门禁和真实机器 opt-in 门禁。
 
 ## 下一步最佳动作
 
 1. 审阅 PR #6 的 session 统一模型 diff；PR #6 仍是基于 PR #4 的 draft stacked PR。
-2. 如果继续演进 session，优先考虑 startup_commands/Windows 持久 session 支持、PTY resize、实时输出 streaming 和访问控制。
+2. 如果继续演进 session，优先考虑 Linux/SSH 主路径的 PR 审阅、PTY resize、实时输出 streaming 和访问控制；Windows/WSL 持久 session 只有在明确需要时作为独立 backend 任务处理。
 3. 真实验证仍必须显式设置 `REMOTE_RUNNER_REAL_TEST_CWD`，且只写该目录。
 
 ## 常用命令

@@ -6,6 +6,8 @@ Remote Runner 是一个安装在本地的轻量级远程机器操作 CLI。它�
 
 项目不以 research、SEED、SSH、tmux 或 sshfs 为边界。远程交互接口才是核心；research/SEED/operations/model-training/benchmark 都是 profile 或 use case。
 
+当前 MVP 主支持平台是 Linux/SSH。第一版持久 session backend 使用远端 `tmux`，因此上线验收以 Linux/SSH 机器为准。Windows OpenSSH + WSL 相关能力只作为历史兼容和未来 backend 输入，不是当前主支持面；详见 `docs/platform-support.md`。
+
 ## 一句话定义
 
 Remote Runner turns remote machines into local, agent-friendly sessions with structured command results, logs, and artifacts, while keeping normal workflows away from repeated credential and connection-detail handling.
@@ -61,7 +63,8 @@ MVP 不优先做：
 - Remote Runner 目标实现位于 `remote_runner`，`remote-runner` console script 指向 `remote_runner.cli:main`。
 - `seed_runner.remote_*` 仅作为 legacy compatibility wrapper，继续 re-export `remote_runner.*` 公开对象。
 - legacy 原型命令仍是 `seed-runner`。
-- 当前原型依赖 `.env.machines`、SSH key、tmux、sshfs 和 mount/session 流程。
+- 当前主实现不依赖 mount；持久 session 第一 backend 依赖 Linux/SSH + tmux。
+- legacy `seed-runner` 原型依赖 `.env.machines`、SSH key、tmux、sshfs 和 mount/session 流程。
 - 旧 API 记录在 `docs/reference/SEED_RUNNER_API.md`。
 
 目标事实：

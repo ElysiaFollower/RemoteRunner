@@ -1,7 +1,8 @@
 # Remote Runner API Contract v0
 
-This document describes the target user- and agent-facing CLI contract. The current repository still
-implements the legacy `seed-runner` prototype; see `SEED_RUNNER_API.md` for that current API.
+This document describes the current target user- and agent-facing CLI contract for
+`remote-runner`. The repository still contains the legacy `seed-runner` prototype; see
+`SEED_RUNNER_API.md` for that older API.
 
 ## Design Goals
 
@@ -11,6 +12,16 @@ implements the legacy `seed-runner` prototype; see `SEED_RUNNER_API.md` for that
 - No credentials in stdout, stderr, logs, reports, or JSON payloads.
 - Recoverable state: machines, sessions, commands, logs, transfers, and artifacts can be queried after an interruption.
 - Backend flexibility: SSH, tmux, rsync, SFTP, Slurm, Docker, or other mechanisms are implementation details.
+
+## Platform Support
+
+The current MVP is Linux-first. The actively supported persistent session path targets Linux
+machines reachable over SSH/SFTP with `tmux` available on the remote host.
+
+Windows OpenSSH + WSL is not the current primary support target. `startup_commands` and
+`path_mappings` remain in the machine schema because they are useful for compatibility and future
+backend work, but machines that require startup commands may be explicitly rejected by the current
+persistent session backend. See [Platform Support](../platform-support.md).
 
 ## Global Options
 
@@ -69,7 +80,7 @@ Minimum stored fields:
 }
 ```
 
-For a Windows OpenSSH machine that should enter WSL before Linux commands:
+For a future or compatibility Windows OpenSSH machine that should enter WSL before Linux commands:
 
 ```bash
 remote-runner machine configure-startup lab-win-01 \
@@ -94,7 +105,8 @@ remote-runner machine configure-path-map lab-win-01 \
 ```
 
 `file put/get/list` apply this mapping before SFTP. Transfer records and artifact manifests keep
-the original user-supplied remote path, not the backend-specific path.
+the original user-supplied remote path, not the backend-specific path. This compatibility path is
+not the current primary persistent-session support target.
 
 ### List Machines
 
@@ -185,7 +197,7 @@ remote-runner session create \
 
 If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persistent remote shell
 context for this work area; backend details such as tmux are implementation details, not a separate
-top-level resource.
+top-level resource. In the current MVP, this persistent backend is Linux/SSH + tmux.
 
 ### List Sessions
 

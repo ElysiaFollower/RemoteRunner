@@ -63,6 +63,8 @@ recommended path for real credentials because shell history can leak it.
 Machine records may include ordered `startup_commands`. These commands are sent after SSH login and
 before the normal cwd change and user command. This covers hosts where the first usable shell is not
 the SSH default shell, such as a Windows OpenSSH host that must run `wsl` before Linux commands.
+They are compatibility inputs, not the current launch path for persistent sessions: the first
+persistent backend is Linux/SSH + `tmux` and may reject machines that require startup commands.
 
 Existing machines can update startup behavior without re-entering credentials:
 
@@ -84,7 +86,9 @@ remote-runner machine configure-path-map <machine_id> \
   --json
 ```
 
-This is an explicit configuration, not automatic path discovery.
+This is an explicit configuration, not automatic path discovery. Path mappings are retained for
+compatibility and future backend work; they do not make Windows/WSL a primary support target for the
+current persistent session backend.
 
 Same-name machines are rejected by default. `--replace` allows overwriting an existing machine only
 after exact machine ID confirmation, either through interactive prompt or
@@ -252,7 +256,8 @@ Minimum response fields:
 - `log_dir_local`
 
 The first persistent backend is Linux/SSH + `tmux`. Machines with `startup_commands` may be
-explicitly rejected until interactive startup terminal semantics are designed.
+explicitly rejected until interactive startup terminal semantics are designed. See
+`docs/platform-support.md` for the current Linux-first platform boundary.
 
 ### `remote-runner session exec --session <session_id> --cmd <cmd> --json`
 

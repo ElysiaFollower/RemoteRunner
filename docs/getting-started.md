@@ -2,6 +2,9 @@
 
 这是给本地 agent 和人类共用的最小上手说明。目标是：先把工具装进 `seedrunner` conda 环境，再用稳定命令登记机器、验证连通、跑会话、传文件、执行一次性闭环。
 
+当前主支持平台是 Linux/SSH 机器，并且第一版持久 session 后端要求远端安装 `tmux`。
+Windows OpenSSH + WSL 只保留为兼容/未来 backend 输入，不是当前上线主路径。
+
 ## 1. 安装到 seedrunner 环境
 
 ```bash
@@ -162,9 +165,9 @@ remote-runner run once \
   --json
 ```
 
-## 7. Windows + WSL 机器
+## 7. Windows + WSL 兼容配置
 
-如果远程机器是 Windows OpenSSH，需要先进入 WSL 再执行 Linux 命令：
+如果远程机器是 Windows OpenSSH，且未来兼容 backend 需要先进入 WSL 再执行 Linux 命令，可以记录：
 
 ```bash
 remote-runner machine configure-startup my-windows \
@@ -177,6 +180,9 @@ remote-runner machine configure-path-map my-windows \
   --file-prefix C:/Users/<USER>/Desktop/SSHRunner \
   --json
 ```
+
+注意：当前持久 session backend 是 Linux/SSH + tmux，不承诺支持依赖 `startup_commands`
+进入 WSL 的机器。正式上线验收应优先使用 Linux/SSH 机器。
 
 ## 8. 真实机器验收
 
