@@ -23,10 +23,12 @@
 - session 不依赖 mount；第一持久 backend 为 Linux/SSH + tmux。
 - 平台边界已明确：当前上线主路径是 Linux/SSH + tmux；Windows OpenSSH + WSL 仅作为兼容历史和未来 backend 输入，详见 `docs/platform-support.md`。
 - `session create` 创建持久远程 shell；`session exec` 在同一 shell 内执行并返回 command_id、stdout/stderr、exit_code、timestamps、duration、日志和远端 state 文件引用。
+- 已知 session 权限刷新陷阱：当前 Linux/SSH + tmux backend 不在 Remote Runner 内持久化登录 user account；它通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session。但如果该用户已有 tmux server 进程，新的 shell 可能由既有 tmux server fork，而不是由本次 SSH 登录进程直接 fork。公开重启路径只有 `session destroy` 后重新 `session create`；没有单独 `restart/refresh-auth` 接口。若服务器侧刚修改用户组，例如把用户加入 docker 组，destroy/create 仍可能因为既有 tmux server 带着旧进程凭据而拿不到新补充组，需要结束该 tmux server、确保新的 SSH 登录能拿到新组，或临时用显式组命令包裹相关命令。
 - `session send/read` 支持原始输入和 transcript/cursor 读取；顶层 `remote-runner terminal ...` 已从公开 CLI/API 文档中移除。
 - `session command show/result/wait/stop` 可恢复后台命令状态、查看有界输出、等待完成或停止命令。
 - SFTP `file put/get/list` 支持路径前缀映射，transfer records 和 artifact manifest 保留用户输入的远程路径。
 - `run once` 支持上传输入、执行命令、拉回产物、保存 run manifest，并默认销毁临时 session。
+- `machine restart-tmux-server <machine_id>` 已新增为 Linux/tmux backend 维护接口：先拒绝 active Remote Runner tmux session，再通过 direct SSH 检查远端 `tmux list-sessions`；只有没有远端 tmux session 时才执行 `tmux kill-server`，避免在被杀的 tmux session 内执行命令，也避免误杀非 Remote Runner tmux workload。
 - 仓库根目录 `SKILL.md` 是当前 Remote Runner 操作 skill 的来源，不包含旧 mount/sshfs workflow 或顶层 terminal workflow。
 
 ## 验证证据
@@ -51,14 +53,17 @@
 
 - `F-005` 上层 profile、验收 DSL、报告层未开始；通用 `run once` 只是基础闭环。
 - 持久 session 第一后端依赖远程 Linux/SSH 机器安装 tmux；带 `startup_commands` 的 Windows/WSL 机器暂不支持持久 session backend，也不是当前上线主路径。
+- 远端授权上下文刷新不是当前 API 的独立能力；`destroy/create` 只重建 Remote Runner session backend 和目标 tmux session，不承诺刷新既有 tmux server 进程持有的 Unix 补充组或登录策略。
+- `machine restart-tmux-server` 是当前 tmux backend 的维护接口，不是长期跨 backend 产品边界；若远端存在非 Remote Runner tmux session，会保守拒绝，需要用户自行处理。
 - legacy 真实 VM opt-in 测试未运行。
 - 后续上线前仍建议按 `docs/testing/remote-runner-launch-acceptance.md` 重跑默认门禁和真实机器 opt-in 门禁。
 
 ## 下一步最佳动作
 
-1. 审阅 PR #6 的 session 统一模型 diff；PR #6 仍是基于 PR #4 的 draft stacked PR。
-2. 如果继续演进 session，优先考虑 Linux/SSH 主路径的 PR 审阅、PTY resize、实时输出 streaming 和访问控制；Windows/WSL 持久 session 只有在明确需要时作为独立 backend 任务处理。
-3. 真实验证仍必须显式设置 `REMOTE_RUNNER_REAL_TEST_CWD`，且只写该目录。
+1. 审阅 F-021 diff，特别是 `machine restart-tmux-server` 的安全拒绝条件和 direct-SSH backend 实现。
+2. 审阅 PR #6 的 session 统一模型 diff；PR #6 仍是基于 PR #4 的 draft stacked PR。
+3. 如果继续演进 session，优先考虑 Linux/SSH 主路径的 PR 审阅、PTY resize、实时输出 streaming 和访问控制；Windows/WSL 持久 session 只有在明确需要时作为独立 backend 任务处理。
+4. 真实验证仍必须显式设置 `REMOTE_RUNNER_REAL_TEST_CWD`，且只写该目录。
 
 ## 常用命令
 

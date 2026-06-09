@@ -813,6 +813,56 @@ class ParamikoRemoteBackend:
         finally:
             client.close()
 
+    def restart_tmux_server(self, machine: RemoteMachine) -> Dict[str, Any]:
+        """Restart the user's remote tmux server through direct SSH."""
+        if machine.startup_commands:
+            raise RuntimeError("tmux server restart does not yet support startup_commands machines")
+
+        script = (
+            "if ! command -v tmux >/dev/null 2>&1; then "
+            "printf '%s\\n' missing_tmux; exit 3; "
+            "fi; "
+            "sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); "
+            "if [ -n \"$sessions\" ]; then "
+            "printf '%s\\n' has_sessions; printf '%s\\n' \"$sessions\"; exit 2; "
+            "fi; "
+            "if tmux display-message -p '#{pid}' >/dev/null 2>&1; then "
+            "old_pid=$(tmux display-message -p '#{pid}' 2>/dev/null || true); "
+            "tmux kill-server >/dev/null 2>&1 || true; "
+            "printf '%s\\n' restarted; printf '%s\\n' \"$old_pid\"; "
+            "else "
+            "printf '%s\\n' not_running; "
+            "fi"
+        )
+        client = self._connect(machine)
+        try:
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace")
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            exit_code = stdout_file.channel.recv_exit_status()
+        finally:
+            client.close()
+
+        lines = [line for line in stdout.splitlines() if line.strip()]
+        status = lines[0] if lines else "unknown"
+        if status == "has_sessions":
+            remote_sessions = lines[1:]
+            raise RuntimeError(
+                "Remote tmux server still has sessions: " + ", ".join(remote_sessions)
+            )
+        if status == "missing_tmux":
+            raise RuntimeError("tmux is not installed on the remote machine")
+        if exit_code not in {0, 1}:
+            raise RuntimeError(stderr or stdout.strip() or "tmux server restart failed")
+        if status == "restarted":
+            return {
+                "tmux_server_status": "restarted",
+                "old_tmux_server_pid": lines[1] if len(lines) > 1 else None,
+            }
+        if status == "not_running":
+            return {"tmux_server_status": "not_running", "old_tmux_server_pid": None}
+        raise RuntimeError(stderr or stdout.strip() or "tmux server restart failed")
+
     def put(self, machine: RemoteMachine, local_path: str, remote_path: str) -> Dict[str, Any]:
         remote_path = machine.map_file_path(remote_path)
         client = self._connect(machine)

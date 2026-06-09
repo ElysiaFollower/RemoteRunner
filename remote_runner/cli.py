@@ -5,6 +5,7 @@ import getpass
 import sys
 from typing import Any, Dict, List, Optional
 
+from remote_runner.remote_backend import get_remote_backend
 from remote_runner.remote_file import get_remote_file_manager
 from remote_runner.remote_machine import get_remote_machine_manager
 from remote_runner.remote_run import get_remote_run_manager
@@ -177,9 +178,16 @@ def cmd_machine_show(args: argparse.Namespace) -> None:
 
 
 def cmd_machine_doctor(args: argparse.Namespace) -> None:
-    from remote_runner.remote_backend import get_remote_backend
-
     _print(get_remote_machine_manager().doctor(args.machine_id, get_remote_backend()))
+
+
+def cmd_machine_restart_tmux_server(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_machine_manager().restart_tmux_server(
+            args.machine_id,
+            get_remote_backend(),
+        )
+    )
 
 
 def cmd_machine_remove(args: argparse.Namespace) -> None:
@@ -385,6 +393,14 @@ def build_parser() -> argparse.ArgumentParser:
     machine_doctor.add_argument("machine_id")
     add_json_flag(machine_doctor)
     machine_doctor.set_defaults(func=cmd_machine_doctor)
+
+    machine_restart_tmux = machine_sub.add_parser(
+        "restart-tmux-server",
+        help="Restart the remote user's tmux server after safety checks",
+    )
+    machine_restart_tmux.add_argument("machine_id")
+    add_json_flag(machine_restart_tmux)
+    machine_restart_tmux.set_defaults(func=cmd_machine_restart_tmux_server)
 
     machine_remove = machine_sub.add_parser("remove", help="Remove a machine")
     machine_remove.add_argument("machine_id")

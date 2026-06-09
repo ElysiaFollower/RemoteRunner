@@ -64,6 +64,8 @@ MVP 不优先做：
 - `seed_runner.remote_*` 仅作为 legacy compatibility wrapper，继续 re-export `remote_runner.*` 公开对象。
 - legacy 原型命令仍是 `seed-runner`。
 - 当前主实现不依赖 mount；持久 session 第一 backend 依赖 Linux/SSH + tmux。
+- 当前 `session create` 通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session；后续 `exec/send/read/destroy` 用新的 SSH 操作控制该 tmux session。Remote Runner 不持久化登录某个 user account；但如果远端该用户已有 tmux server 进程，新的 tmux session 可能由这个既有 tmux server fork 出 shell，而不是直接由本次 SSH 登录进程 fork。服务器侧组成员或登录策略变化后，公开重启路径是 `session destroy` 后重新 `session create`，但只要既有 tmux server 仍带着旧进程凭据存活，该路径不保证刷新 Unix 补充组。
+- 当前提供 `machine restart-tmux-server` 作为 Linux/tmux backend 维护接口：它通过 direct SSH 检查 active Remote Runner tmux session 和远端 tmux session 列表，只有确认没有 session 依赖该 server 后才执行 `tmux kill-server`，用于刷新后续 tmux-backed shell 的进程授权上下文。
 - legacy `seed-runner` 原型依赖 `.env.machines`、SSH key、tmux、sshfs 和 mount/session 流程。
 - 旧 API 记录在 `docs/reference/SEED_RUNNER_API.md`。
 

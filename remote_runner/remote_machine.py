@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from remote_runner.remote_state import (
+    list_session_states,
     load_machines_state,
     remote_state_lock,
     save_machines_state,
@@ -280,6 +281,39 @@ class RemoteMachineManager:
     def doctor(self, machine_id: str, backend: Any) -> Dict[str, Any]:
         machine = self.get(machine_id)
         return backend.doctor(machine)
+
+    def restart_tmux_server(self, machine_id: str, backend: Any) -> Dict[str, Any]:
+        machine = self.get(machine_id)
+        blockers = []
+        for session in list_session_states():
+            if session.get("machine_id") != machine_id:
+                continue
+            if session.get("status") != "active":
+                continue
+            if session.get("backend") != "tmux" and not session.get("remote_terminal_name"):
+                continue
+            blockers.append(
+                {
+                    "session_id": session["session_id"],
+                    "cwd": session.get("cwd"),
+                    "remote_backend_name": session.get("remote_terminal_name"),
+                    "busy": session.get("busy", False),
+                }
+            )
+        if blockers:
+            blocked_ids = ", ".join(blocker["session_id"] for blocker in blockers)
+            raise RuntimeError(
+                "Active Remote Runner tmux sessions must be destroyed first: "
+                + blocked_ids
+            )
+
+        result = backend.restart_tmux_server(machine)
+        return {
+            "machine_id": machine_id,
+            "backend": "tmux",
+            "checked_active_session_count": 0,
+            **result,
+        }
 
 
 def get_remote_machine_manager() -> RemoteMachineManager:

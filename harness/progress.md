@@ -12,6 +12,8 @@
 - 当前阶段性提交：F-020 已提交并推送；平台边界文档清理已完成并进入当前分支；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
 - 上次验证：2026-05-14，PR review 修复后 `./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`git diff --check` 通过。此前同分支 Linux/SSH opt-in 真实集成测试 1 passed。
 - 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff；上线主路径按 Linux/SSH + tmux 验收。Windows/WSL 持久 session 只有在明确需要时才作为独立 backend 任务推进。
+- 2026-06-09 诊断记录：实践中发现服务器侧刚更新用户组后，Remote Runner `session destroy && session create` 仍可能看不到新补充组。代码确认当前 Linux/SSH + tmux backend 不是持久登录用户账号；它通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session。但如果该用户已有 tmux server 进程，新的 shell 可能由既有 tmux server fork，继续继承该 server 的旧 Unix 补充组。当前 API 没有独立 `restart/refresh-auth`，公开重启路径只有 destroy/create；若既有 tmux server 仍存活，授权上下文可能继续过时。
+- 2026-06-09：`F-021 Remote Runner tmux server 安全重启接口` 完成并归档至 `plans/archive/2026-06-09-remote-runner-tmux-server-restart.md`。已新增 `docs/lessons-learned/2026-06-09-tmux-server-auth-context.md`，并实现 `machine restart-tmux-server` direct-SSH 接口；验证通过：`./scripts/harness-check.sh` 0 warnings，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 36 passed，`python3 -m pytest -q` 59 passed, 3 skipped，`git diff --check` 通过。
 
 ## 状态约定
 

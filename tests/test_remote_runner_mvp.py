@@ -37,6 +37,10 @@ class FakeBackend:
         self.gets = []
         self.lists = []
         self.terminals = {}
+        self.tmux_server_restart_result = {
+            "tmux_server_status": "restarted",
+            "old_tmux_server_pid": "1234",
+        }
         self.block_started = threading.Event()
         self.block_release = threading.Event()
 
@@ -181,6 +185,20 @@ class FakeBackend:
         terminal = self.terminals[terminal_id]
         terminal["status"] = "destroyed"
         return {"destroy_result": "destroyed"}
+
+    def restart_tmux_server(self, machine):
+        self.commands.append(
+            {
+                "machine_id": machine.machine_id,
+                "cwd": None,
+                "command": "tmux kill-server",
+                "timeout": None,
+            }
+        )
+        result = self.tmux_server_restart_result
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def start_session_command(
         self,
@@ -451,6 +469,51 @@ def test_machine_registry_redacts_credentials_and_recovers(remote_state_dir, tmp
     assert removed == {"machine_id": "ops-01", "removed": True}
     assert reloaded_manager.list()["summary"] == {"machine_count": 1}
     assert oct(os.stat(get_machines_file()).st_mode & 0o777) == "0o600"
+
+
+def test_machine_restart_tmux_server_rejects_active_tmux_sessions(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_manager.create("lab-gpu-01")
+
+    with pytest.raises(RuntimeError, match="Active Remote Runner tmux sessions"):
+        machine_manager.restart_tmux_server("lab-gpu-01", backend)
+
+    assert not any(command["command"] == "tmux kill-server" for command in backend.commands)
+
+
+def test_machine_restart_tmux_server_runs_after_sessions_destroyed(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = session_manager.create("lab-gpu-01")["session_id"]
+    session_manager.destroy(session_id)
+
+    result = machine_manager.restart_tmux_server("lab-gpu-01", backend)
+
+    assert result["machine_id"] == "lab-gpu-01"
+    assert result["backend"] == "tmux"
+    assert result["tmux_server_status"] == "restarted"
+    assert result["old_tmux_server_pid"] == "1234"
+    assert backend.commands[-1]["command"] == "tmux kill-server"
+
+
+def test_machine_restart_tmux_server_surfaces_remote_session_blocker(
+    remote_state_dir,
+    tmp_path,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    backend.tmux_server_restart_result = RuntimeError(
+        "Remote tmux server still has sessions: manual-session"
+    )
+
+    with pytest.raises(RuntimeError, match="manual-session"):
+        machine_manager.restart_tmux_server("lab-gpu-01", backend)
 
 
 def test_session_exec_logs_state_and_preserves_nonzero_exit(remote_state_dir, tmp_path):
@@ -1002,6 +1065,44 @@ def test_remote_runner_cli_machine_json_redacts_password(remote_state_dir, monke
     assert listed["summary"] == {"machine_count": 1}
     assert listed["machines"][0]["password"] == "***REDACTED***"
     assert "secret-password" not in json.dumps(listed)
+
+
+def test_remote_runner_cli_machine_restart_tmux_server_outputs_json(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    RemoteMachineManager().add(
+        machine_id="ops-01",
+        host="example.internal",
+        port=22,
+        user="deploy",
+        auth_type="key",
+        key_path=str(_write_key(tmp_path)),
+        default_cwd="/srv/app",
+    )
+
+    backend = FakeBackend()
+    monkeypatch.setattr("remote_runner.cli.get_remote_backend", lambda: backend)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "machine",
+            "restart-tmux-server",
+            "ops-01",
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["machine_id"] == "ops-01"
+    assert payload["tmux_server_status"] == "restarted"
+    assert backend.commands[-1]["command"] == "tmux kill-server"
 
 
 def test_remote_runner_cli_machine_add_prompts_missing_password_fields(

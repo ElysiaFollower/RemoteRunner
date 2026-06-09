@@ -171,6 +171,38 @@ remote-runner machine remove lab-gpu-01 --json
 
 Returns the removed machine ID and whether related inactive sessions were retained or deleted.
 
+### Restart Tmux Server
+
+```bash
+remote-runner machine restart-tmux-server lab-gpu-01 --json
+```
+
+Current Linux/tmux backend maintenance command. This command uses direct SSH against the machine; it
+does not run inside a Remote Runner session, because killing the tmux server from inside its own
+tmux-backed session prevents the command from completing cleanly.
+
+The command must be conservative:
+
+- Refuse when local state contains active Remote Runner tmux sessions for that machine. The user
+  must destroy those sessions explicitly first.
+- Refuse when remote `tmux list-sessions` reports any remaining tmux session, including sessions
+  not managed by Remote Runner. This avoids killing unrelated user workloads.
+- Run `tmux kill-server` only when no active Remote Runner tmux session and no remote tmux session
+  remain.
+- Return `not_running` as a successful no-op when no remote tmux server exists.
+
+Example response:
+
+```json
+{
+  "machine_id": "lab-gpu-01",
+  "backend": "tmux",
+  "checked_active_session_count": 0,
+  "tmux_server_status": "restarted",
+  "old_tmux_server_pid": "1205436"
+}
+```
+
 ## Session Commands
 
 ### Create Session
@@ -198,6 +230,17 @@ remote-runner session create \
 If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persistent remote shell
 context for this work area; backend details such as tmux are implementation details, not a separate
 top-level resource. In the current MVP, this persistent backend is Linux/SSH + tmux.
+
+Current Linux/tmux implementation note: `session create` opens a remote tmux-backed shell through
+SSH, and later `session exec/send/read/destroy` calls use fresh SSH operations to control that
+backend shell. It does not persistently log in a user account in Remote Runner itself, but the
+remote shell inherits the Unix identity, supplementary groups, environment, and tmux server context
+available to the process that ultimately spawns it. `tmux new-session` creates a new tmux session,
+but if the user's tmux server already exists, the new shell may be forked by that existing tmux
+server rather than directly by the fresh SSH login process. If server-side group membership or login
+policy changes, `session destroy && session create` is the public Remote Runner restart path, but it
+is not a guaranteed authorization refresh while an existing tmux server with old process credentials
+continues serving new tmux sessions.
 
 ### List Sessions
 
@@ -354,6 +397,9 @@ remote-runner session destroy --session sess_abc123 --json
 Returns final status and preserved log/transcript locations. Destroying a session stops the remote
 backend shell but preserves local session records, command logs, transfer records, artifacts, and
 transcript path.
+
+There is currently no separate `session restart` or `session refresh-auth` command. Restart is
+modeled as explicit `session destroy` followed by `session create`.
 
 ## File Transfer Commands
 

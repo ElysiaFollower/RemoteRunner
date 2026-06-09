@@ -1,7 +1,12 @@
 {
   "version": 1,
   "wip_limit": 1,
-  "status_values": ["not_started", "active", "blocked", "passing"],
+  "status_values": [
+    "not_started",
+    "active",
+    "blocked",
+    "passing"
+  ],
   "features": [
     {
       "id": "F-001",
@@ -222,6 +227,17 @@
       "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=linux-01 REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
       "evidence": "2026-05-14: 已将 F-019 顶层 terminal 能力并入 session；session create 创建 tmux-backed 持久 shell，session exec 在同一 shell 内通过 wrapper 记录 command_id/stdout/stderr/exit_code/timestamps/log，session send/read 提供原始输入和 transcript/cursor，session destroy 销毁远端 backend 并保留本地日志/transcript；删除公开 terminal CLI 和 remote_terminal 模块；PR #6 review 后补齐 transcript 增量合并，避免有限 tmux buffer 覆盖本地累计 transcript；聚焦测试 32 passed；launch suite 2 passed, 1 skipped；默认真实集成入口 1 skipped；完整 pytest 55 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；Linux/SSH opt-in 真实集成测试 1 passed，验证 session 内 cd/export 状态连续、后台命令 wait/stop、文件传输和 cleanup。",
       "notes": "任务合同已归档至 plans/archive/2026-05-14-remote-runner-session-terminal-unification.md。F-019 作为实现 spike 保留历史记录；目标公开 API 是 session，不是顶层 terminal。第一后端为 Linux/SSH + tmux；startup_commands 机器暂不支持持久 session backend。"
+    },
+    {
+      "id": "F-021",
+      "priority": "P0",
+      "area": "machine-session",
+      "title": "Remote Runner tmux server 安全重启接口",
+      "behavior": "用户能通过 machine 级 direct-SSH 命令在确认没有活跃 Remote Runner tmux session 且远端 tmux session 列表为空后重启远端 tmux server，用于刷新 tmux-backed shell 的 Unix 补充组和登录上下文。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && git diff --check",
+      "evidence": "2026-06-09: 已新增 docs/lessons-learned/2026-06-09-tmux-server-auth-context.md 记录 tmux server 授权上下文问题；实现 remote-runner machine restart-tmux-server <machine_id> --json，先拒绝 active Remote Runner tmux sessions，再由 direct SSH 检查远端 tmux sessions，只有无 session 时执行 tmux kill-server；聚焦测试 python3 -m pytest tests/test_remote_runner_mvp.py -q 通过 36 passed；完整 pytest 59 passed, 3 skipped；./scripts/harness-check.sh 通过 0 warnings；git diff --check 通过。",
+      "notes": "任务合同已归档至 plans/archive/2026-06-09-remote-runner-tmux-server-restart.md；经验教训记录位于 docs/lessons-learned/2026-06-09-tmux-server-auth-context.md。接口是当前 Linux/tmux backend 维护能力，不是长期跨 backend 产品边界。"
     }
   ]
 }
