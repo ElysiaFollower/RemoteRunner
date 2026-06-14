@@ -19,8 +19,8 @@ python3 -m pytest tests/test_remote_runner_launch_suite.py -q
 覆盖内容：
 
 - `remote_runner` 目标包名和 legacy `seed_runner` compatibility wrapper。
-- machine 配置、脱敏展示、startup commands、path mappings 和本地 state 落盘；其中 startup/path
-  mapping 是兼容配置覆盖，不代表 Windows/WSL 是当前主支持平台。
+- machine 配置、脱敏展示、platform/backend/shell、startup commands、path mappings 和本地 state
+  落盘；其中 startup/path mapping 是兼容配置覆盖，不代表 Windows/WSL 是 direct Windows 主路径。
 - session create/exec/logs/destroy。
 - file put/list/get 和 transfer records。
 - run once 输入上传、命令执行、artifact 拉回、run manifest 和 session destroy。
@@ -37,9 +37,21 @@ REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> \
 python3 -m pytest tests/test_remote_runner_launch_suite.py tests/test_remote_runner_real_integration.py -q
 ```
 
+direct Windows 真实机器需要额外声明平台：
+
+```sh
+REMOTE_RUNNER_RUN_REAL_TESTS=1 \
+REMOTE_RUNNER_REAL_PLATFORM=windows \
+REMOTE_RUNNER_REAL_MACHINE=<machine_id> \
+REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> \
+python3 -m pytest tests/test_remote_runner_real_integration.py -q
+```
+
 安全边界：
 
-- 当前上线主路径应使用 Linux/SSH 机器；持久 session backend 要求远端可用 `tmux`。
+- 当前上线主路径包括 Linux/SSH + tmux 和 direct Windows OpenSSH + windows-agent/pwsh。
+- Linux 真实机器要求远端可用 `tmux`；direct Windows 真实机器要求远端可用 SFTP、Python 3 和
+  PowerShell 7。
 - `REMOTE_RUNNER_REAL_TEST_CWD` 必须是明确允许写入的远程测试目录。
 - 测试只在该目录下创建随机前缀探针文件。
 - 测试结束会执行 cleanup 并 destroy session。

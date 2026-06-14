@@ -452,6 +452,9 @@ def test_machine_registry_redacts_credentials_and_recovers(remote_state_dir, tmp
     )
 
     assert key_machine["machine_id"] == "lab-gpu-01"
+    assert key_machine["platform"] == "linux"
+    assert key_machine["backend"] == "ssh-tmux"
+    assert key_machine["shell"] == "bash"
     assert password_machine["password"] == "***REDACTED***"
 
     reloaded_manager = RemoteMachineManager()
@@ -1126,6 +1129,7 @@ def test_remote_runner_cli_machine_add_prompts_missing_password_fields(
                     "2201",
                     "deploy",
                     "password",
+                    "linux",
                     "wsl",
                     "",
                     "/srv/app",
@@ -1147,6 +1151,9 @@ def test_remote_runner_cli_machine_add_prompts_missing_password_fields(
     assert payload["machine_id"] == "ops-01"
     assert payload["port"] == 2201
     assert payload["password"] == "***REDACTED***"
+    assert payload["platform"] == "linux"
+    assert payload["backend"] == "ssh-tmux"
+    assert payload["shell"] == "bash"
     assert payload["startup_commands"] == ["wsl"]
     assert "Machine ID" not in captured.out
     assert "secret-password" not in captured.out
@@ -1204,6 +1211,7 @@ def test_remote_runner_cli_interactive_replace_rejects_wrong_confirmation(
                     "2202",
                     "deploy",
                     "password",
+                    "linux",
                     "",
                     "/srv/new",
                     "wrong-id",
@@ -1259,6 +1267,7 @@ def test_remote_runner_cli_interactive_replace_updates_machine_with_exact_confir
                     "2202",
                     "deploy",
                     "password",
+                    "linux",
                     "",
                     "/srv/new",
                     "ops-01",
@@ -1404,6 +1413,7 @@ def test_remote_runner_cli_interactive_key_auth_validates_key_path(
                     "2222",
                     "ely",
                     "key",
+                    "linux",
                     str(key_path),
                     "",
                     "/home/ely/project",
@@ -1419,6 +1429,89 @@ def test_remote_runner_cli_interactive_key_auth_validates_key_path(
     assert payload["machine_id"] == "lab-gpu-01"
     assert payload["auth_type"] == "key"
     assert payload["key_path"] == str(key_path)
+
+
+def test_machine_add_windows_defaults_to_agent_pwsh_backend(remote_state_dir, tmp_path):
+    manager = RemoteMachineManager()
+    machine = manager.add(
+        machine_id="windows-01",
+        host="windows.example.internal",
+        port=22,
+        user="ely",
+        auth_type="key",
+        key_path=str(_write_key(tmp_path)),
+        default_cwd="C:/Users/example",
+        platform="windows",
+        backend="windows-agent",
+    )
+    stored = load_machines_state()["machines"]["windows-01"]
+
+    assert machine["platform"] == "windows"
+    assert machine["backend"] == "windows-agent"
+    assert machine["shell"] == "pwsh"
+    assert stored["platform"] == "windows"
+    assert stored["backend"] == "windows-agent"
+    assert stored["shell"] == "pwsh"
+
+
+def test_machine_configure_platform_preserves_credentials(remote_state_dir, tmp_path):
+    manager = RemoteMachineManager()
+    created = manager.add(
+        machine_id="windows-01",
+        host="windows.example.internal",
+        port=22,
+        user="ely",
+        auth_type="key",
+        key_path=str(_write_key(tmp_path)),
+        default_cwd="C:/Users/example",
+    )
+    updated = manager.configure_platform("windows-01", platform="windows")
+    stored = load_machines_state()["machines"]["windows-01"]
+
+    assert updated["platform"] == "windows"
+    assert updated["backend"] == "windows-agent"
+    assert updated["shell"] == "pwsh"
+    assert updated["key_path"] == created["key_path"]
+    assert stored["key_path"] == created["key_path"]
+    assert stored["created_at"] == created["created_at"]
+    assert "updated_at" in stored
+
+
+def test_remote_runner_cli_configure_platform_outputs_json(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    RemoteMachineManager().add(
+        machine_id="windows-01",
+        host="windows.example.internal",
+        port=22,
+        user="ely",
+        auth_type="key",
+        key_path=str(_write_key(tmp_path)),
+        default_cwd="C:/Users/example",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "machine",
+            "configure-platform",
+            "windows-01",
+            "--platform",
+            "windows",
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["platform"] == "windows"
+    assert payload["backend"] == "windows-agent"
+    assert payload["shell"] == "pwsh"
 
 
 def test_remote_runner_cli_configure_startup_preserves_credentials(

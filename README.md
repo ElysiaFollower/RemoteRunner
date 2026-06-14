@@ -23,10 +23,13 @@ The project direction is now broader:
 - SSH, tmux, sshfs, rsync, SFTP, Slurm, Docker, and Kubernetes are backend details, not product
   identity.
 
-Current MVP support is Linux-first: the actively validated persistent session backend targets
-Linux machines reachable over SSH with `tmux` installed. Windows OpenSSH + WSL compatibility exists
-only as a limited historical path for `startup_commands` and path mapping; it is not the current
-primary support target for persistent sessions. See
+Current MVP support has two persistent session backends:
+
+- Linux machines reachable over SSH/SFTP with `tmux` installed.
+- Direct Windows OpenSSH machines with SFTP, Python 3, and PowerShell 7 available.
+
+Windows OpenSSH + WSL compatibility remains available as historical `startup_commands` and path
+mapping input, but it is not the direct Windows support path. See
 [Platform Support](docs/platform-support.md).
 
 ## One-Sentence Definition
@@ -96,10 +99,11 @@ stderr, so stdout remains one JSON object. Password auth uses hidden input in th
 interactive path. The `--password` flag exists for compatibility and tests, but it is not the
 recommended way to enter real credentials because shell history can leak it.
 
-Machines can store ordered startup commands and explicit path mappings for compatibility backends,
-but the current persistent session backend is Linux/SSH + tmux. Machines that require
-`startup_commands`, such as Windows OpenSSH hosts that first enter WSL, are not the current primary
-support target for persistent sessions.
+Machines include explicit `platform`, `backend`, and `shell` fields. Linux defaults to
+`backend=ssh-tmux` and `shell=bash`; direct Windows defaults to `backend=windows-agent` and
+`shell=pwsh`. Ordered startup commands and path mappings remain available for compatibility
+backends, such as Windows OpenSSH hosts that first enter WSL, but direct Windows support does not
+depend on WSL.
 
 `run once` is the first generic closed-loop layer above machine/session/file: it can upload inputs,
 execute one command, download artifacts, save a run manifest, and destroy the temporary session
@@ -174,7 +178,7 @@ implementation detail, not the desired long-term public API.
 - [Requirements](REQUIREMENTS.md) - MVP requirements and acceptance criteria
 - [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) - target agent-facing CLI
 - [Getting Started](docs/getting-started.md) - install and basic usage guide
-- [Platform Support](docs/platform-support.md) - current Linux-first support boundary
+- [Platform Support](docs/platform-support.md) - current Linux and direct Windows support boundary
 - [Launch Acceptance Suite](docs/testing/remote-runner-launch-acceptance.md) - reusable pre-release validation
 - [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - legacy prototype CLI reference
 
@@ -202,6 +206,16 @@ remote test directory are configured:
 
 ```bash
 REMOTE_RUNNER_RUN_REAL_TESTS=1 \
+  REMOTE_RUNNER_REAL_MACHINE=<machine_id> \
+  REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> \
+  python3 -m pytest tests/test_remote_runner_real_integration.py -q
+```
+
+For a direct Windows machine, add the platform selector:
+
+```bash
+REMOTE_RUNNER_RUN_REAL_TESTS=1 \
+  REMOTE_RUNNER_REAL_PLATFORM=windows \
   REMOTE_RUNNER_REAL_MACHINE=<machine_id> \
   REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> \
   python3 -m pytest tests/test_remote_runner_real_integration.py -q

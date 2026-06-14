@@ -43,7 +43,7 @@ MVP 不承诺抵御拥有同一系统用户 shell 权限的恶意 Agent。更强
 ## 实现约束
 
 - 当前原型可以继续作为兼容层存在。
-- 当前 MVP 主支持平台是 Linux/SSH；持久 session 第一 backend 使用远端 tmux。Windows/WSL 只作为兼容历史和未来 backend 输入，不是当前上线主路径。
+- 当前 MVP 支持 Linux/SSH + tmux 和 direct Windows OpenSSH + windows-agent/pwsh 两条持久 session backend；Windows/WSL `startup_commands` 只作为兼容历史和未来 backend 输入。
 - 大规模迁移前必须保持 legacy `seed-runner` 行为可验证。
 - 新 `remote-runner` API 落地时，应优先增加兼容入口或迁移文档，而不是直接破坏已有测试。
 - 公共命令必须面向非交互使用，优先提供 `--json`。

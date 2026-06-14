@@ -1,8 +1,10 @@
 """SSH/SFTP backend for the mount-free Remote Runner core."""
 
+import base64
 import codecs
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 import posixpath
 import re
@@ -16,6 +18,7 @@ import paramiko
 
 from remote_runner.remote_machine import RemoteMachine
 from remote_runner.utils import get_timestamp
+from remote_runner.windows_agent import WINDOWS_AGENT_SOURCE
 
 
 @dataclass
@@ -174,6 +177,9 @@ def _remap_entries_paths(
 class ParamikoRemoteBackend:
     """Remote backend implemented with SSH and SFTP."""
 
+    def _uses_windows_agent(self, machine: RemoteMachine) -> bool:
+        return machine.backend == "windows-agent"
+
     def _connect(self, machine: RemoteMachine, timeout: int = 30) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -191,6 +197,9 @@ class ParamikoRemoteBackend:
         return client
 
     def doctor(self, machine: RemoteMachine) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._doctor_windows_agent(machine)
+
         errors: List[str] = []
         reachable = False
         auth_ok = False
@@ -521,6 +530,13 @@ class ParamikoRemoteBackend:
         height: int = 40,
         history_limit: int = 10000,
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._create_windows_agent_terminal(
+                machine=machine,
+                cwd=cwd,
+                terminal_id=terminal_id,
+            )
+
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
@@ -571,6 +587,15 @@ class ParamikoRemoteBackend:
         cwd: Optional[str] = None,
         cwd_override: bool = False,
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._start_windows_agent_session_command(
+                machine=machine,
+                session_record=session_record,
+                command=command,
+                command_id=command_id,
+                cwd=cwd if cwd_override else None,
+            )
+
         if machine.startup_commands:
             raise RuntimeError("persistent session commands do not yet support startup_commands machines")
 
@@ -612,6 +637,21 @@ class ParamikoRemoteBackend:
         stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
         stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            deadline = time.time() + max(0, timeout)
+            while True:
+                result = self.inspect_session_command(
+                    machine=machine,
+                    command_record=command_record,
+                    stdout_limit=stdout_limit,
+                    stderr_limit=stderr_limit,
+                )
+                if result["status"] != "running":
+                    return result
+                if time.time() >= deadline:
+                    raise TimeoutError("Windows agent command did not finish before timeout")
+                time.sleep(min(0.2, max(0, deadline - time.time())))
+
         deadline = time.time() + max(0, timeout)
         while True:
             result = self.inspect_session_command(
@@ -633,6 +673,14 @@ class ParamikoRemoteBackend:
         stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
         stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._inspect_windows_agent_session_command(
+                machine=machine,
+                command_record=command_record,
+                stdout_limit=stdout_limit,
+                stderr_limit=stderr_limit,
+            )
+
         if machine.startup_commands:
             raise RuntimeError("persistent session commands do not yet support startup_commands machines")
 
@@ -697,6 +745,9 @@ class ParamikoRemoteBackend:
         session_record: Dict[str, Any],
         command_record: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            raise RuntimeError("Windows agent session command stop is not yet supported")
+
         if machine.startup_commands:
             raise RuntimeError("persistent session commands do not yet support startup_commands machines")
 
@@ -735,6 +786,14 @@ class ParamikoRemoteBackend:
         input_text: str,
         enter: bool = True,
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._send_windows_agent_input(
+                machine=machine,
+                terminal_record=terminal_record,
+                input_text=input_text,
+                enter=enter,
+            )
+
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
@@ -765,6 +824,9 @@ class ParamikoRemoteBackend:
         machine: RemoteMachine,
         terminal_record: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._capture_windows_agent_terminal(machine, terminal_record)
+
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
@@ -791,6 +853,9 @@ class ParamikoRemoteBackend:
         machine: RemoteMachine,
         terminal_record: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            return self._destroy_windows_agent_terminal(machine, terminal_record)
+
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
@@ -815,6 +880,9 @@ class ParamikoRemoteBackend:
 
     def restart_tmux_server(self, machine: RemoteMachine) -> Dict[str, Any]:
         """Restart the user's remote tmux server through direct SSH."""
+        if self._uses_windows_agent(machine):
+            raise RuntimeError("tmux server restart is only available for ssh-tmux machines")
+
         if machine.startup_commands:
             raise RuntimeError("tmux server restart does not yet support startup_commands machines")
 
@@ -926,6 +994,23 @@ class ParamikoRemoteBackend:
     def _mkdir_p(self, sftp: paramiko.SFTPClient, remote_dir: str) -> None:
         if remote_dir in {"", "/"}:
             return
+        remote_dir = remote_dir.replace("\\", "/")
+        drive_match = re.match(r"^[A-Za-z]:/?$", remote_dir)
+        if drive_match:
+            return
+        drive_prefix = ""
+        remainder = remote_dir
+        if re.match(r"^[A-Za-z]:/", remote_dir):
+            drive_prefix = remote_dir[:2]
+            remainder = remote_dir[3:]
+            current = drive_prefix + "/"
+            for part in [part for part in remainder.split("/") if part]:
+                current = current.rstrip("/") + "/" + part
+                try:
+                    sftp.stat(current)
+                except IOError:
+                    sftp.mkdir(current)
+            return
         parts = []
         current = remote_dir
         while current not in {"", "/"}:
@@ -963,7 +1048,10 @@ class ParamikoRemoteBackend:
     ) -> None:
         with sftp.open(remote_path, "w") as remote_file:
             remote_file.write(content)
-        sftp.chmod(remote_path, 0o700)
+        try:
+            sftp.chmod(remote_path, 0o700)
+        except IOError:
+            pass
 
     def _background_worker_script(
         self,
@@ -1053,6 +1141,370 @@ class ParamikoRemoteBackend:
                 if pid:
                     return pid
         raise RuntimeError(f"background launch did not return pid: {stdout.strip()}")
+
+    def _doctor_windows_agent(self, machine: RemoteMachine) -> Dict[str, Any]:
+        errors: List[str] = []
+        reachable = False
+        auth_ok = False
+        default_cwd_ok = False
+        checked_at = get_timestamp()
+        client: Optional[paramiko.SSHClient] = None
+        try:
+            client = self._connect(machine, timeout=15)
+            reachable = True
+            auth_ok = True
+            script = (
+                "$ErrorActionPreference = 'Stop'; "
+                f"Set-Location -LiteralPath {self._ps_quote(machine.default_cwd)}; "
+                "Get-Command pwsh -ErrorAction Stop | Out-Null; "
+                "[pscustomobject]@{cwd=(Get-Location).Path; pwsh=$true} | ConvertTo-Json -Compress"
+            )
+            stdout, stderr, exit_code = self._run_windows_powershell(client, script, timeout=15)
+            default_cwd_ok = exit_code == 0
+            if not default_cwd_ok:
+                errors.append(stderr or stdout)
+        except Exception as exc:
+            errors.append(str(exc))
+        finally:
+            if client is not None:
+                client.close()
+        return {
+            "machine_id": machine.machine_id,
+            "reachable": reachable,
+            "auth_ok": auth_ok,
+            "default_cwd_ok": default_cwd_ok,
+            "checked_at": checked_at,
+            "backend": "windows-agent",
+            "platform": "windows",
+            "errors": [error for error in errors if error],
+        }
+
+    def _create_windows_agent_terminal(
+        self,
+        machine: RemoteMachine,
+        cwd: str,
+        terminal_id: str,
+    ) -> Dict[str, Any]:
+        if machine.startup_commands:
+            raise RuntimeError("windows-agent backend does not support startup_commands")
+        if machine.shell != "pwsh":
+            raise RuntimeError("windows-agent backend currently requires shell 'pwsh'")
+
+        agent_dir = self._windows_agent_dir(cwd, terminal_id)
+        agent_file = posixpath.join(agent_dir, "windows_agent.py")
+        ready_file = posixpath.join(agent_dir, "ready.json")
+        transcript_file = posixpath.join(agent_dir, "transcript.txt")
+        task_name = self._windows_task_name(terminal_id)
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            self._mkdir_p(sftp, agent_dir)
+            self._mkdir_p(sftp, posixpath.join(agent_dir, "requests"))
+            self._mkdir_p(sftp, posixpath.join(agent_dir, "results"))
+            self._write_remote_script(sftp, agent_file, WINDOWS_AGENT_SOURCE)
+            script = self._windows_agent_task_script(
+                task_name=task_name,
+                agent_file=agent_file,
+                agent_dir=agent_dir,
+                cwd=cwd,
+                shell=machine.shell,
+            )
+            stdout, stderr, exit_code = self._run_windows_powershell(client, script, timeout=30)
+            if exit_code != 0:
+                raise RuntimeError(stderr or stdout or "Windows agent task start failed")
+            ready = self._wait_for_remote_json(sftp, ready_file, timeout=20)
+            if ready.get("status") != "ready":
+                raise RuntimeError(f"Windows agent did not become ready: {ready}")
+            return {
+                "backend": "windows-agent",
+                "remote_terminal_name": task_name,
+                "windows_agent_dir": agent_dir,
+                "windows_agent_file": agent_file,
+                "windows_agent_ready_file": ready_file,
+                "windows_agent_transcript_file": transcript_file,
+                "shell": machine.shell,
+                "history_limit": None,
+                "width": None,
+                "height": None,
+            }
+        finally:
+            sftp.close()
+            client.close()
+
+    def _start_windows_agent_session_command(
+        self,
+        machine: RemoteMachine,
+        session_record: Dict[str, Any],
+        command: str,
+        command_id: str,
+        cwd: Optional[str],
+    ) -> Dict[str, Any]:
+        request_id = command_id
+        agent_dir = session_record["windows_agent_dir"]
+        request_file = posixpath.join(agent_dir, "requests", f"{request_id}.json")
+        result_file = posixpath.join(agent_dir, "results", f"{request_id}.json")
+        payload = {
+            "request_id": request_id,
+            "action": "exec",
+            "command_id": command_id,
+            "command": command,
+            "cwd": cwd,
+            "timeout": 300,
+        }
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            self._write_remote_json(sftp, request_file, payload)
+        finally:
+            sftp.close()
+            client.close()
+        return {
+            "command_backend": "windows-agent",
+            "remote_state_dir": agent_dir,
+            "windows_request_file": request_file,
+            "windows_result_file": result_file,
+        }
+
+    def _inspect_windows_agent_session_command(
+        self,
+        machine: RemoteMachine,
+        command_record: Dict[str, Any],
+        stdout_limit: int,
+        stderr_limit: int,
+    ) -> Dict[str, Any]:
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            result = self._read_remote_json(
+                sftp,
+                command_record["windows_result_file"],
+                missing_ok=True,
+            )
+        finally:
+            sftp.close()
+            client.close()
+        if not result:
+            return {
+                "status": "running",
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "started_at": command_record.get("started_at"),
+                "ended_at": None,
+            }
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        return {
+            "status": result.get("status", "exited"),
+            "exit_code": result.get("exit_code"),
+            "stdout": stdout[:stdout_limit],
+            "stderr": stderr[:stderr_limit],
+            "stdout_truncated": len(stdout) > stdout_limit,
+            "stderr_truncated": len(stderr) > stderr_limit,
+            "started_at": result.get("started_at"),
+            "ended_at": result.get("ended_at"),
+        }
+
+    def _send_windows_agent_input(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+        input_text: str,
+        enter: bool = True,
+    ) -> Dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        agent_dir = terminal_record["windows_agent_dir"]
+        request_file = posixpath.join(agent_dir, "requests", f"{request_id}.json")
+        result_file = posixpath.join(agent_dir, "results", f"{request_id}.json")
+        payload = {
+            "request_id": request_id,
+            "action": "send",
+            "input_text": input_text,
+            "enter": enter,
+        }
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            self._write_remote_json(sftp, request_file, payload)
+            result = self._wait_for_remote_json(sftp, result_file, timeout=10)
+        finally:
+            sftp.close()
+            client.close()
+        if result.get("status") != "sent":
+            raise RuntimeError(result.get("error") or "Windows agent send failed")
+        return {"input_sent": True}
+
+    def _capture_windows_agent_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            transcript = self._read_remote_text(
+                sftp,
+                machine,
+                terminal_record["windows_agent_transcript_file"],
+                missing_ok=True,
+            )
+            status_payload = self._read_remote_json(
+                sftp,
+                posixpath.join(terminal_record["windows_agent_dir"], "status.json"),
+                missing_ok=True,
+            )
+        finally:
+            sftp.close()
+            client.close()
+        status = "active"
+        if status_payload and status_payload.get("status") == "stopped":
+            status = "destroyed"
+        return {"status": status, "transcript": transcript}
+
+    def _destroy_windows_agent_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        agent_dir = terminal_record["windows_agent_dir"]
+        request_file = posixpath.join(agent_dir, "requests", f"{request_id}.json")
+        result_file = posixpath.join(agent_dir, "results", f"{request_id}.json")
+        status_file = posixpath.join(agent_dir, "status.json")
+        client = self._connect(machine)
+        sftp = client.open_sftp()
+        try:
+            self._write_remote_json(
+                sftp,
+                request_file,
+                {"request_id": request_id, "action": "destroy"},
+            )
+            self._wait_for_remote_json(sftp, result_file, timeout=10)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                status = self._read_remote_json(sftp, status_file, missing_ok=True)
+                if status and status.get("status") == "stopped":
+                    break
+                time.sleep(0.2)
+            script = self._windows_delete_task_script(terminal_record["remote_terminal_name"])
+            self._run_windows_powershell(client, script, timeout=15)
+        finally:
+            sftp.close()
+            client.close()
+        return {"destroy_result": "destroyed"}
+
+    def _windows_agent_dir(self, cwd: str, terminal_id: str) -> str:
+        normalized_cwd = cwd.replace("\\", "/").rstrip("/")
+        return posixpath.join(normalized_cwd, ".remote-runner", "windows-agent", terminal_id)
+
+    def _windows_task_name(self, terminal_id: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", terminal_id)
+        return f"RemoteRunner_{safe}"
+
+    def _windows_agent_task_script(
+        self,
+        task_name: str,
+        agent_file: str,
+        agent_dir: str,
+        cwd: str,
+        shell: str,
+    ) -> str:
+        argument = (
+            f'"{agent_file}" run-session '
+            f'--session-dir "{agent_dir}" '
+            f'--cwd "{cwd}" '
+            f'--shell "{shell}"'
+        )
+        return "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"$taskName = {self._ps_quote(task_name)}",
+                f"$argument = {self._ps_quote(argument)}",
+                "$action = New-ScheduledTaskAction -Execute 'python' -Argument $argument",
+                "$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)",
+                "Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Force | Out-Null",
+                "Start-ScheduledTask -TaskName $taskName",
+                "[pscustomobject]@{task=$taskName; started=$true} | ConvertTo-Json -Compress",
+            ]
+        )
+
+    def _windows_delete_task_script(self, task_name: str) -> str:
+        return "\n".join(
+            [
+                "$ErrorActionPreference = 'SilentlyContinue'",
+                f"$taskName = {self._ps_quote(task_name)}",
+                "Stop-ScheduledTask -TaskName $taskName | Out-Null",
+                "Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null",
+                "[pscustomobject]@{task=$taskName; deleted=$true} | ConvertTo-Json -Compress",
+            ]
+        )
+
+    def _run_windows_powershell(
+        self,
+        client: paramiko.SSHClient,
+        script: str,
+        timeout: int = 30,
+    ) -> tuple[str, str, int]:
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        command = f"powershell -NoProfile -EncodedCommand {encoded}"
+        _, stdout_file, stderr_file = client.exec_command(command, timeout=timeout)
+        stdout = stdout_file.read().decode("utf-8", errors="replace")
+        stderr = stderr_file.read().decode("utf-8", errors="replace")
+        exit_code = stdout_file.channel.recv_exit_status()
+        return stdout, stderr, exit_code
+
+    def _ps_quote(self, value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    def _write_remote_json(
+        self,
+        sftp: paramiko.SFTPClient,
+        remote_path: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        self._mkdir_parent(sftp, remote_path)
+        data = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        tmp_path = f"{remote_path}.tmp-{uuid.uuid4().hex}"
+        with sftp.open(tmp_path, "w") as remote_file:
+            remote_file.write(data)
+        sftp.rename(tmp_path, remote_path)
+
+    def _read_remote_json(
+        self,
+        sftp: paramiko.SFTPClient,
+        remote_path: str,
+        missing_ok: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            with sftp.open(remote_path, "rb") as remote_file:
+                data = remote_file.read()
+        except IOError:
+            if missing_ok:
+                return None
+            raise
+        if isinstance(data, str):
+            text = data
+        else:
+            text = data.decode("utf-8", errors="replace")
+        if not text.strip():
+            return None
+        return json.loads(text)
+
+    def _wait_for_remote_json(
+        self,
+        sftp: paramiko.SFTPClient,
+        remote_path: str,
+        timeout: int,
+    ) -> Dict[str, Any]:
+        deadline = time.time() + max(0, timeout)
+        while time.time() < deadline:
+            payload = self._read_remote_json(sftp, remote_path, missing_ok=True)
+            if payload is not None:
+                return payload
+            time.sleep(0.2)
+        raise TimeoutError(f"Timed out waiting for remote JSON: {remote_path}")
 
     def _read_remote_text(
         self,

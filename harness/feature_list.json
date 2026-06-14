@@ -238,6 +238,17 @@
       "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && git diff --check",
       "evidence": "2026-06-09: 已新增 docs/lessons-learned/2026-06-09-tmux-server-auth-context.md 记录 tmux server 授权上下文问题；实现 remote-runner machine restart-tmux-server <machine_id> --json，先拒绝 active Remote Runner tmux sessions，再由 direct SSH 检查远端 tmux sessions，只有无 session 时执行 tmux kill-server；聚焦测试 python3 -m pytest tests/test_remote_runner_mvp.py -q 通过 36 passed；完整 pytest 59 passed, 3 skipped；./scripts/harness-check.sh 通过 0 warnings；git diff --check 通过。",
       "notes": "任务合同已归档至 plans/archive/2026-06-09-remote-runner-tmux-server-restart.md；经验教训记录位于 docs/lessons-learned/2026-06-09-tmux-server-auth-context.md。接口是当前 Linux/tmux backend 维护能力，不是长期跨 backend 产品边界。"
+    },
+    {
+      "id": "F-022",
+      "priority": "P0",
+      "area": "windows-agent",
+      "title": "Remote Runner Windows Agent PowerShell Backend",
+      "behavior": "direct Windows OpenSSH 机器能通过 windows-agent backend 创建持久 PowerShell session，并用同一 session 执行命令、读取 transcript、销毁会话和运行 run once；现有 Linux/tmux backend 保持可用。",
+      "status": "passing",
+      "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_PLATFORM=windows REMOTE_RUNNER_REAL_MACHINE=<windows_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<windows_test_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q",
+      "evidence": "2026-06-13: 已新增 RemoteMachine platform/backend/shell 字段、machine configure-platform、windows-agent backend、嵌入式 Windows Python agent 和 direct Windows OpenSSH + PowerShell 7 opt-in 集成测试；Windows backend 通过用户级 Scheduled Task 启动持久 pwsh，不要求管理员权限、Windows Service、WSL 或 tmux。验证通过：py_compile 覆盖核心模块和测试；tests/test_remote_runner_mvp.py 39 passed；默认 tests/test_remote_runner_real_integration.py 2 skipped；tests/test_remote_runner_launch_suite.py 2 passed, 1 skipped；完整 pytest 62 passed, 4 skipped；./scripts/harness-check.sh 通过；git diff --check 通过；Windows opt-in 真实测试 1 passed, 1 skipped，覆盖 doctor、session create、跨多次 wait-mode exec 的 PowerShell 状态保持、session read transcript、file put/list/get、run once artifact pullback、cleanup 和 session destroy。收尾确认远端无残留 RemoteRunner_ Scheduled Tasks。",
+      "notes": "任务合同已归档至 plans/archive/2026-06-13-windows-agent-pwsh-backend.md。P0 聚焦 direct Windows OpenSSH + PowerShell 7 的 session 可用性；Windows background command/stop、cmd.exe 一等支持、ConPTY/native service 和安装器留作后续任务。"
     }
   ]
 }

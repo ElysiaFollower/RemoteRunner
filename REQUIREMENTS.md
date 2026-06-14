@@ -52,9 +52,11 @@ MVP 可以接受本地明文配置，但必须满足底线：
 
 ### 2.5 当前平台边界
 
-当前 MVP 采用 Linux-first 支持策略。主支持和上线验收目标是通过 SSH/SFTP 访问的 Linux 机器，并且第一版持久 session backend 要求远端有 `tmux`。
+当前 MVP 支持两条持久 session backend：通过 SSH/SFTP 访问的 Linux 机器使用 `ssh-tmux` backend，direct Windows OpenSSH 机器使用 `windows-agent` backend 和 PowerShell 7。
 
-Windows OpenSSH + WSL 不是当前主支持平台。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
+Windows backend 要求远端可通过 OpenSSH/SFTP 访问、可启动 `python` 和 `pwsh`，并能创建用户级 Windows Scheduled Task。P0 支持 `session create/exec/send/read/destroy`、文件传输和 `run once`；暂不支持 `session exec --mode background`、后台命令 stop 或 `cmd.exe` 一等 shell。
+
+Windows OpenSSH + WSL 不是 direct Windows 主路径。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
 
 详细平台边界见 `docs/platform-support.md`。
 
@@ -96,18 +98,21 @@ remote-runner machine remove
 - `user`
 - `auth_type`
 - `password` 或 `key_path`
+- `platform`
+- `backend`
+- `shell`
 - `startup_commands`
 - `default_cwd`
 - `path_mappings`
 
 MVP 至少支持两种配置路径：
 
-- 交互式添加：用户按提示输入机器名、host/IP、端口、user、认证方式、password 或 key path、SSH 登录后的预置指令序列，以及预置指令执行后的默认远程目录。
+- 交互式添加：用户按提示输入机器名、host/IP、端口、user、认证方式、platform、password 或 key path、SSH 登录后的预置指令序列，以及预置指令执行后的默认远程目录。Windows 默认选择 `backend=windows-agent` 和 `shell=pwsh`；Linux/mac 默认选择 `backend=ssh-tmux` 和 `shell=bash`。
 - 手动编辑：用户可以直接打开本地配置文件修改机器信息。
 
 密码认证的推荐路径是隐藏交互式输入；`--password` 命令行参数只作为兼容和测试入口，不推荐用于真实凭据，因为 shell history 容易泄漏。交互式 prompt 必须写到 stderr，`--json` 的 stdout 必须保持为单个 JSON 对象。同名机器覆盖必须显式确认，不得静默覆盖已有配置，也不得删除既有 session、日志、传输记录或产物索引。
 
-`startup_commands` 用于表达“SSH 连接成功后先按序输入哪些指令”，而不是把远程目录当成黑盒起点。例如 Windows OpenSSH 机器可以先执行 `wsl`，再把 `default_cwd` 设置为 `/mnt/c/Users/example/Desktop/SSHRunner`。已有机器可用 `machine configure-startup` 更新该字段，不需要重新输入账密。当前持久 session backend 对 `startup_commands` 机器可明确拒绝；Windows/WSL 不作为当前上线主路径。
+`startup_commands` 用于表达“SSH 连接成功后先按序输入哪些指令”，而不是把远程目录当成黑盒起点。例如兼容型 Windows OpenSSH 机器可以先执行 `wsl`，再把 `default_cwd` 设置为 `/mnt/c/Users/example/Desktop/SSHRunner`。已有机器可用 `machine configure-startup` 更新该字段，不需要重新输入账密。direct Windows 主路径不使用 `startup_commands`，而是显式配置 `platform=windows`、`backend=windows-agent`、`shell=pwsh`。
 
 当命令执行路径和 SFTP 可见路径不一致时，机器配置可以显式保存 `path_mappings`。例如命令侧使用 `/mnt/c/Users/.../SSHRunner`，而 SFTP 侧使用 `C:/Users/.../SSHRunner`。`file put/get/list` 在传输前应用该映射，但传输记录和 artifact manifest 仍保留用户输入的原始远程路径。路径映射不做自动猜测，必须由用户或配置命令明确写入。
 

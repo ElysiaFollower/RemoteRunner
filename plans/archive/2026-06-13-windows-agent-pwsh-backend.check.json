@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "plan": "plans/archive/2026-06-13-windows-agent-pwsh-backend.md",
+  "feature_id": "F-022",
+  "anchors": [
+    {
+      "id": "windows-agent-implementation",
+      "severity": "fail",
+      "reason": "The P0 fix requires a Windows-side agent path rather than direct Linux/tmux commands.",
+      "check": "path_exists",
+      "path": "remote_runner/windows_agent.py",
+      "suggest": "Add or restore the Windows agent implementation used by the backend."
+    },
+    {
+      "id": "backend-routing",
+      "severity": "fail",
+      "reason": "Users need one Remote Runner API with backend selection, not separate Windows/Linux product branches.",
+      "check": "glob_contains",
+      "glob": "remote_runner/*.py",
+      "pattern": "windows-agent",
+      "suggest": "Wire machine/backend configuration and backend selection for the Windows agent path."
+    },
+    {
+      "id": "persistent-windows-test",
+      "severity": "warn",
+      "reason": "The issue is only fixed if Windows can preserve shell state across session exec calls.",
+      "check": "glob_contains",
+      "glob": "tests/test_remote_runner_real_integration.py",
+      "pattern": "windows.*persistent|persistent.*windows|REMOTE_RUNNER_REAL_PLATFORM",
+      "suggest": "Add an opt-in real Windows integration check or update the anchor if the test moved."
+    },
+    {
+      "id": "evidence-recorded",
+      "severity": "warn",
+      "reason": "Passing requires concrete verification evidence, including the real Windows persistent shell check when available.",
+      "check": "evidence_contains",
+      "feature_id": "F-022",
+      "pattern": "windows|Windows|REMOTE_RUNNER_REAL",
+      "suggest": "Record verification commands and key results in harness/feature_list.json evidence."
+    }
+  ]
+}

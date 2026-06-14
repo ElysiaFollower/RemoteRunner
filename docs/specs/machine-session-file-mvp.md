@@ -63,8 +63,16 @@ recommended path for real credentials because shell history can leak it.
 Machine records may include ordered `startup_commands`. These commands are sent after SSH login and
 before the normal cwd change and user command. This covers hosts where the first usable shell is not
 the SSH default shell, such as a Windows OpenSSH host that must run `wsl` before Linux commands.
-They are compatibility inputs, not the current launch path for persistent sessions: the first
-persistent backend is Linux/SSH + `tmux` and may reject machines that require startup commands.
+They are compatibility inputs, not the direct Windows launch path for persistent sessions.
+
+Machine records also include explicit platform/backend/shell fields. Defaults preserve existing
+Linux records:
+
+- `platform=linux`, `backend=ssh-tmux`, `shell=bash`
+- `platform=windows`, `backend=windows-agent`, `shell=pwsh`
+
+Direct Windows support targets Windows OpenSSH/SFTP without entering WSL. It requires Python 3 and
+PowerShell 7 on the remote host.
 
 Existing machines can update startup behavior without re-entering credentials:
 
@@ -90,6 +98,16 @@ This is an explicit configuration, not automatic path discovery. Path mappings a
 compatibility and future backend work; they do not make Windows/WSL a primary support target for the
 current persistent session backend.
 
+Existing machines can update platform behavior without re-entering credentials:
+
+```bash
+remote-runner machine configure-platform <machine_id> \
+  --platform windows \
+  --backend windows-agent \
+  --shell pwsh \
+  --json
+```
+
 Same-name machines are rejected by default. `--replace` allows overwriting an existing machine only
 after exact machine ID confirmation, either through interactive prompt or
 `--confirm-replace <machine_id>`. Replacement must preserve prior sessions, logs, transfers, and
@@ -103,6 +121,9 @@ Minimum fields:
 - `user`
 - `auth_type`: `password` or `key`
 - `password` or `key_path`
+- `platform`: `linux`, `windows`, or `mac`
+- `backend`: `ssh-tmux` or `windows-agent`
+- `shell`: `bash` or `pwsh`
 - `startup_commands`
 - `default_cwd`
 - `path_mappings`
@@ -200,8 +221,9 @@ Background command statuses are:
 - `timed_out`
 - `stopped`
 
-The first implementation may explicitly reject machines with `startup_commands` for background
-commands until Windows/WSL interactive-shell semantics are designed.
+The direct Windows backend may explicitly reject background commands until durable Windows process
+tracking and stop semantics are designed. Wait-mode execution must still preserve shell-local state
+inside the persistent PowerShell session.
 
 ### `remote-runner session command list --session <session_id> --json`
 
@@ -255,9 +277,10 @@ Minimum response fields:
 - `transcript_file_local`
 - `log_dir_local`
 
-The first persistent backend is Linux/SSH + `tmux`. Machines with `startup_commands` may be
-explicitly rejected until interactive startup terminal semantics are designed. See
-`docs/platform-support.md` for the current Linux-first platform boundary.
+Current persistent backends are Linux/SSH + `tmux` and direct Windows OpenSSH +
+`windows-agent`/PowerShell. Machines with `startup_commands` may be explicitly rejected by
+backends that do not implement interactive startup terminal semantics. See
+`docs/platform-support.md` for the current platform boundary.
 
 ### `remote-runner session exec --session <session_id> --cmd <cmd> --json`
 

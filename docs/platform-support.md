@@ -1,46 +1,88 @@
 # Platform Support
 
-Remote Runner 当前采用 Linux-first 支持策略。
+Remote Runner 当前支持两条持久 session 路径：Linux/SSH + tmux，以及 direct Windows
+OpenSSH + Windows agent + PowerShell 7。两条路径共享同一套 `machine -> session ->
+command/logs/file/artifacts` 产品抽象；平台差异是 backend 细节。
 
-## 当前主支持平台
+## Linux / SSH / tmux
 
-MVP 主支持平台是通过 SSH 访问的 Linux 机器，要求远端具备：
+Linux 路径要求远端具备：
 
 - 可用的 POSIX shell / `bash`
 - `tmux`，用于持久 session backend
 - SSH/SFTP，用于命令通道和显式文件传输
 - 一个用户明确授权的可写工作目录
 
-当前真实集成测试以 Linux/SSH 机器为准。上线判定应优先看 Linux/SSH opt-in 测试是否通过。
+Linux backend 当前支持 `session create/exec/send/read/destroy`、`session exec --mode
+background`、`session command show/wait/stop`、`file put/get/list` 和 `run once`。
 
-## Windows / WSL 状态
+## Direct Windows OpenSSH / PowerShell
 
-Windows OpenSSH + WSL 不是当前主支持平台。
+Windows 路径面向不进入 WSL 的 direct Windows OpenSSH 机器。机器记录应显式设置：
 
-历史实现验证过两类 Windows/WSL 兼容能力：
+```json
+{
+  "platform": "windows",
+  "backend": "windows-agent",
+  "shell": "pwsh"
+}
+```
+
+也可以用配置命令修正已有机器：
+
+```bash
+remote-runner machine configure-platform lab-win-01 \
+  --platform windows \
+  --json
+```
+
+Windows backend 当前要求远端具备：
+
+- OpenSSH Server 和 SFTP subsystem
+- PowerShell 7，可通过 `pwsh` 启动
+- Python 3，可通过 `python` 启动
+- 一个用户明确授权的可写工作目录
+- 当前用户可创建并运行用户级 Windows Scheduled Task
+
+Windows backend 会通过 SSH/SFTP 把内嵌 Python agent 放到远端工作目录下的
+`.remote-runner/windows-agent/<session_id>/`，再用用户级 Scheduled Task 启动 agent。agent
+维护一个长期 `pwsh` 子进程，`session exec` 通过 JSON request/result 文件投递命令并读取结构化
+结果。这个实现不要求管理员权限、Windows Service、WSL、tmux 或第三方 terminal multiplexer。
+
+当前 Windows P0 支持：
+
+- `machine doctor`
+- `session create/exec/send/read/destroy`
+- 同一 session 内 PowerShell cwd、环境变量等 shell-local state 持久化
+- `file put/get/list`
+- `run once`
+
+当前 Windows P0 不支持：
+
+- `session exec --mode background`
+- `session command stop` 一类后台命令控制
+- `cmd.exe` 作为一等目标 shell
+- Windows Service 安装或开机常驻 agent
+
+## Windows + WSL Compatibility
+
+仓库历史上验证过两类 Windows/WSL 兼容能力：
 
 - `startup_commands`：SSH 登录后先执行 `wsl` 等预置指令。
 - `path_mappings`：命令侧 `/mnt/c/...` 路径和 SFTP 侧 `C:/...` 路径之间的显式映射。
 
-这些能力保留在机器配置和历史测试中，但当前持久 session backend 不支持依赖
-`startup_commands` 的机器。原因是当前 backend 在 `session create` 时需要直接在远端 Linux shell
-里创建并控制 `tmux` session；Windows OpenSSH 先进入 WSL 的交互链路尚未被设计成稳定、可恢复、
-可销毁的持久 session backend。
-
-因此：
-
-- 可以继续保留 Windows/WSL 机器配置作为兼容/未来 backend 输入。
-- 不应把 Windows/WSL 作为当前上线主路径。
-- 不应承诺 Windows/WSL 支持 `session create/exec/send/read/destroy` 的持久 shell 语义。
-- 若后续要支持 Windows/WSL，应作为单独 backend 任务设计和验收。
+这些能力仍保留为兼容/未来 backend 输入，但它们不是 direct Windows backend。当前持久 session
+不要把 `startup_commands=["wsl"]` 当作 Windows 主支持路径；Windows 主支持路径是
+`windows-agent` + `pwsh`。
 
 ## 不是长期产品边界
 
-Linux、SSH、tmux、SFTP 都是当前 MVP backend 选择，不是永久产品边界。长期产品抽象仍然是：
+Linux、Windows、SSH、tmux、Scheduled Task、PowerShell、Python agent 和 SFTP 都是 backend
+选择，不是永久产品边界。长期产品抽象仍然是：
 
 ```text
 machine -> session -> command/logs/file/artifacts
 ```
 
-当未来引入 screen、native SSH shell、Windows/WSL backend、container backend 或调度 backend 时，公开
-CLI 应尽量保持 session 抽象稳定。
+当未来引入 screen、ConPTY/native agent、container backend 或调度 backend 时，公开 CLI 应尽量保持
+session 抽象稳定。

@@ -15,13 +15,17 @@ This document describes the current target user- and agent-facing CLI contract f
 
 ## Platform Support
 
-The current MVP is Linux-first. The actively supported persistent session path targets Linux
-machines reachable over SSH/SFTP with `tmux` available on the remote host.
+The current MVP supports two persistent session backends:
 
-Windows OpenSSH + WSL is not the current primary support target. `startup_commands` and
-`path_mappings` remain in the machine schema because they are useful for compatibility and future
-backend work, but machines that require startup commands may be explicitly rejected by the current
-persistent session backend. See [Platform Support](../platform-support.md).
+- Linux machines reachable over SSH/SFTP with `tmux` available on the remote host
+  (`platform=linux`, `backend=ssh-tmux`, `shell=bash`).
+- Direct Windows OpenSSH machines with SFTP, Python 3, and PowerShell 7 available
+  (`platform=windows`, `backend=windows-agent`, `shell=pwsh`).
+
+The Windows agent backend currently supports wait-mode session commands, transcript reads, explicit
+file transfer, and `run once`. It does not yet support background session commands or `cmd.exe` as a
+first-class shell. Windows + WSL via `startup_commands` remains a compatibility path, not the direct
+Windows backend. See [Platform Support](../platform-support.md).
 
 ## Global Options
 
@@ -75,12 +79,42 @@ Minimum stored fields:
   "auth_type": "key",
   "key_path": "~/.ssh/id_ed25519",
   "default_cwd": "/home/ely",
+  "platform": "linux",
+  "backend": "ssh-tmux",
+  "shell": "bash",
   "startup_commands": [],
   "path_mappings": []
 }
 ```
 
-For a future or compatibility Windows OpenSSH machine that should enter WSL before Linux commands:
+For a direct Windows OpenSSH machine using the Windows agent backend:
+
+```json
+{
+  "machine_id": "lab-win-01",
+  "host": "192.0.2.20",
+  "port": 22,
+  "user": "example",
+  "auth_type": "key",
+  "key_path": "~/.ssh/id_ed25519",
+  "default_cwd": "C:/Users/example",
+  "platform": "windows",
+  "backend": "windows-agent",
+  "shell": "pwsh",
+  "startup_commands": [],
+  "path_mappings": []
+}
+```
+
+Existing machines can be reclassified without re-entering credentials:
+
+```bash
+remote-runner machine configure-platform lab-win-01 \
+  --platform windows \
+  --json
+```
+
+For a compatibility Windows OpenSSH machine that should enter WSL before Linux commands:
 
 ```bash
 remote-runner machine configure-startup lab-win-01 \
@@ -106,7 +140,7 @@ remote-runner machine configure-path-map lab-win-01 \
 
 `file put/get/list` apply this mapping before SFTP. Transfer records and artifact manifests keep
 the original user-supplied remote path, not the backend-specific path. This compatibility path is
-not the current primary persistent-session support target.
+separate from the direct Windows `windows-agent` backend.
 
 ### List Machines
 
@@ -125,7 +159,10 @@ remote-runner machine list --json
       "auth_type": "key",
       "default_cwd": "/home/ely",
       "startup_commands": [],
-      "path_mappings": []
+      "path_mappings": [],
+      "platform": "linux",
+      "backend": "ssh-tmux",
+      "shell": "bash"
     }
   ],
   "summary": {
@@ -228,8 +265,9 @@ remote-runner session create \
 ```
 
 If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persistent remote shell
-context for this work area; backend details such as tmux are implementation details, not a separate
-top-level resource. In the current MVP, this persistent backend is Linux/SSH + tmux.
+context for this work area; backend details such as tmux or the Windows agent are implementation
+details, not a separate top-level resource. In the current MVP, persistent backends are Linux/SSH +
+tmux and direct Windows OpenSSH + windows-agent/pwsh.
 
 Current Linux/tmux implementation note: `session create` opens a remote tmux-backed shell through
 SSH, and later `session exec/send/read/destroy` calls use fresh SSH operations to control that
@@ -241,6 +279,12 @@ server rather than directly by the fresh SSH login process. If server-side group
 policy changes, `session destroy && session create` is the public Remote Runner restart path, but it
 is not a guaranteed authorization refresh while an existing tmux server with old process credentials
 continues serving new tmux sessions.
+
+Current Windows agent implementation note: `session create` uploads an embedded Python agent under
+the remote cwd and starts it with a user-level Windows Scheduled Task. The agent owns a persistent
+PowerShell 7 (`pwsh`) child process and records transcript output under the remote session state
+directory. `session exec --mode wait`, `session send/read/destroy`, file transfer, and `run once`
+are supported. `session exec --mode background` is not yet supported on this backend.
 
 ### List Sessions
 
@@ -316,7 +360,8 @@ Behavior requirements:
   `log_file_local` or a recoverable remote log reference.
 - Do not require sshfs, FUSE, reverse SSH, or mount setup.
 - `session exec` defaults to synchronous wait mode; long-running jobs should use
-  `--mode background`.
+  `--mode background` on backends that support it. The current Windows agent backend rejects
+  background mode explicitly.
 - `session exec` runs in the session shell. It must keep command boundaries and exit codes through
   Remote Runner command wrappers and state files, not by relying on chat memory.
 

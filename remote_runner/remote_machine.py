@@ -25,11 +25,17 @@ class RemoteMachine:
     default_cwd: str
     startup_commands: List[str]
     path_mappings: List[Dict[str, str]]
+    platform: str = "linux"
+    backend: str = "ssh-tmux"
+    shell: str = "bash"
     password: Optional[str] = None
     key_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RemoteMachine":
+        platform = data.get("platform") or "linux"
+        backend = data.get("backend") or data.get("session_backend") or "ssh-tmux"
+        shell = data.get("shell") or ("pwsh" if backend == "windows-agent" else "bash")
         return cls(
             machine_id=data["machine_id"],
             host=data["host"],
@@ -39,6 +45,9 @@ class RemoteMachine:
             default_cwd=data.get("default_cwd") or "~",
             startup_commands=list(data.get("startup_commands") or []),
             path_mappings=list(data.get("path_mappings") or []),
+            platform=platform,
+            backend=backend,
+            shell=shell,
             password=data.get("password"),
             key_path=data.get("key_path"),
         )
@@ -60,6 +69,17 @@ class RemoteMachine:
                 raise ValueError(f"key_path not found: {self.key_path}")
         if self.auth_type == "password" and self.password is None:
             raise ValueError("password is required for password auth")
+        if self.platform not in {"linux", "windows", "mac"}:
+            raise ValueError("platform must be 'linux', 'windows', or 'mac'")
+        if self.backend not in {"ssh-tmux", "windows-agent"}:
+            raise ValueError("backend must be 'ssh-tmux' or 'windows-agent'")
+        if self.backend == "windows-agent":
+            if self.platform != "windows":
+                raise ValueError("windows-agent backend requires platform 'windows'")
+            if self.shell != "pwsh":
+                raise ValueError("windows-agent backend currently requires shell 'pwsh'")
+        if self.backend == "ssh-tmux" and not self.shell:
+            raise ValueError("shell is required")
         if not isinstance(self.startup_commands, list):
             raise ValueError("startup_commands must be a list")
         for command in self.startup_commands:
@@ -87,6 +107,9 @@ class RemoteMachine:
             "default_cwd": self.default_cwd,
             "startup_commands": list(self.startup_commands),
             "path_mappings": [dict(mapping) for mapping in self.path_mappings],
+            "platform": self.platform,
+            "backend": self.backend,
+            "shell": self.shell,
         }
         if self.auth_type == "key":
             data["key_path"] = self.key_path
@@ -134,9 +157,13 @@ class RemoteMachineManager:
         password: Optional[str] = None,
         key_path: Optional[str] = None,
         startup_commands: Optional[Sequence[str]] = None,
+        platform: str = "linux",
+        backend: str = "ssh-tmux",
+        shell: Optional[str] = None,
         replace: bool = False,
         confirm_replace: Optional[str] = None,
     ) -> Dict[str, Any]:
+        resolved_shell = shell or ("pwsh" if backend == "windows-agent" else "bash")
         machine = RemoteMachine(
             machine_id=machine_id,
             host=host,
@@ -146,6 +173,9 @@ class RemoteMachineManager:
             default_cwd=default_cwd,
             startup_commands=list(startup_commands or []),
             path_mappings=[],
+            platform=platform,
+            backend=backend,
+            shell=resolved_shell,
             password=password,
             key_path=key_path,
         )
@@ -209,6 +239,35 @@ class RemoteMachineManager:
                     }
                 )
             record["path_mappings"] = mappings
+            record["updated_at"] = get_timestamp()
+            RemoteMachine.from_dict(record).validate()
+            machines[machine_id] = record
+            save_machines_state(state)
+
+        return redact_machine_record(record)
+
+    def configure_platform(
+        self,
+        machine_id: str,
+        platform: str,
+        backend: Optional[str] = None,
+        shell: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        platform = platform.strip().lower()
+        if platform not in {"linux", "windows", "mac"}:
+            raise ValueError("platform must be 'linux', 'windows', or 'mac'")
+        resolved_backend = backend or ("windows-agent" if platform == "windows" else "ssh-tmux")
+        resolved_shell = shell or ("pwsh" if resolved_backend == "windows-agent" else "bash")
+
+        with remote_state_lock():
+            state = load_machines_state()
+            machines = state.setdefault("machines", {})
+            record = machines.get(machine_id)
+            if not record:
+                raise KeyError(f"Machine '{machine_id}' not found")
+            record["platform"] = platform
+            record["backend"] = resolved_backend
+            record["shell"] = resolved_shell
             record["updated_at"] = get_timestamp()
             RemoteMachine.from_dict(record).validate()
             machines[machine_id] = record

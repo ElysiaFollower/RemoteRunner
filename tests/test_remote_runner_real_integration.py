@@ -43,6 +43,21 @@ def _run_remote_runner(*args: str) -> dict:
     return payload
 
 
+def _real_platform() -> str:
+    return os.environ.get("REMOTE_RUNNER_REAL_PLATFORM", "linux").lower()
+
+
+def _join_remote_path(remote_cwd: str, name: str) -> str:
+    remote_cwd = remote_cwd.rstrip("/\\")
+    if _real_platform() == "windows":
+        return f"{remote_cwd}/{name}"
+    return posixpath.join(remote_cwd, name)
+
+
+@pytest.mark.skipif(
+    os.environ.get("REMOTE_RUNNER_REAL_PLATFORM", "linux").lower() == "windows",
+    reason="POSIX real integration smoke is for Linux/SSH machines",
+)
 def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
     machine_id = _require_env("REMOTE_RUNNER_REAL_MACHINE")
     remote_cwd = _require_env("REMOTE_RUNNER_REAL_TEST_CWD").rstrip("/")
@@ -335,6 +350,190 @@ def test_real_machine_exec_and_file_transfer_round_trip(tmp_path):
                     f"rm -f {shlex.quote(probe_name)} && "
                     f"rm -rf .remote-runner/commands/{shlex.quote(background_command_id or '')} && "
                     f"rm -rf .remote-runner/commands/{shlex.quote(stop_command_id or '')}"
+                ),
+                "--json",
+            )
+        if session_id:
+            _run_remote_runner("session", "destroy", "--session", session_id, "--json")
+
+
+@pytest.mark.skipif(
+    os.environ.get("REMOTE_RUNNER_REAL_PLATFORM", "linux").lower() != "windows",
+    reason="Set REMOTE_RUNNER_REAL_PLATFORM=windows for direct Windows OpenSSH tests",
+)
+def test_real_windows_agent_persistent_powershell_session(tmp_path):
+    machine_id = _require_env("REMOTE_RUNNER_REAL_MACHINE")
+    remote_cwd = _require_env("REMOTE_RUNNER_REAL_TEST_CWD").rstrip("/\\")
+    probe_id = uuid.uuid4().hex
+    probe_name = f"rr_windows_integration_{probe_id}.txt"
+    remote_path = _join_remote_path(remote_cwd, probe_name)
+    local_source = tmp_path / probe_name
+    local_download = tmp_path / f"downloaded_{probe_name}"
+    run_output = tmp_path / f"run_output_{probe_name}"
+    content = f"remote-runner-windows-integration {probe_id}\n"
+    local_source.write_text(content)
+
+    session_id = None
+    cleanup_done = False
+    try:
+        doctor = _run_remote_runner("machine", "doctor", machine_id, "--json")
+        assert doctor["reachable"] is True
+        assert doctor["auth_ok"] is True
+        assert doctor["default_cwd_ok"] is True
+        assert doctor["backend"] == "windows-agent"
+
+        session = _run_remote_runner(
+            "session",
+            "create",
+            "--machine",
+            machine_id,
+            "--cwd",
+            remote_cwd,
+            "--json",
+        )
+        session_id = session["session_id"]
+        assert session["backend"] == "windows-agent"
+        assert session["cwd"] == remote_cwd
+
+        executed = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            'Write-Output ((Get-Location).Path); Write-Output "remote-runner-windows-ready"',
+            "--json",
+        )
+        assert executed["exit_code"] == 0
+        assert remote_cwd.replace("/", "\\") in executed["stdout"].replace("/", "\\")
+        assert "remote-runner-windows-ready" in executed["stdout"]
+
+        session_token = f"rr-windows-session-{probe_id}"
+        set_state = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            f"$env:RR_SESSION_TOKEN = {session_token!r}; Set-Location -LiteralPath {remote_cwd!r}",
+            "--json",
+        )
+        assert set_state["exit_code"] == 0
+
+        state_result = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            'Write-Output ((Get-Location).Path); Write-Output $env:RR_SESSION_TOKEN',
+            "--json",
+        )
+        assert state_result["exit_code"] == 0
+        assert remote_cwd.replace("/", "\\") in state_result["stdout"].replace("/", "\\")
+        assert session_token in state_result["stdout"]
+
+        session_read = None
+        import time
+
+        for _ in range(20):
+            session_read = _run_remote_runner(
+                "session",
+                "read",
+                "--session",
+                session_id,
+                "--json",
+            )
+            if session_token in session_read["transcript"]:
+                break
+            time.sleep(0.2)
+        assert session_read is not None
+        assert session_token in session_read["transcript"]
+
+        put = _run_remote_runner(
+            "file",
+            "put",
+            "--session",
+            session_id,
+            "--local",
+            str(local_source),
+            "--remote",
+            remote_path,
+            "--json",
+        )
+        assert put["status"] == "completed"
+
+        listing = _run_remote_runner(
+            "file",
+            "list",
+            "--session",
+            session_id,
+            "--remote",
+            remote_cwd,
+            "--json",
+        )
+        assert any(entry["name"] == probe_name for entry in listing["entries"])
+
+        get = _run_remote_runner(
+            "file",
+            "get",
+            "--session",
+            session_id,
+            "--remote",
+            remote_path,
+            "--local",
+            str(local_download),
+            "--json",
+        )
+        assert get["status"] == "completed"
+        assert local_download.read_text() == content
+
+        run = _run_remote_runner(
+            "run",
+            "once",
+            "--machine",
+            machine_id,
+            "--cwd",
+            remote_cwd,
+            "--cmd",
+            (
+                f"Get-Content -LiteralPath {remote_path!r} | "
+                f"Set-Content -LiteralPath {remote_path + '.run'!r}"
+            ),
+            "--artifact",
+            f"{remote_path}.run={run_output}",
+            "--json",
+        )
+        assert run["status"] == "succeeded"
+        assert run["destroy_session_result"]["status"] == "destroyed"
+        assert run_output.read_text().strip() == content.strip()
+
+        cleanup = _run_remote_runner(
+            "session",
+            "exec",
+            "--session",
+            session_id,
+            "--cmd",
+            (
+                f"Remove-Item -LiteralPath {remote_path!r} -Force -ErrorAction SilentlyContinue; "
+                f"Remove-Item -LiteralPath {(remote_path + '.run')!r} -Force -ErrorAction SilentlyContinue; "
+                f"if (Test-Path -LiteralPath {remote_path!r}) {{ exit 1 }}"
+            ),
+            "--json",
+        )
+        cleanup_done = cleanup["exit_code"] == 0
+        assert cleanup_done is True
+    finally:
+        if session_id and not cleanup_done:
+            _run_remote_runner(
+                "session",
+                "exec",
+                "--session",
+                session_id,
+                "--cmd",
+                (
+                    f"Remove-Item -LiteralPath {remote_path!r} -Force -ErrorAction SilentlyContinue; "
+                    f"Remove-Item -LiteralPath {(remote_path + '.run')!r} -Force -ErrorAction SilentlyContinue"
                 ),
                 "--json",
             )

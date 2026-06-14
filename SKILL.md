@@ -23,10 +23,16 @@ Do not use raw `ssh`, `scp`, `rsync`, `tmux`, `sshfs`, or mount workflows unless
 
 ## Platform Boundary
 
-For normal work, choose a Linux machine reachable over SSH/SFTP with `tmux` available. The current
-persistent session backend is Linux-first. Windows OpenSSH + WSL records that depend on
-`startup_commands` and `path_mappings` are compatibility/future-backend inputs, not the primary path
-for `session create/exec/send/read/destroy`.
+For normal work, choose an explicitly configured machine whose `platform`, `backend`, and `shell`
+match the target OS:
+
+- Linux/mac-style work: SSH/SFTP machine with `backend=ssh-tmux`, `shell=bash`, and `tmux`
+  available.
+- Direct Windows work: Windows OpenSSH/SFTP machine with `backend=windows-agent`, `shell=pwsh`,
+  Python 3, and PowerShell 7 available.
+
+Windows OpenSSH + WSL records that depend on `startup_commands` and `path_mappings` are
+compatibility inputs, not the primary direct Windows path.
 
 ## Environment
 
@@ -74,9 +80,8 @@ Do not continue if `reachable`, `auth_ok`, or `default_cwd_ok` is false. Report 
 remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
 ```
 
-`session create` opens the persistent remote shell context for this work area. On the current
-backend, the target machine should be Linux/SSH with `tmux`. `machine doctor` and the first
-`session exec` are still the practical connectivity checks.
+`session create` opens the persistent remote shell context for this work area. `machine doctor` and
+the first `session exec` are still the practical connectivity checks.
 
 5. Run bounded commands through the session:
 
@@ -92,8 +97,8 @@ Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every comman
 Commands in the same session share shell-local state: a prior `cd`, `export`, or alias can affect
 later `session exec` calls.
 
-For long-running or persistent commands, do not compensate by using very large synchronous
-timeouts. Start the command in background mode and keep the returned `command_id`:
+For long-running or persistent commands on the Linux/tmux backend, do not compensate by using very
+large synchronous timeouts. Start the command in background mode and keep the returned `command_id`:
 
 ```bash
 remote-runner session exec \
@@ -119,7 +124,9 @@ remote-runner session command wait \
 ```
 
 Use `session command stop` when a running background command should be terminated. A session with
-running background commands cannot be destroyed until those commands finish or are stopped.
+running background commands cannot be destroyed until those commands finish or are stopped. The
+direct Windows backend currently supports persistent wait-mode execution and raw send/read, but
+rejects background commands with a clear error.
 
 6. Clean up when finished:
 
@@ -230,7 +237,22 @@ remote-runner machine add \
   --json
 ```
 
-Windows OpenSSH that must enter WSL first, for compatibility or future backend work:
+Direct Windows OpenSSH machine:
+
+```bash
+remote-runner machine add \
+  --machine-id <machine-id> \
+  --host <host-or-ip> \
+  --user <user> \
+  --auth-type password \
+  --platform windows \
+  --backend windows-agent \
+  --shell pwsh \
+  --default-cwd C:/Users/<user> \
+  --json
+```
+
+Windows OpenSSH that must enter WSL first, for compatibility backend work:
 
 ```bash
 remote-runner machine configure-startup <machine-id> \
@@ -244,8 +266,8 @@ remote-runner machine configure-path-map <machine-id> \
   --json
 ```
 
-Do not choose this Windows/WSL path for normal persistent session work unless the user explicitly
-asks to test that compatibility boundary.
+Do not choose this Windows/WSL path for normal direct Windows persistent session work unless the
+user explicitly asks to test that compatibility boundary.
 
 ## Failure Handling
 

@@ -131,6 +131,10 @@ class RemoteSessionManager:
         mode: str = "wait",
     ) -> Dict[str, Any]:
         if mode == "background":
+            session = load_session_state(session_id)
+            machine = self.machine_manager.get(session["machine_id"])
+            if machine.backend == "windows-agent":
+                raise RuntimeError("windows-agent backend does not yet support background mode")
             return self.start_background(session_id, command, cwd=cwd, timeout=timeout)
         if mode != "wait":
             raise ValueError("mode must be 'wait' or 'background'")

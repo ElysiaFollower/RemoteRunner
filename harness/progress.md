@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：`F-020 Remote Runner Session 持久 Terminal 统一模型` passing；`F-019 Remote Runner 持久 Terminal Session` passing；`F-005` profile/report 层未开始。
-- 当前任务计划：`plans/archive/2026-05-14-remote-runner-session-terminal-unification.md`。
-- 当前阶段性提交：F-020 已提交并推送；平台边界文档清理已完成并进入当前分支；分支为 `dev/remote-runner-persistent-terminals`，PR #6 为 draft 且已修正为 session 统一模型。
-- 上次验证：2026-05-14，PR review 修复后 `./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`git diff --check` 通过。此前同分支 Linux/SSH opt-in 真实集成测试 1 passed。
-- 下一步最佳动作：审阅 PR #6 的 session 统一模型 diff；上线主路径按 Linux/SSH + tmux 验收。Windows/WSL 持久 session 只有在明确需要时才作为独立 backend 任务推进。
+- 当前功能项：`F-022 Remote Runner Windows Agent PowerShell Backend` passing；`F-020`、`F-021` passing；`F-005` profile/report 层未开始。
+- 最近任务计划：`plans/archive/2026-06-13-windows-agent-pwsh-backend.md`。
+- 当前阶段性分支：`dev-windows-agent-pwsh-backend`，用于隔离 direct Windows OpenSSH 支持工作，避免破坏当前 Linux/tmux 稳定路径。
+- 上次验证：2026-06-13，Windows agent backend 收尾验证通过：`python3 -m py_compile ...` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 39 passed；默认 `python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 2 skipped；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 62 passed, 4 skipped；`./scripts/harness-check.sh` 通过；`git diff --check` 通过；direct Windows opt-in 真实测试通过 1 passed, 1 skipped。
+- 下一步最佳动作：把 `dev-windows-agent-pwsh-backend` 推送并创建 PR；后续单独设计 Windows background command/stop、安装器或 native gateway。
 - 2026-06-09 诊断记录：实践中发现服务器侧刚更新用户组后，Remote Runner `session destroy && session create` 仍可能看不到新补充组。代码确认当前 Linux/SSH + tmux backend 不是持久登录用户账号；它通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session。但如果该用户已有 tmux server 进程，新的 shell 可能由既有 tmux server fork，继续继承该 server 的旧 Unix 补充组。当前 API 没有独立 `restart/refresh-auth`，公开重启路径只有 destroy/create；若既有 tmux server 仍存活，授权上下文可能继续过时。
 - 2026-06-09：`F-021 Remote Runner tmux server 安全重启接口` 完成并归档至 `plans/archive/2026-06-09-remote-runner-tmux-server-restart.md`。已新增 `docs/lessons-learned/2026-06-09-tmux-server-auth-context.md`，并实现 `machine restart-tmux-server` direct-SSH 接口；验证通过：`./scripts/harness-check.sh` 0 warnings，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 36 passed，`python3 -m pytest -q` 59 passed, 3 skipped，`git diff --check` 通过。
 
@@ -268,3 +268,13 @@
 - 本地 transcript 文件读写和 session state 更新统一放入 `remote_state_lock`，并避免无变化时重复写文件。
 - 新增回归测试模拟远端 capture 因 history rotation 只剩尾部内容时，本地 transcript 仍保留旧历史并只追加新增行。
 - 验证：`python3 -m py_compile remote_runner/remote_session.py` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`./scripts/harness-check.sh` 通过 0 warnings；`git diff --check` 通过。
+
+### 2026-06-13 - Direct Windows OpenSSH Backend 完成
+
+- 新增 `F-022 Remote Runner Windows Agent PowerShell Backend` 并归档任务合同。
+- 机器记录新增 `platform`、`backend`、`shell` 字段；旧机器默认 `linux / ssh-tmux / bash`，direct Windows 默认 `windows / windows-agent / pwsh`。
+- 新增 `remote-runner machine configure-platform`，可在不重填凭据的情况下修正既有机器的 OS/backend/shell。
+- 新增 `remote_runner/windows_agent.py` 和 `windows-agent` backend：通过 SSH/SFTP 上传 Python agent，用用户级 Windows Scheduled Task 启动持久 `pwsh`，通过 JSON request/result 文件执行 wait-mode 命令并维护 transcript。
+- `session exec --mode background` 对 Windows backend 明确拒绝；P0 只承诺持久 wait-mode exec、send/read、destroy、file put/list/get 和 run once。
+- 文档同步 README、Skill、Requirements、platform support、API、getting-started、MVP spec 和 launch acceptance suite，明确 direct Windows 是当前支持路径，Windows/WSL startup/path mapping 只是兼容输入。
+- 验证：py_compile 通过；MVP 测试 39 passed；默认真实集成入口 2 skipped；launch suite 2 passed, 1 skipped；完整 pytest 62 passed, 4 skipped；harness-check 通过；git diff --check 通过；direct Windows opt-in 真实测试 1 passed, 1 skipped，覆盖 persistent PowerShell 状态保持、transcript、文件传输、run once 和 cleanup。

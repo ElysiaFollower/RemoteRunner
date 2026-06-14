@@ -61,6 +61,14 @@ def _prompt_auth_type() -> str:
         print("Auth type must be 'password' or 'key'", file=sys.stderr)
 
 
+def _prompt_platform() -> str:
+    while True:
+        value = _prompt("Remote platform (linux/windows/mac)", "linux").strip().lower()
+        if value in {"linux", "windows", "mac"}:
+            return value
+        print("Remote platform must be 'linux', 'windows', or 'mac'", file=sys.stderr)
+
+
 def _prompt_password() -> str:
     password = getpass.getpass("SSH password: ", stream=sys.stderr)
     if not password:
@@ -113,6 +121,13 @@ def _collect_machine_add_args(args: argparse.Namespace) -> Dict[str, Any]:
     port = args.port if args.port is not None else (_prompt_port() if interactive else 22)
     user = args.user or _prompt_required("SSH user")
     auth_type = args.auth_type or _prompt_auth_type()
+    platform = args.platform or (_prompt_platform() if interactive else "linux")
+    backend = args.backend
+    shell = args.shell
+    if backend is None:
+        backend = "windows-agent" if platform == "windows" else "ssh-tmux"
+    if shell is None:
+        shell = "pwsh" if backend == "windows-agent" else "bash"
     default_cwd = args.default_cwd
 
     password = args.password
@@ -148,6 +163,9 @@ def _collect_machine_add_args(args: argparse.Namespace) -> Dict[str, Any]:
         "key_path": key_path,
         "default_cwd": default_cwd,
         "startup_commands": startup_commands,
+        "platform": platform,
+        "backend": backend,
+        "shell": shell,
         "replace": args.replace,
         "confirm_replace": confirm_replace,
     }
@@ -218,6 +236,17 @@ def cmd_machine_configure_path_map(args: argparse.Namespace) -> None:
             machine_id=args.machine_id,
             command_prefix=args.command_prefix,
             file_prefix=args.file_prefix,
+        )
+    )
+
+
+def cmd_machine_configure_platform(args: argparse.Namespace) -> None:
+    _print(
+        get_remote_machine_manager().configure_platform(
+            machine_id=args.machine_id,
+            platform=args.platform,
+            backend=args.backend,
+            shell=args.shell,
         )
     )
 
@@ -367,6 +396,9 @@ def build_parser() -> argparse.ArgumentParser:
     machine_add.add_argument("--port", type=int)
     machine_add.add_argument("--user")
     machine_add.add_argument("--auth-type", choices=["key", "password"])
+    machine_add.add_argument("--platform", choices=["linux", "windows", "mac"])
+    machine_add.add_argument("--backend", choices=["ssh-tmux", "windows-agent"])
+    machine_add.add_argument("--shell")
     machine_add.add_argument("--password", help="Password auth value; prefer interactive input")
     machine_add.add_argument("--key-path")
     machine_add.add_argument("--default-cwd")
@@ -435,6 +467,17 @@ def build_parser() -> argparse.ArgumentParser:
     machine_path_map.add_argument("--file-prefix", required=True)
     add_json_flag(machine_path_map)
     machine_path_map.set_defaults(func=cmd_machine_configure_path_map)
+
+    machine_platform = machine_sub.add_parser(
+        "configure-platform",
+        help="Configure remote platform and session backend for an existing machine",
+    )
+    machine_platform.add_argument("machine_id")
+    machine_platform.add_argument("--platform", required=True, choices=["linux", "windows", "mac"])
+    machine_platform.add_argument("--backend", choices=["ssh-tmux", "windows-agent"])
+    machine_platform.add_argument("--shell")
+    add_json_flag(machine_platform)
+    machine_platform.set_defaults(func=cmd_machine_configure_platform)
 
     session = subparsers.add_parser("session", help="Session management")
     session_sub = session.add_subparsers(dest="session_command")
