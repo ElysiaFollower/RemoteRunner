@@ -848,6 +848,22 @@ class ParamikoRemoteBackend:
         finally:
             client.close()
 
+    def terminal_exists(self, machine: RemoteMachine, terminal_record: Dict[str, Any]) -> bool:
+        if self._uses_windows_agent(machine):
+            return self._windows_agent_running(machine, terminal_record)
+
+        if machine.startup_commands:
+            raise RuntimeError("terminal sessions do not yet support startup_commands machines")
+
+        target = terminal_record["remote_terminal_name"]
+        client = self._connect(machine)
+        try:
+            script = f"tmux has-session -t {shlex.quote(target)} >/dev/null 2>&1"
+            _, stdout_file, _ = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            return stdout_file.channel.recv_exit_status() == 0
+        finally:
+            client.close()
+
     def destroy_terminal(
         self,
         machine: RemoteMachine,
@@ -1392,6 +1408,28 @@ class ParamikoRemoteBackend:
             self._run_windows_powershell(client, script, timeout=15)
         finally:
             sftp.close()
+            client.close()
+
+    def _windows_agent_running(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> bool:
+        task_name = terminal_record.get("remote_terminal_name")
+        if not task_name:
+            return False
+        script = (
+            f"$task = Get-ScheduledTask -TaskName {self._ps_quote(task_name)} "
+            "-ErrorAction SilentlyContinue; "
+            "if ($null -eq $task) { exit 1 }; "
+            "$info = Get-ScheduledTaskInfo -TaskName $task.TaskName; "
+            "if ($info.LastTaskResult -eq 267009) { exit 0 }; exit 1"
+        )
+        client = self._connect(machine)
+        try:
+            _, _, exit_code = self._run_windows_powershell(client, script, timeout=10)
+            return exit_code == 0
+        finally:
             client.close()
         return {"destroy_result": "destroyed"}
 

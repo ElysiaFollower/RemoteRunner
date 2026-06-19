@@ -117,6 +117,8 @@ class RemoteSessionManager:
         return {"sessions": sessions, "summary": {"session_count": len(sessions)}}
 
     def show(self, session_id: str) -> Dict[str, Any]:
+        self._recover_stale_active_command(session_id)
+        self._refresh_session_liveness(session_id)
         session = load_session_state(session_id)
         public = self._public_session(session)
         public["commands"] = session.get("commands", [])
@@ -130,6 +132,8 @@ class RemoteSessionManager:
         timeout: int = 300,
         mode: str = "wait",
     ) -> Dict[str, Any]:
+        self._recover_stale_active_command(session_id)
+        self._refresh_session_liveness(session_id)
         if mode == "background":
             session = load_session_state(session_id)
             machine = self.machine_manager.get(session["machine_id"])
@@ -366,6 +370,15 @@ class RemoteSessionManager:
             )
         updated = dict(record)
         updated.update(update)
+        if updated.get("status") == "running" and record.get("command_backend") == "tmux":
+            session = load_session_state(session_id)
+            if not self._session_terminal_exists(machine, session):
+                self._mark_session_lost(session_id)
+                updated["status"] = "failed"
+                updated["ended_at"] = updated.get("ended_at") or get_timestamp()
+                updated["error"] = (
+                    "remote tmux session is no longer running while command status is still running"
+                )
         if updated.get("ended_at") and updated.get("duration_ms") is None:
             updated["duration_ms"] = self._duration_ms(updated["started_at"], updated["ended_at"])
         if updated.get("status") in {"exited", "failed", "stopped", "timed_out"}:
@@ -532,6 +545,8 @@ class RemoteSessionManager:
         }
 
     def destroy(self, session_id: str) -> Dict[str, Any]:
+        self._recover_stale_active_command(session_id)
+        self._refresh_session_liveness(session_id)
         session = load_session_state(session_id)
         if session.get("busy"):
             raise RuntimeError(f"Session '{session_id}' is busy")
@@ -575,6 +590,80 @@ class RemoteSessionManager:
             result["transcript_capture_error"] = capture_error
         return result
 
+    def _session_terminal_exists(self, machine: Any, session: Dict[str, Any]) -> bool:
+        try:
+            return self.backend.terminal_exists(machine, session)
+        except Exception:
+            return True
+
+    def _recover_stale_active_command(self, session_id: str) -> None:
+        session = load_session_state(session_id)
+        active_command = session.get("active_command")
+        if (
+            session.get("status") != "active"
+            or not session.get("busy")
+            or not active_command
+        ):
+            return
+
+        machine = self.machine_manager.get(session["machine_id"])
+        if self._session_terminal_exists(machine, session):
+            return
+
+        now = get_timestamp()
+        started_at = active_command.get("reserved_at") or now
+        command_index = int(active_command.get("index") or session.get("command_count", 0) + 1)
+        log_file = os.path.join(session["log_dir_local"], f"cmd_{command_index:03d}.log")
+        record = {
+            "index": command_index,
+            "command_id": active_command.get("command_id"),
+            "command": active_command.get("command", ""),
+            "cwd": active_command.get("cwd") or session["cwd"],
+            "mode": "unknown",
+            "status": "failed",
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "started_at": started_at,
+            "ended_at": now,
+            "duration_ms": self._duration_ms(started_at, now),
+            "log_file_local": log_file,
+            "error": "remote tmux session disappeared while command was reserved",
+        }
+        self._write_command_log(record)
+        with remote_state_lock():
+            session = load_session_state(session_id)
+            if not session.get("busy") or not session.get("active_command"):
+                return
+            session.setdefault("commands", []).append(record)
+            session["command_count"] = max(int(session.get("command_count", 0)), command_index)
+            session["last_command"] = record["command"]
+            session["last_exit_code"] = None
+            session["busy"] = False
+            session["active_command"] = None
+            session["updated_at"] = now
+            save_session_state(session)
+
+    def _refresh_session_liveness(self, session_id: str) -> None:
+        session = load_session_state(session_id)
+        if session.get("status") != "active" or session.get("busy"):
+            return
+        machine = self.machine_manager.get(session["machine_id"])
+        if self._session_terminal_exists(machine, session):
+            return
+        self._mark_session_lost(session_id)
+
+    def _mark_session_lost(self, session_id: str) -> None:
+        now = get_timestamp()
+        with remote_state_lock():
+            session = load_session_state(session_id)
+            if session.get("status") == "active" and not session.get("busy"):
+                session["status"] = "lost"
+                session["updated_at"] = now
+                save_session_state(session)
+
     def _reserve_command(
         self,
         session_id: str,
@@ -585,6 +674,8 @@ class RemoteSessionManager:
             session = load_session_state(session_id)
             if session.get("status") == "destroyed":
                 raise RuntimeError(f"Session '{session_id}' has been destroyed")
+            if session.get("status") != "active":
+                raise RuntimeError(f"Session '{session_id}' is not active")
             if session.get("busy"):
                 raise RuntimeError(f"Session '{session_id}' is busy")
             running_commands = [
@@ -693,7 +784,7 @@ class RemoteSessionManager:
             return None
 
     def _public_command_summary(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        result = {
             "index": record["index"],
             "command_id": record.get("command_id"),
             "command": record["command"],
@@ -706,6 +797,9 @@ class RemoteSessionManager:
             "duration_ms": record.get("duration_ms"),
             "log_file_local": record["log_file_local"],
         }
+        if record.get("error"):
+            result["error"] = record["error"]
+        return result
 
     def _public_command_result(
         self,
@@ -733,6 +827,8 @@ class RemoteSessionManager:
             "remote_state_dir": record.get("remote_state_dir"),
             "remote_pid": record.get("remote_pid"),
         }
+        if record.get("error"):
+            result["error"] = record["error"]
         for key in (
             "remote_stdout_file",
             "remote_stderr_file",

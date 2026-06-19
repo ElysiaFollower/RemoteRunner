@@ -8,67 +8,55 @@
 ## 仓库状态
 
 - 分支：`dev-windows-agent-pwsh-backend`。
-- 最近计划：`plans/archive/2026-06-13-windows-agent-pwsh-backend.md`。
-- 当前功能项：`F-022 Remote Runner Windows Agent PowerShell Backend` passing；`F-020`、`F-021` passing；`F-005` profile/report 层未开始。
-- 当前目标状态：Remote Runner 已支持两条持久 session backend：Linux/SSH + tmux，以及 direct Windows OpenSSH + windows-agent + PowerShell 7。
-- 当前策略：同一 Remote Runner API，不拆 Windows/Linux 产品分支；机器注册显式记录 `platform`，Windows 默认 `backend=windows-agent`、`shell=pwsh`，Linux/mac 默认 `backend=ssh-tmux`、`shell=bash`。
+- 最近计划：`plans/archive/2026-06-19-stale-tmux-session-recovery.md`。
+- 当前功能项：`F-023 Remote Runner stale tmux session recovery` passing；`F-022`、`F-021`、`F-020` passing；`F-005` profile/report 层未开始。
+- 当前目标状态：Remote Runner 已支持 Linux/SSH + tmux 和 direct Windows OpenSSH + windows-agent；本轮补齐 Linux/tmux 历史 stale 状态恢复。
 
 ## 本轮完成
 
-- 新建隔离分支 `dev-windows-agent-pwsh-backend`，避免破坏当前 Linux/tmux 稳定路径。
-- 新增并归档任务合同和 check anchors：
-  - `plans/archive/2026-06-13-windows-agent-pwsh-backend.md`
-  - `plans/archive/2026-06-13-windows-agent-pwsh-backend.check.json`
-- `RemoteMachine` 新增兼容字段：`platform`、`backend`、`shell`。旧记录默认 `linux / ssh-tmux / bash`。
-- `machine add` 新增 `--platform/--backend/--shell`；交互式注册会询问 `linux/windows/mac`。
-- 新增 `machine configure-platform <machine_id> --platform ...`，用于不重填凭据地修正既有机器平台/backend/shell。
-- 新增 `remote_runner/windows_agent.py` 嵌入式 Windows agent 源码。
-- `ParamikoRemoteBackend` 新增 `windows-agent` 分支：
-  - `doctor` 使用 PowerShell cwd/pwsh probe。
-  - `session create` 上传 agent 到远端工作目录下 `.remote-runner/windows-agent/<session_id>/`，用用户级 Windows Scheduled Task 启动 agent。
-  - `session exec --mode wait` 通过 JSON request/result 文件和持久 `pwsh` 子进程执行。
-  - `session send/read` 支持原始输入和 transcript 读取。
-  - `session destroy` 发送 destroy request 并删除对应 Scheduled Task。
-  - Windows SFTP `C:/...` 路径 mkdir bug 已修复。
-- `session exec --mode background` 对 `windows-agent` 明确拒绝；P0 不承诺 Windows 后台 stop 语义。
-- 文档已同步：README、Skill、Requirements、platform support、API、getting-started、MVP spec、launch acceptance suite、overview、core lighthouse。
+- 通过 configured Linux/tmux machine 历史状态复现 agent 容易卡住的形态：本地 session 仍为 `active`/`busy`，command 仍为 `running`，但远端 tmux session 已不存在。
+- 新增 `ParamikoRemoteBackend.terminal_exists`，用于判断 Linux/tmux terminal 或 Windows agent task 是否仍存在。
+- `session command show/wait` 对 stale running command 不再无限等待；当 tmux session 已丢失时，命令会收敛为 `failed`，并返回解释性 `error`。
+- `session show/exec/destroy` 会恢复 stale `active_command`：落一条 failed command record、清除 `busy`，并把不可用 session 标为 `lost`。
+- `session exec` 现在拒绝非 `active` session；`destroy` 仍可把 `lost` session 收尾为 `destroyed`。
+- 新增单元测试覆盖 stale running background command 和 stale active command reservation。
 
 ## 验证证据
 
-- `python3 -m py_compile remote_runner/remote_machine.py remote_runner/cli.py remote_runner/windows_agent.py remote_runner/remote_backend.py remote_runner/remote_session.py tests/test_remote_runner_real_integration.py tests/test_remote_runner_mvp.py` 通过。
-- `python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 `39 passed`。
+- `python3 -m py_compile remote_runner/remote_backend.py remote_runner/remote_session.py tests/test_remote_runner_mvp.py` 通过。
+- `python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 `41 passed`。
 - `python3 -m pytest tests/test_remote_runner_real_integration.py -q` 默认通过 `2 skipped`。
-- `python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 `2 passed, 1 skipped`。
-- `python3 -m pytest -q` 通过 `62 passed, 4 skipped`。
-- `./scripts/harness-check.sh` 通过。
+- configured Linux/tmux machine 新鲜压力自测通过：大量 stdout 截断、12 秒静默 wait、同步 timeout 后恢复、后台命令轮询/wait/stop、file put/list/get、run once、外部 kill tmux 后 lost/exec reject/destroy、最终 exec、cleanup 和 destroy。
+- 另一台 Linux/tmux machine 深度自测通过：持久 shell 状态、同步 timeout 后恢复、后台 wait、file put/get、run once、外部 kill tmux 后 lost/destroy、cleanup 和 destroy。
+- `REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<linux_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 `1 passed, 1 skipped`。
+- `REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<linux_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 `3 passed`。
+- `python3 -m pytest -q` 通过 `64 passed, 4 skipped`。
+- `./scripts/harness-check.sh` 通过 `0 warnings`。
 - `git diff --check` 通过。
-- direct Windows opt-in 真实测试通过 `1 passed, 1 skipped`，覆盖 doctor、session create、跨多次 wait-mode exec 的 PowerShell 状态保持、session read transcript、file put/list/get、run once artifact pullback、cleanup 和 session destroy。
-- 收尾确认远端无残留 `RemoteRunner_` Windows Scheduled Tasks。
+- configured Linux/tmux machine 历史 stale command 已由 `running` 收敛为 `failed`，error 为远端 tmux session 已不存在。
+- configured Linux/tmux machine 历史 stale busy session 已由 `active`/`busy` 收敛为 `lost`/`failed`。
 
 ## 仍未完成
 
-- Windows backend 当前支持持久 wait-mode execution、send/read、destroy、file put/list/get、run once；不支持 background command/stop。
+- 尚未批量收敛所有历史 session；当前逻辑是在 `session show`、`session command show/wait`、`session exec`、`session destroy` 触达时惰性恢复。
+- 可以后续新增显式 `session recover` 或 `session list --refresh`，批量标记历史 stale session。
+- Windows backend 仍不支持 background command/stop。
 - `docs/issues/` 是本轮开始前已存在的未跟踪目录；未纳入本任务处理。
 
 ## 安全与隐私边界
 
-- Windows agent 通过用户级 Scheduled Task 启动，不要求管理员权限、Windows Service、WSL、tmux 或第三方 terminal multiplexer。
-- direct Windows P0 目标 shell 是 PowerShell 7 (`pwsh`)；`cmd.exe` 一等支持未开始。
-- Windows/WSL `startup_commands` + `path_mappings` 保留为兼容输入，不是 direct Windows 主路径。
-- 真实机器细节、host、用户名、密码、私有路径未写入仓库。
-- 真实 Windows 测试只写入显式配置的测试目录；收尾确认无残留 `RemoteRunner_` Windows Scheduled Tasks。
+- 不把密码、密钥、真实 host、真实账号或私人路径写入仓库、handoff 或提交信息。
+- configured Linux/tmux machine 真实验证只读取 Remote Runner 状态和运行轻量探针；没有启动训练、没有杀未知业务进程、没有删除历史日志。
+- 本轮只收敛本地 Remote Runner 状态；远端历史 `.remote-runner` command 目录保留。
 
 ## 下一步最佳动作
 
-1. Review 当前 diff，确认 Windows agent backend 的协议和文档范围。
-2. 推送 `dev-windows-agent-pwsh-backend` 并创建 PR。
-3. 后续单独切任务处理 Windows background command/stop、安装器/native gateway、ConPTY 或更完整的 agent 生命周期管理。
+1. 提交 F-023 stale recovery 修复。
+2. 后续可单独设计批量 recover/list refresh 和更明确的 timeout UX。
 
 ## 常用命令
 
-- 初始化：`./init.sh`
 - Harness 检查：`./scripts/harness-check.sh`
 - 聚焦测试：`python3 -m pytest tests/test_remote_runner_mvp.py -q`
 - 默认真实测试入口：`python3 -m pytest tests/test_remote_runner_real_integration.py -q`
-- Windows opt-in 真实测试：`REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_PLATFORM=windows REMOTE_RUNNER_REAL_MACHINE=<windows_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<windows_test_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q`
 - 完整验证：`python3 -m pytest -q`

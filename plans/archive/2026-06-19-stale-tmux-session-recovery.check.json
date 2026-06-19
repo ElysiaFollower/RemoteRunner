@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "plan": "plans/archive/2026-06-19-stale-tmux-session-recovery.md",
+  "feature_id": "F-023",
+  "anchors": [
+    {
+      "id": "terminal-liveness-check",
+      "severity": "fail",
+      "reason": "Stale command recovery depends on checking whether the remote backend terminal still exists.",
+      "check": "glob_contains",
+      "glob": "remote_runner/remote_backend.py",
+      "pattern": "terminal_exists",
+      "suggest": "Restore backend terminal liveness checks."
+    },
+    {
+      "id": "stale-command-fails",
+      "severity": "fail",
+      "reason": "A running command must not remain running after its tmux session disappears.",
+      "check": "glob_contains",
+      "glob": "remote_runner/remote_session.py",
+      "pattern": "remote tmux session is no longer running",
+      "suggest": "Restore stale running command recovery."
+    },
+    {
+      "id": "stale-tests",
+      "severity": "warn",
+      "reason": "Regression tests should cover stale running commands and stale active command reservations.",
+      "check": "glob_contains",
+      "glob": "tests/test_remote_runner_mvp.py",
+      "pattern": "stale",
+      "suggest": "Add or restore stale tmux session recovery tests."
+    }
+  ]
+}

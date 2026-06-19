@@ -7,11 +7,11 @@
 
 ## 当前状态
 
-- 当前功能项：`F-022 Remote Runner Windows Agent PowerShell Backend` passing；`F-020`、`F-021` passing；`F-005` profile/report 层未开始。
-- 最近任务计划：`plans/archive/2026-06-13-windows-agent-pwsh-backend.md`。
+- 当前功能项：`F-023 Remote Runner stale tmux session recovery` passing；`F-022`、`F-021`、`F-020` passing；`F-005` profile/report 层未开始。
+- 最近任务计划：`plans/archive/2026-06-19-stale-tmux-session-recovery.md`。
 - 当前阶段性分支：`dev-windows-agent-pwsh-backend`，用于隔离 direct Windows OpenSSH 支持工作，避免破坏当前 Linux/tmux 稳定路径。
-- 上次验证：2026-06-13，Windows agent backend 收尾验证通过：`python3 -m py_compile ...` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 39 passed；默认 `python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 2 skipped；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 62 passed, 4 skipped；`./scripts/harness-check.sh` 通过；`git diff --check` 通过；direct Windows opt-in 真实测试通过 1 passed, 1 skipped。
-- 下一步最佳动作：把 `dev-windows-agent-pwsh-backend` 推送并创建 PR；后续单独设计 Windows background command/stop、安装器或 native gateway。
+- 上次验证：2026-06-19，stale tmux session recovery 通过：`python3 -m py_compile remote_runner/remote_backend.py remote_runner/remote_session.py tests/test_remote_runner_mvp.py` 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 41 passed；默认 `python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 2 skipped；configured Linux/tmux machine 压力自测覆盖大量输出、静默 wait、同步 timeout 后恢复、后台轮询/wait/stop、file put/list/get、run once、外部 kill tmux 后 lost/exec reject/destroy、最终 exec 和 cleanup；另一台 Linux/tmux machine 深度自测覆盖持久 shell、timeout 恢复、后台 wait、file、run once 和 lost/destroy；真实 opt-in `tests/test_remote_runner_real_integration.py` 通过 1 passed, 1 skipped；真实 opt-in `tests/test_remote_runner_launch_suite.py` 通过 3 passed；完整 `python3 -m pytest -q` 通过 64 passed, 4 skipped；`./scripts/harness-check.sh` 0 warnings；`git diff --check` 通过；真实历史 stale command 已从 running 收敛为 failed，真实历史 busy session 已从 active/busy 收敛为 lost/failed。
+- 下一步最佳动作：提交 F-023；后续如需要可增加显式 `session recover/list --refresh` 命令批量收敛历史状态。
 - 2026-06-09 诊断记录：实践中发现服务器侧刚更新用户组后，Remote Runner `session destroy && session create` 仍可能看不到新补充组。代码确认当前 Linux/SSH + tmux backend 不是持久登录用户账号；它通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session。但如果该用户已有 tmux server 进程，新的 shell 可能由既有 tmux server fork，继续继承该 server 的旧 Unix 补充组。当前 API 没有独立 `restart/refresh-auth`，公开重启路径只有 destroy/create；若既有 tmux server 仍存活，授权上下文可能继续过时。
 - 2026-06-09：`F-021 Remote Runner tmux server 安全重启接口` 完成并归档至 `plans/archive/2026-06-09-remote-runner-tmux-server-restart.md`。已新增 `docs/lessons-learned/2026-06-09-tmux-server-auth-context.md`，并实现 `machine restart-tmux-server` direct-SSH 接口；验证通过：`./scripts/harness-check.sh` 0 warnings，`python3 -m pytest tests/test_remote_runner_mvp.py -q` 36 passed，`python3 -m pytest -q` 59 passed, 3 skipped，`git diff --check` 通过。
 
@@ -278,3 +278,12 @@
 - `session exec --mode background` 对 Windows backend 明确拒绝；P0 只承诺持久 wait-mode exec、send/read、destroy、file put/list/get 和 run once。
 - 文档同步 README、Skill、Requirements、platform support、API、getting-started、MVP spec 和 launch acceptance suite，明确 direct Windows 是当前支持路径，Windows/WSL startup/path mapping 只是兼容输入。
 - 验证：py_compile 通过；MVP 测试 39 passed；默认真实集成入口 2 skipped；launch suite 2 passed, 1 skipped；完整 pytest 62 passed, 4 skipped；harness-check 通过；git diff --check 通过；direct Windows opt-in 真实测试 1 passed, 1 skipped，覆盖 persistent PowerShell 状态保持、transcript、文件传输、run once 和 cleanup。
+
+### 2026-06-19 - stale tmux session recovery 完成
+
+- 诊断 configured Linux/tmux machine 历史状态，发现多个本地 `active`/`busy` session 与 `running` command 残留；远端对应 tmux session 已不存在，但远端 command status 文件仍停在 `running`。
+- 新增 backend `terminal_exists`，用于判断 Linux/tmux 和 Windows agent terminal 是否仍存在。
+- `session command show/wait` 遇到 running command 但 tmux session 已消失时，改为返回 `failed`，写入解释性 `error`，避免 agent 无限等待。
+- `session show/exec/destroy` 会恢复 stale `active_command`：清除 `busy`、落一条 failed command record，并把不可用 session 标为 `lost`；后续 `session exec` 会拒绝非 active session。
+- configured Linux/tmux machine 新鲜压力自测通过：大量 stdout 截断、12 秒静默 wait、后台命令轮询/wait、最终 exec、cleanup 和 destroy 均正常。
+- 验证：py_compile 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 41 passed；默认真实集成入口 2 skipped；真实历史 stale command/session 已按预期收敛。

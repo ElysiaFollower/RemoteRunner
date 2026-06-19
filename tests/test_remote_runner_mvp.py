@@ -24,6 +24,7 @@ from remote_runner.remote_state import (
     load_run_state,
     load_session_state,
     load_transfer_records,
+    save_session_state,
 )
 
 
@@ -179,6 +180,11 @@ class FakeBackend:
         terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
         terminal = self.terminals[terminal_id]
         return {"status": terminal["status"], "transcript": terminal["transcript"]}
+
+    def terminal_exists(self, machine, terminal_record):
+        terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
+        terminal = self.terminals.get(terminal_id)
+        return bool(terminal and terminal["status"] == "active")
 
     def destroy_terminal(self, machine, terminal_record):
         terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
@@ -691,6 +697,66 @@ def test_session_background_command_stop_blocks_destroy_until_stopped(remote_sta
     assert stopped["stop_requested"] is True
     assert stopped["stop_result"] == "stopped"
     assert session_manager.destroy(session_id)["status"] == "destroyed"
+
+
+def test_session_background_command_marks_stale_when_tmux_session_is_missing(
+    remote_state_dir, tmp_path
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = session_manager.create("lab-gpu-01")["session_id"]
+    command_id = session_manager.exec(session_id, "sleep 30", mode="background")[
+        "command_id"
+    ]
+
+    backend.terminals[session_id]["status"] = "destroyed"
+
+    stale = session_manager.command_show(session_id, command_id)
+
+    assert stale["status"] == "failed"
+    assert stale["exit_code"] is None
+    assert "tmux session is no longer running" in stale["error"]
+    assert load_session_state(session_id)["status"] == "lost"
+    record = load_session_state(session_id)["commands"][0]
+    assert record["status"] == "failed"
+    assert "tmux session is no longer running" in Path(record["log_file_local"]).read_text()
+    assert session_manager.destroy(session_id)["status"] == "destroyed"
+
+
+def test_session_show_recovers_stale_active_command_when_tmux_session_is_missing(
+    remote_state_dir, tmp_path
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = session_manager.create("lab-gpu-01")["session_id"]
+
+    state = load_session_state(session_id)
+    state["busy"] = True
+    state["active_command"] = {
+        "index": 1,
+        "command_id": "cmd_stale",
+        "command": "apt-get install something",
+        "cwd": state["cwd"],
+        "reserved_at": "2026-05-08T00:00:01Z",
+    }
+    save_session_state(state)
+    backend.terminals[session_id]["status"] = "destroyed"
+
+    shown = session_manager.show(session_id)
+
+    assert shown["status"] == "lost"
+    assert shown["busy"] is False
+    assert shown["command_count"] == 1
+    assert shown["commands"][0]["status"] == "failed"
+    assert shown["commands"][0]["error"] == (
+        "remote tmux session disappeared while command was reserved"
+    )
+    with pytest.raises(RuntimeError, match="not active"):
+        session_manager.exec(session_id, "echo should-not-run")
 
 
 def test_remote_runner_cli_background_command_outputs_json(remote_state_dir, tmp_path, monkeypatch, capsys):
