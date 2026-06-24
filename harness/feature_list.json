@@ -260,6 +260,17 @@
       "verification": "python3 -m py_compile remote_runner/remote_backend.py remote_runner/remote_session.py tests/test_remote_runner_mvp.py && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<linux_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<linux_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check && configured Linux/tmux stale-session recovery smoke",
       "evidence": "2026-06-19: 通过 configured Linux/tmux machine 历史状态复现多个 active/busy session 和 running command 残留；远端 tmux session 已不存在，但远端 status 文件仍为 running，导致 command wait 持续 wait_timed_out。已新增 terminal_exists 检查；command show/wait 在 running command 的 tmux session 消失时返回 failed 并写入 error；session show/exec/destroy 会恢复 stale active_command，清除 busy，并把不可用 session 标为 lost。验证：py_compile 通过；tests/test_remote_runner_mvp.py 41 passed；默认 tests/test_remote_runner_real_integration.py 2 skipped；configured Linux/tmux machine 压力自测覆盖大量输出、12 秒静默 wait、同步 timeout 后恢复、后台命令轮询/wait/stop、file put/list/get、run once、外部 kill tmux 后 lost/exec reject/destroy、最终 exec 和 cleanup；另一台 Linux/tmux machine 深度自测覆盖持久 shell 状态、timeout 恢复、后台 wait、file、run once 和 lost/destroy；真实 opt-in tests/test_remote_runner_real_integration.py 1 passed, 1 skipped；真实 opt-in tests/test_remote_runner_launch_suite.py 3 passed；完整 pytest 64 passed, 4 skipped；harness-check 0 warnings；git diff --check 通过；真实历史 stale command 已由 running 收敛为 failed，真实历史 busy session 已由 active/busy 收敛为 lost/failed。",
       "notes": "任务合同已归档至 plans/archive/2026-06-19-stale-tmux-session-recovery.md。本项只收敛不可恢复的 stale 状态，不自动删除用户历史日志、不杀未知远端业务进程。"
+    },
+    {
+      "id": "F-024",
+      "priority": "P1",
+      "area": "session-usability",
+      "title": "Remote Runner readable session names",
+      "behavior": "用户和 agent 能在创建 session 时提供可读 name，并在 session/file 命令中通过唯一 name 引用该 session；session_id 仍是不可变主键。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-06-24: 已实现 optional session name、统一 session resolver、session/file 命令按 session_id 或唯一 name 解析、name 校验、同机未销毁 session 重名拒绝、跨机同名歧义报错、destroyed 后同名复用、旧无 name session 兼容；CLI 新增 session create --name。验证：tests/test_remote_runner_mvp.py 45 passed；session create --help 显示 --name；tests/test_remote_runner_launch_suite.py 2 passed, 1 skipped；tests/test_remote_runner_real_integration.py 2 skipped；完整 pytest 68 passed, 4 skipped；harness-check 0 warnings；git diff --check 通过；本地 docs/issues/ 暂存问题已删除。",
+      "notes": "任务合同已归档至 plans/archive/2026-06-24-readable-session-names.md；session_id 仍是主键，name 只作为可读引用入口。"
     }
   ]
 }

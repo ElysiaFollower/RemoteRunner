@@ -1,6 +1,7 @@
 """Session and command management for the mount-free Remote Runner core."""
 
 import os
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -26,6 +27,8 @@ from remote_runner.utils import (
 class RemoteSessionManager:
     """Manage Remote Runner sessions without requiring mounts."""
 
+    SESSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
     def __init__(
         self,
         machine_manager: Optional[RemoteMachineManager] = None,
@@ -33,6 +36,33 @@ class RemoteSessionManager:
     ):
         self.machine_manager = machine_manager or get_remote_machine_manager()
         self.backend = backend or ParamikoRemoteBackend()
+
+    def resolve_session_id(self, session_ref: str) -> str:
+        """Resolve a session ID or unique readable session name to the canonical session ID."""
+        try:
+            return load_session_state(session_ref)["session_id"]
+        except KeyError:
+            pass
+
+        current_matches = []
+        historical_matches = []
+        for session in list_session_states():
+            if session.get("name") != session_ref:
+                continue
+            summary = f"{session['session_id']} ({session['machine_id']}, {session.get('status')})"
+            if session.get("status") == "destroyed":
+                historical_matches.append(summary)
+            else:
+                current_matches.append(summary)
+
+        matches = current_matches or historical_matches
+        if not matches:
+            raise KeyError(f"Session '{session_ref}' not found")
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Session name '{session_ref}' is ambiguous: " + ", ".join(matches)
+            )
+        return matches[0].split(" ", 1)[0]
 
     @staticmethod
     def _transcript_overlap(existing: str, captured: str) -> int:
@@ -71,10 +101,22 @@ class RemoteSessionManager:
         separator = "" if existing.endswith("\n") or captured.startswith("\n") else "\n"
         return existing + separator + captured
 
-    def create(self, machine_id: str, cwd: Optional[str] = None) -> Dict[str, Any]:
+    def create(
+        self,
+        machine_id: str,
+        cwd: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         machine = self.machine_manager.get(machine_id)
         session_id = generate_id("sess")
         remote_cwd = cwd or machine.default_cwd
+        session_name = self._validate_session_name(name)
+        if session_name:
+            self._assert_session_name_available(
+                name=session_name,
+                machine_id=machine_id,
+                exclude_session_id=session_id,
+            )
         log_dir = get_log_dir(session_id)
         ensure_dir(log_dir)
         transcript_file = os.path.join(log_dir, "transcript.txt")
@@ -86,6 +128,7 @@ class RemoteSessionManager:
         )
         session = {
             "session_id": session_id,
+            "name": session_name,
             "machine_id": machine_id,
             "cwd": remote_cwd,
             "backend": backend_record.get("backend", "tmux"),
@@ -108,8 +151,21 @@ class RemoteSessionManager:
         }
         write_file(transcript_file, "")
         os.chmod(transcript_file, 0o600)
-        with remote_state_lock():
-            save_session_state(session)
+        try:
+            with remote_state_lock():
+                if session_name:
+                    self._assert_session_name_available(
+                        name=session_name,
+                        machine_id=machine_id,
+                        exclude_session_id=session_id,
+                    )
+                save_session_state(session)
+        except Exception:
+            try:
+                self.backend.destroy_terminal(machine, session)
+            except Exception:
+                pass
+            raise
         return self._public_session(session)
 
     def list(self) -> Dict[str, Any]:
@@ -117,6 +173,7 @@ class RemoteSessionManager:
         return {"sessions": sessions, "summary": {"session_count": len(sessions)}}
 
     def show(self, session_id: str) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         self._recover_stale_active_command(session_id)
         self._refresh_session_liveness(session_id)
         session = load_session_state(session_id)
@@ -132,6 +189,7 @@ class RemoteSessionManager:
         timeout: int = 300,
         mode: str = "wait",
     ) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         self._recover_stale_active_command(session_id)
         self._refresh_session_liveness(session_id)
         if mode == "background":
@@ -257,6 +315,7 @@ class RemoteSessionManager:
         cwd: Optional[str] = None,
         timeout: int = 15,
     ) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         reservation = self._reserve_command(session_id, command, cwd)
         machine = self.machine_manager.get(reservation["machine_id"])
         remote_cwd = reservation["cwd"]
@@ -323,6 +382,7 @@ class RemoteSessionManager:
         return self._public_command_result(session_id, reservation["machine_id"], record)
 
     def command_list(self, session_id: str) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         session = load_session_state(session_id)
         commands = [self._public_command_summary(command) for command in session.get("commands", [])]
         return {
@@ -338,6 +398,7 @@ class RemoteSessionManager:
         stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
         stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
     ) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         record = self._get_command_record(session_id, command_id)
         if record.get("mode") != "background":
             return self._public_command_result(
@@ -404,6 +465,7 @@ class RemoteSessionManager:
         stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
         stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
     ) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         deadline = time.time() + max(0, timeout)
         while True:
             result = self.command_show(
@@ -421,6 +483,7 @@ class RemoteSessionManager:
             time.sleep(min(poll_interval, max(0, deadline - time.time())))
 
     def command_stop(self, session_id: str, command_id: str) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         record = self._get_command_record(session_id, command_id)
         machine_id = self._session_machine_id(session_id)
         if record.get("status") != "running":
@@ -440,6 +503,7 @@ class RemoteSessionManager:
         return refreshed
 
     def send(self, session_id: str, input_text: str, enter: bool = True) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         session = load_session_state(session_id)
         if session.get("status") != "active":
             raise RuntimeError(f"Session '{session_id}' is not active")
@@ -465,6 +529,7 @@ class RemoteSessionManager:
         since: Optional[int] = None,
         max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         session = load_session_state(session_id)
         transcript_file = session["transcript_file_local"]
         captured_transcript: Optional[str] = None
@@ -525,6 +590,7 @@ class RemoteSessionManager:
         return result
 
     def logs(self, session_id: str) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         session = load_session_state(session_id)
         return {
             "session_id": session_id,
@@ -545,6 +611,7 @@ class RemoteSessionManager:
         }
 
     def destroy(self, session_id: str) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
         self._recover_stale_active_command(session_id)
         self._refresh_session_liveness(session_id)
         session = load_session_state(session_id)
@@ -595,6 +662,39 @@ class RemoteSessionManager:
             return self.backend.terminal_exists(machine, session)
         except Exception:
             return True
+
+    def _validate_session_name(self, name: Optional[str]) -> Optional[str]:
+        if name is None:
+            return None
+        if not isinstance(name, str) or not name:
+            raise ValueError("session name must be a non-empty string")
+        if name.startswith("sess_"):
+            raise ValueError("session name must not start with 'sess_'")
+        if not self.SESSION_NAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                "session name may only contain letters, digits, '.', '_', and '-'"
+            )
+        return name
+
+    def _assert_session_name_available(
+        self,
+        name: str,
+        machine_id: str,
+        exclude_session_id: Optional[str] = None,
+    ) -> None:
+        for session in list_session_states():
+            if session["session_id"] == exclude_session_id:
+                continue
+            if session.get("machine_id") != machine_id:
+                continue
+            if session.get("name") != name:
+                continue
+            if session.get("status") == "destroyed":
+                continue
+            raise RuntimeError(
+                f"Session name '{name}' is already used by active session "
+                f"'{session['session_id']}' on machine '{machine_id}'"
+            )
 
     def _recover_stale_active_command(self, session_id: str) -> None:
         session = load_session_state(session_id)
@@ -848,6 +948,7 @@ class RemoteSessionManager:
     def _public_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "session_id": session["session_id"],
+            "name": session.get("name"),
             "machine_id": session["machine_id"],
             "cwd": session["cwd"],
             "status": session["status"],

@@ -47,6 +47,7 @@ class RemoteFileManager:
         )
 
     def list(self, session_id: str, remote_path: str) -> Dict[str, Any]:
+        session_id = self.session_manager.resolve_session_id(session_id)
         session = load_session_state(session_id)
         if session.get("status") == "destroyed":
             raise RuntimeError(f"Session '{session_id}' has been destroyed")
@@ -92,6 +93,7 @@ class RemoteFileManager:
         destination: str,
         action: Any,
     ) -> Dict[str, Any]:
+        session_id = self.session_manager.resolve_session_id(session_id)
         session = load_session_state(session_id)
         if session.get("status") == "destroyed":
             raise RuntimeError(f"Session '{session_id}' has been destroyed")

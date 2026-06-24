@@ -248,12 +248,14 @@ Example response:
 remote-runner session create \
   --machine lab-gpu-01 \
   --cwd /home/ely/project \
+  --name train-eval \
   --json
 ```
 
 ```json
 {
   "session_id": "sess_abc123",
+  "name": "train-eval",
   "machine_id": "lab-gpu-01",
   "cwd": "/home/ely/project",
   "status": "active",
@@ -268,6 +270,14 @@ If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persist
 context for this work area; backend details such as tmux or the Windows agent are implementation
 details, not a separate top-level resource. In the current MVP, persistent backends are Linux/SSH +
 tmux and direct Windows OpenSSH + windows-agent/pwsh.
+
+`--name` is optional. When provided, it is a readable short label that may contain only letters,
+digits, `.`, `_`, and `-`; names beginning with `sess_` are rejected to avoid confusion with
+generated IDs. `session_id` remains the immutable primary key and log directory identifier. The
+existing `--session` parameter on session and file commands accepts either an exact `session_id` or
+a unique readable name. If a name matches multiple non-destroyed sessions, the command fails with an
+ambiguity error instead of guessing. Destroyed sessions preserve their historical name but do not
+block reuse on the same machine.
 
 Current Linux/tmux implementation note: `session create` opens a remote tmux-backed shell through
 SSH, and later `session exec/send/read/destroy` calls use fresh SSH operations to control that
@@ -299,6 +309,7 @@ and log directory.
 
 ```bash
 remote-runner session show --session sess_abc123 --json
+remote-runner session show --session train-eval --json
 ```
 
 Returns the session record, last command, last exit code, command count, and log locations.

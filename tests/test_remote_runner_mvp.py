@@ -890,6 +890,118 @@ def test_session_read_appends_rotated_remote_transcript(
     assert transcript_file.read_text() == "line-1\nline-2\nline-3\nline-4\n"
 
 
+def test_session_readable_name_resolves_session_and_file_commands(
+    remote_state_dir,
+    tmp_path,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    file_manager = RemoteFileManager(
+        machine_manager=machine_manager,
+        session_manager=session_manager,
+        backend=backend,
+    )
+
+    created = session_manager.create(
+        "lab-gpu-01",
+        cwd="/home/ely/project",
+        name="train.eval-01",
+    )
+    session_id = created["session_id"]
+
+    assert created["name"] == "train.eval-01"
+    assert session_manager.resolve_session_id("train.eval-01") == session_id
+    assert session_manager.show("train.eval-01")["session_id"] == session_id
+
+    exec_result = session_manager.exec("train.eval-01", "echo named-session")
+    assert exec_result["session_id"] == session_id
+    assert exec_result["stdout"] == "named-session\n"
+
+    background = session_manager.exec("train.eval-01", "sleep 30", mode="background")
+    command_id = background["command_id"]
+    assert session_manager.command_list("train.eval-01")["summary"]["command_count"] == 2
+    assert session_manager.command_show("train.eval-01", command_id)["status"] == "running"
+    assert session_manager.command_wait("train.eval-01", command_id, timeout=0)[
+        "wait_timed_out"
+    ] is True
+    assert session_manager.command_stop("train.eval-01", command_id)["status"] == "stopped"
+
+    session_manager.send("train.eval-01", "pwd")
+    read = session_manager.read("train.eval-01")
+    assert read["session_id"] == session_id
+    assert "/home/ely/project" in read["transcript"]
+    assert session_manager.logs("train.eval-01")["session_id"] == session_id
+
+    put = file_manager.put("train.eval-01", "/local/input.txt", "/remote/input.txt")
+    listing = file_manager.list("train.eval-01", "/remote")
+    get = file_manager.get("train.eval-01", "/remote/result.txt", "/local/result.txt")
+    assert put["session_id"] == session_id
+    assert listing["session_id"] == session_id
+    assert get["session_id"] == session_id
+    assert backend.puts[-1][2] == "/remote/input.txt"
+
+    destroyed = session_manager.destroy("train.eval-01")
+    assert destroyed["session_id"] == session_id
+    assert destroyed["status"] == "destroyed"
+
+
+def test_session_name_validation_conflicts_reuse_and_ambiguity(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    machine_manager.add(
+        machine_id="lab-gpu-02",
+        host="127.0.0.2",
+        port=2222,
+        user="ely",
+        auth_type="key",
+        key_path=str(_write_key(tmp_path)),
+        default_cwd="/srv/app",
+    )
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    for invalid_name in ("", "bad name", "sess_manual", "name/slash", "名字"):
+        with pytest.raises(ValueError):
+            session_manager.create("lab-gpu-01", name=invalid_name)
+
+    first = session_manager.create("lab-gpu-01", name="shared-name")
+    with pytest.raises(RuntimeError, match="already used"):
+        session_manager.create("lab-gpu-01", name="shared-name")
+
+    session_manager.destroy(first["session_id"])
+    reused = session_manager.create("lab-gpu-01", name="shared-name")
+    assert reused["name"] == "shared-name"
+
+    second_machine = session_manager.create("lab-gpu-02", name="shared-name")
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        session_manager.show("shared-name")
+
+    assert session_manager.show(reused["session_id"])["session_id"] == reused["session_id"]
+    assert session_manager.show(second_machine["session_id"])["session_id"] == (
+        second_machine["session_id"]
+    )
+
+
+def test_legacy_session_without_name_still_works_by_id(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    created = session_manager.create("lab-gpu-01")
+    state = load_session_state(created["session_id"])
+    state.pop("name", None)
+    save_session_state(state)
+
+    shown = session_manager.show(created["session_id"])
+
+    assert shown["name"] is None
+    assert shown["session_id"] == created["session_id"]
+    assert session_manager.exec(created["session_id"], "echo old")["stdout"] == "old\n"
+
+
 def test_remote_runner_cli_session_send_read_outputs_json(
     remote_state_dir,
     tmp_path,
@@ -954,6 +1066,58 @@ def test_remote_runner_cli_session_send_read_outputs_json(
     assert created["session_id"].startswith("sess_")
     assert sent["input_sent"] is True
     assert "/home/ely/project" in read["transcript"]
+
+
+def test_remote_runner_cli_session_create_accepts_readable_name(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    monkeypatch.setattr("remote_runner.cli.get_remote_session_manager", lambda: manager)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "create",
+            "--machine",
+            "lab-gpu-01",
+            "--cwd",
+            "/home/ely/project",
+            "--name",
+            "cli-session",
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    created = json.loads(capsys.readouterr().out)
+
+    assert created["name"] == "cli-session"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "session",
+            "show",
+            "--session",
+            "cli-session",
+            "--json",
+        ],
+    )
+    remote_cli_main()
+    shown = json.loads(capsys.readouterr().out)
+
+    assert shown["session_id"] == created["session_id"]
+    assert shown["name"] == "cli-session"
 
 
 def test_file_transfer_records_success_and_failure(remote_state_dir, tmp_path):

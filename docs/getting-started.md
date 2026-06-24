@@ -58,13 +58,15 @@ remote-runner machine doctor linux-01 --json
 先创建会话，再执行命令，再看日志，最后销毁会话。
 
 ```bash
-remote-runner session create --machine linux-01 --cwd /home/ely/tmp --json
-remote-runner session exec --session <SESSION_ID> --cmd 'pwd && whoami' --json
-remote-runner session logs --session <SESSION_ID> --json
-remote-runner session destroy --session <SESSION_ID> --json
+remote-runner session create --machine linux-01 --cwd /home/ely/tmp --name smoke-test --json
+remote-runner session exec --session smoke-test --cmd 'pwd && whoami' --json
+remote-runner session logs --session smoke-test --json
+remote-runner session destroy --session smoke-test --json
 ```
 
 建议把可写测试目录固定在 `/home/ely/tmp` 或其他你确认可写的目录。若该目录是 root-owned 或不可写，就换成别的安全目录，不要默认假设它能写。
+`--name` 可选；非临时会话建议提供可读名称。后续 `--session` 可以使用真实 `session_id`
+或唯一可解析的 name。
 
 如果任务是长时间运行的，先用后台模式启动，再用 `session command show/wait/stop` 查询：
 
@@ -123,29 +125,30 @@ Linux 持久 session 后端要求 Linux/SSH 机器上有 `tmux`。Windows 持久
 remote-runner session create \
   --machine linux-01 \
   --cwd /home/ely/tmp \
+  --name demo-shell \
   --json
 
 remote-runner session exec \
-  --session <SESSION_ID> \
+  --session demo-shell \
   --cmd 'cd /home/ely/tmp' \
   --json
 
 remote-runner session exec \
-  --session <SESSION_ID> \
+  --session demo-shell \
   --cmd 'export RR_DEMO=ok' \
   --json
 
 remote-runner session exec \
-  --session <SESSION_ID> \
+  --session demo-shell \
   --cmd 'pwd && printf "$RR_DEMO\n"' \
   --json
 
 remote-runner session read \
-  --session <SESSION_ID> \
+  --session demo-shell \
   --json
 
 remote-runner session destroy \
-  --session <SESSION_ID> \
+  --session demo-shell \
   --json
 ```
 
@@ -197,12 +200,12 @@ remote-runner machine configure-platform win-01 \
 Windows session 用法和 Linux 相同：
 
 ```bash
-remote-runner session create --machine win-01 --cwd C:/Users/<USERNAME> --json
-remote-runner session exec --session <SESSION_ID> --cmd 'Write-Output ((Get-Location).Path)' --json
-remote-runner session exec --session <SESSION_ID> --cmd '$env:RR_DEMO="ok"' --json
-remote-runner session exec --session <SESSION_ID> --cmd 'Write-Output $env:RR_DEMO' --json
-remote-runner session read --session <SESSION_ID> --json
-remote-runner session destroy --session <SESSION_ID> --json
+remote-runner session create --machine win-01 --cwd C:/Users/<USERNAME> --name win-shell --json
+remote-runner session exec --session win-shell --cmd 'Write-Output ((Get-Location).Path)' --json
+remote-runner session exec --session win-shell --cmd '$env:RR_DEMO="ok"' --json
+remote-runner session exec --session win-shell --cmd 'Write-Output $env:RR_DEMO' --json
+remote-runner session read --session win-shell --json
+remote-runner session destroy --session win-shell --json
 ```
 
 Windows P0 暂不支持 `session exec --mode background` 和后台命令 stop。

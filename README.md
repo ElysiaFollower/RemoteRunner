@@ -63,20 +63,20 @@ remote-runner machine list --json
 remote-runner machine show lab-gpu-01 --json
 remote-runner machine doctor lab-gpu-01 --json
 
-remote-runner session create --machine lab-gpu-01 --cwd /home/user/project --json
-remote-runner session exec --session sess_abc123 --cmd "pytest -q" --timeout 300 --json
-remote-runner session exec --session sess_abc123 --cmd "python long_job.py" --mode background --json
-remote-runner session command show --session sess_abc123 --command-id cmd_abc123 --json
-remote-runner session command wait --session sess_abc123 --command-id cmd_abc123 --timeout 30 --json
-remote-runner session command stop --session sess_abc123 --command-id cmd_abc123 --json
-remote-runner session send --session sess_abc123 --input "cd src" --json
-remote-runner session read --session sess_abc123 --json
-remote-runner session logs --session sess_abc123 --json
-remote-runner session destroy --session sess_abc123 --json
+remote-runner session create --machine lab-gpu-01 --cwd /home/user/project --name project-tests --json
+remote-runner session exec --session project-tests --cmd "pytest -q" --timeout 300 --json
+remote-runner session exec --session project-tests --cmd "python long_job.py" --mode background --json
+remote-runner session command show --session project-tests --command-id cmd_abc123 --json
+remote-runner session command wait --session project-tests --command-id cmd_abc123 --timeout 30 --json
+remote-runner session command stop --session project-tests --command-id cmd_abc123 --json
+remote-runner session send --session project-tests --input "cd src" --json
+remote-runner session read --session project-tests --json
+remote-runner session logs --session project-tests --json
+remote-runner session destroy --session project-tests --json
 
-remote-runner file put --session sess_abc123 --local ./input.txt --remote /home/user/project/input.txt --json
-remote-runner file get --session sess_abc123 --remote /home/user/project/output.txt --local ./output.txt --json
-remote-runner file list --session sess_abc123 --remote /home/user/project --json
+remote-runner file put --session project-tests --local ./input.txt --remote /home/user/project/input.txt --json
+remote-runner file get --session project-tests --remote /home/user/project/output.txt --local ./output.txt --json
+remote-runner file list --session project-tests --remote /home/user/project --json
 
 remote-runner run once \
   --machine lab-gpu-01 \
@@ -93,6 +93,8 @@ duration, local log path, and `command_id`; shell-local state such as `cd`, expo
 aliases carries across later `session exec` calls. Long-running jobs should use `--mode background`;
 later `session command show/wait/stop` calls recover state by `command_id`. `session send/read`
 provide raw input and transcript access for UI-style shell panels.
+`session create --name` is optional but recommended for non-temporary work; later `--session`
+arguments accept either the generated `session_id` or a unique readable name.
 
 `remote-runner machine add --json` prompts for missing SSH machine fields and writes prompts to
 stderr, so stdout remains one JSON object. Password auth uses hidden input in the recommended

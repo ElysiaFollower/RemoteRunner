@@ -52,7 +52,7 @@ conda run -n seedrunner remote-runner --help
 If `remote-runner` is missing, install the tool from the Remote Runner repo:
 
 ```bash
-cd /Users/ely/workspace/research/agent/SEEDRunner
+cd /Users/ely/workspace/research/old/agent/SEEDRunner
 conda run -n seedrunner python -m pip install -e .
 ```
 
@@ -77,17 +77,19 @@ Do not continue if `reachable`, `auth_ok`, or `default_cwd_ok` is false. Report 
 4. Create a session:
 
 ```bash
-remote-runner session create --machine <machine-id> --cwd <remote-dir> --json
+remote-runner session create --machine <machine-id> --cwd <remote-dir> --name <session-name> --json
 ```
 
 `session create` opens the persistent remote shell context for this work area. `machine doctor` and
-the first `session exec` are still the practical connectivity checks.
+the first `session exec` are still the practical connectivity checks. `--name` is optional, but use
+a readable name for non-temporary sessions. Later `--session` arguments accept either the generated
+`session_id` or a unique readable name.
 
 5. Run bounded commands through the session:
 
 ```bash
 remote-runner session exec \
-  --session <session-id> \
+  --session <session-ref> \
   --cmd 'pwd && whoami' \
   --mode wait \
   --json
@@ -102,7 +104,7 @@ large synchronous timeouts. Start the command in background mode and keep the re
 
 ```bash
 remote-runner session exec \
-  --session <session-id> \
+  --session <session-ref> \
   --cmd '<long-running-command>' \
   --mode background \
   --json
@@ -112,12 +114,12 @@ Then inspect or wait explicitly:
 
 ```bash
 remote-runner session command show \
-  --session <session-id> \
+  --session <session-ref> \
   --command-id <command-id> \
   --json
 
 remote-runner session command wait \
-  --session <session-id> \
+  --session <session-ref> \
   --command-id <command-id> \
   --timeout 30 \
   --json
@@ -131,7 +133,7 @@ rejects background commands with a clear error.
 6. Clean up when finished:
 
 ```bash
-remote-runner session destroy --session <session-id> --json
+remote-runner session destroy --session <session-ref> --json
 ```
 
 ## Persistent Session Transcript
@@ -141,12 +143,12 @@ not create a separate top-level terminal resource.
 
 ```bash
 remote-runner session send \
-  --session <session-id> \
+  --session <session-ref> \
   --input 'cd src' \
   --json
 
 remote-runner session read \
-  --session <session-id> \
+  --session <session-ref> \
   --json
 ```
 
@@ -159,18 +161,18 @@ Use explicit Remote Runner file commands:
 
 ```bash
 remote-runner file put \
-  --session <session-id> \
+  --session <session-ref> \
   --local ./input.txt \
   --remote <remote-dir>/input.txt \
   --json
 
 remote-runner file list \
-  --session <session-id> \
+  --session <session-ref> \
   --remote <remote-dir> \
   --json
 
 remote-runner file get \
-  --session <session-id> \
+  --session <session-ref> \
   --remote <remote-dir>/output.txt \
   --local ./output.txt \
   --json

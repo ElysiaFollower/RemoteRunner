@@ -252,7 +252,13 @@ def cmd_machine_configure_platform(args: argparse.Namespace) -> None:
 
 
 def cmd_session_create(args: argparse.Namespace) -> None:
-    _print(get_remote_session_manager().create(machine_id=args.machine, cwd=args.cwd))
+    _print(
+        get_remote_session_manager().create(
+            machine_id=args.machine,
+            cwd=args.cwd,
+            name=args.name,
+        )
+    )
 
 
 def cmd_session_list(args: argparse.Namespace) -> None:
@@ -485,6 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
     session_create = session_sub.add_parser("create", help="Create a session")
     session_create.add_argument("--machine", required=True)
     session_create.add_argument("--cwd")
+    session_create.add_argument("--name", help="Optional readable session name")
     add_json_flag(session_create)
     session_create.set_defaults(func=cmd_session_create)
 

@@ -134,6 +134,7 @@ remote-runner session destroy
 会话至少包含：
 
 - `session_id`
+- `name`（可选，可读短标签；`session_id` 仍是主键）
 - `machine_id`
 - `cwd`
 - `status`
@@ -142,6 +143,11 @@ remote-runner session destroy
 - `last_exit_code`
 - `command_count`
 - `log_dir_local`
+
+`session create` 应支持可选 `--name`。`name` 只能包含字母、数字、`.`、`_`、`-`，
+且不得以 `sess_` 开头。同一台机器上未销毁 session 的 `name` 不得重复。`session`
+和 `file` 相关命令的 `--session` 参数应接受真实 `session_id` 或唯一可解析的 `name`；
+歧义时必须报错，不能猜测。
 
 ### 3.3 远程命令执行
 
