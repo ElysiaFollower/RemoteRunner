@@ -117,11 +117,13 @@ remote-runner file get \
 
 ## 5. 持久 Session Transcript
 
-`session` 本身就是持久 shell 工作上下文。连续的 `session exec` 会保留 `cd`、`export`
-等 shell-local state；如果需要原始 shell panel 输入和 transcript，用 `session send/read`。
+`session` 本身就是持久终端。它的基础操作是 `session send/read/interrupt`：原样键入、按
+cursor 读取 append-only transcript、向前台进程发送 `Ctrl-C`。同一个 shell 会保留 `cd`、
+`export` 等 shell-local state。
 Linux 持久 session 后端要求 Linux/SSH 机器上有 `tmux`。Windows 持久 session 后端见下方 direct Windows 章节。
 
-把 `session exec` 理解成“在同一个 shell 里键入一条命令，并让 Remote Runner 记录输出和退出码”。它不是隔离 batch runner。不要为了返回退出码在命令末尾追加 `exit "$rc"`；那等价于在持久 shell 里键入 `exit`。需要多步脚本、产物回收和进程级退出语义时，用 `run once`。
+`session exec` 目前是 `ssh-tmux` 和 `windows-agent` 的结构化兼容接口，不是 session 的
+基础语义。需要多步脚本、产物回收和进程级退出语义时，用 `run once`。
 
 ```bash
 remote-runner session create \
@@ -269,23 +271,25 @@ remote-runner session attach --session interactive-shell
 `tmux attach-session -t rr_interactive-shell`；只有本机 tmux 已经占用同名 session 时才会追加短后缀。
 
 在 attach 界面里完成登录；看到目标 shell 后可以手动切到安全工作目录，再按 `Ctrl-b d`
-脱离本地 tmux，不要 `exit`。`openssh-pty` 不会在第一次 `session exec` 时自动回到
-`--cwd` 或 `default_cwd`；后续命令默认沿用你脱离时的 shell 状态，只有显式传
-`session exec --cwd <path>` 才会先进入指定目录。之后可以运行：
+脱离本地 tmux，不要 `exit`。`openssh-pty` 的 `--cwd` / `default_cwd` 只是 session
+元数据；后续输入沿用你脱离时的 shell 状态。需要切换目录时，像人类一样显式发送
+`cd`。之后可以运行：
 
 ```bash
-remote-runner session exec --session interactive-shell --cmd 'pwd && whoami' --json
+remote-runner session send --session interactive-shell --input 'pwd && whoami' --json
 remote-runner session send --session interactive-shell --input 'echo hello' --json
 remote-runner session read --session interactive-shell --json
+remote-runner session interrupt --session interactive-shell --json
 remote-runner session destroy --session interactive-shell --json
 ```
 
-这里的 `session exec` 仍然是向同一个交互 shell 输入命令；人类 attach 着观察时，agent
-执行的命令会出现在同一个 tmux panel。复杂 batch 不要直接粘到这个 live shell 里收尾 `exit`。
+人类 attach 着观察时，会在同一个 tmux panel 中看到 agent 输入的原文和 shell 输出；
+`session read` 读取的也是这条 append-only 流。`openssh-pty` 会在向 pane 写入任何东西前
+拒绝 `session exec`，避免隐藏 `eval`、marker 或退出码 wrapper 污染 live shell。
 
-边界：`openssh-pty` 支持 `session create/attach/exec/send/read/destroy`，以及从已登录且空闲的
+边界：`openssh-pty` 支持 `session create/attach/send/read/interrupt/destroy`，以及从已登录且空闲的
 session 下载普通文件的 `file get`。下载会分块传输，校验远端 size/SHA-256 后原子落盘。
-它仍不支持 `file put`、目录下载、`file list`、`run once`、`session exec --mode background`
+它仍不支持 `file put`、目录下载、`file list`、`run once`、任何 `session exec`
 或无人值守认证；密码不写入 Remote Runner 配置。
 
 ## 10. 真实机器验收
@@ -314,5 +318,5 @@ python3 -m pytest tests/test_remote_runner_real_integration.py -q
 - `--json` 的 stdout 应该能被 `json.loads()` 直接解析。
 - 密码不会写到日志、handoff 或测试输出里。
 - 所有真实测试都必须只写入你明确指定的安全目录。
-- `session` 是连续 shell transcript；`session exec` 在同一 session shell 中提供结构化命令结果。
+- `session` 是连续终端流；`send/read/interrupt` 是基础契约，结构化命令属于兼容或 job 层。
 - 如果 shell 找不到 `remote-runner`，先确认你在 `seedrunner` 环境里，或者直接用 `conda run -n seedrunner ...`。

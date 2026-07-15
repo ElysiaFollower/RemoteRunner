@@ -93,15 +93,16 @@ ssh -tt <SSH_ALIAS>
 当前 `openssh-pty` 支持：
 
 - `machine add/list/show/doctor`
-- `session create/attach/exec/send/read/destroy`
+- `session create/attach/send/read/interrupt/destroy`
 - `file get` 下载普通文件；复用已登录 PTY，分块传输并校验 size/SHA-256 后原子落盘
 - 同一交互 shell 内 cwd、环境变量等 shell-local state 持久化
+- pane 输出的 append-only transcript；agent 和 attach 中的人类观察同一输入输出流
 
 当前 `openssh-pty` 不支持：
 
 - `file put`、目录 `file get`、`file list`
 - `run once`
-- `session exec --mode background`
+- `session exec`（包括 wait/background）；live PTY 不承载隐藏 wrapper RPC
 - 无人值守认证、密码保存或平台网关状态机硬编码
 - 远端 tmux 自动接管
 

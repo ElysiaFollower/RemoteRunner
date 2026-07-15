@@ -33,10 +33,10 @@ The `openssh-pty` backend is for machines where `ssh -tt <alias>` is the stable 
 point but standard SSH exec/SFTP is unavailable or unreliable. It starts a local tmux session running
 `ssh -tt <alias>`, lets the user attach and complete password, OTP, jump-host, or gateway prompts,
 then controls the same interactive shell through local tmux. It supports `session create`,
-`session attach`, `session send/read`, wait-mode `session exec`, `session destroy`, and ordinary-file
+`session attach`, `session send/read/interrupt`, `session destroy`, and ordinary-file
 `file get`. PTY downloads stream base64 chunks through the already logged-in shell, verify remote
 size and SHA-256, and atomically replace the local target. It does not yet support `file put`,
-directory transfer, `file list`, `run once`, background commands, or unattended authentication.
+directory transfer, `file list`, `run once`, `session exec`, background commands, or unattended authentication.
 
 ## Global Options
 
@@ -303,14 +303,16 @@ remote-runner session create \
   "cwd": "/home/ely/project",
   "status": "active",
   "backend": "tmux",
+  "transcript_mode": "append-only",
   "created_at": "2026-05-07T10:00:00Z",
   "log_dir_local": "/Users/ely/.remote-runner/logs/sess_abc123",
   "transcript_file_local": "/Users/ely/.remote-runner/logs/sess_abc123/transcript.txt"
 }
 ```
 
-For `openssh-pty`, `session create` starts a local tmux session running `ssh -tt <ssh_alias>` and
-returns `local_attach_command`. The user must attach once and complete the interactive login:
+For `openssh-pty`, `session create` starts a local tmux session, connects an append-only transcript
+recorder, then visibly enters `exec ssh -tt <ssh_alias>` in that pane. It returns
+`local_attach_command`. The user must attach once and complete the interactive login:
 
 ```bash
 remote-runner session create --machine lab-interactive-01 --name gateway-shell --cwd /home/example --json
@@ -318,10 +320,9 @@ remote-runner session attach --session gateway-shell
 ```
 
 Detach from the local tmux session with `Ctrl-b d` after the target shell is ready. The OpenSSH PTY
-stays alive in local tmux, and later `session exec/send/read/destroy` commands act on that same
-interactive shell. For this backend, the recorded `cwd` is not forced into the shell after attach:
-commands run in whatever directory the user left the interactive shell in, unless `session exec
---cwd <path>` is passed explicitly.
+stays alive in local tmux, and later `session send/read/interrupt/destroy` commands act on that same
+interactive shell. For this backend, the recorded `cwd` is metadata only: the live shell remains in
+whatever directory the user left it. Use a visible `session send --input 'cd ...'` to change it.
 
 When a session has a readable `--name`, the local tmux session name is derived from it, for example
 `--name a100-work` yields `tmux attach-session -t rr_a100-work`. If that local tmux name is already
@@ -402,6 +403,11 @@ Commands that close the shell, such as `exit` or `logout`, are session lifecycle
 upload-run-download workflows or multi-step scripts that naturally end with process-level `exit`
 semantics.
 
+This structured compatibility API is currently available on `ssh-tmux` and `windows-agent`.
+`openssh-pty` rejects it before writing anything to the pane. A human-visible PTY must not be used
+as an in-band RPC channel by injecting hidden `eval`, marker, or exit-code wrappers; use
+`session send/read/interrupt` for that backend and `run once` for structured batch work.
+
 Optional cwd override. This changes the persistent shell's current directory before running the
 command:
 
@@ -446,16 +452,15 @@ Behavior requirements:
   `log_file_local` or a recoverable remote log reference.
 - Do not require sshfs, FUSE, reverse SSH, or mount setup.
 - `session exec` defaults to synchronous wait mode; long-running jobs should use
-  `--mode background` on backends that support it. The current Windows agent and `openssh-pty`
-  backends reject background mode explicitly.
+  `--mode background` on backends that support it. The current Windows agent rejects background
+  mode, while `openssh-pty` rejects `session exec` entirely.
 - `session exec` runs in the session shell. It must keep command boundaries and exit codes through
   Remote Runner command wrappers and state files, not by relying on chat memory or by converting the
   command into an isolated non-interactive SSH exec.
 - Wrapper implementation must preserve the shell-native contract: normal completion returns to the
   persistent shell; lifecycle teardown goes through `session destroy`.
 - `cwd_applied=false` means the `cwd` field is only the recorded session cwd, not a directory that
-  Remote Runner injected before the command. This currently happens for `openssh-pty` commands
-  without an explicit `--cwd`, because that backend preserves the manually attached shell state.
+  Remote Runner injected before the command.
 
 ### Background Command Start
 
@@ -506,6 +511,7 @@ remote-runner session send \
 
 remote-runner session read --session sess_abc123 --json
 remote-runner session read --session sess_abc123 --since 1200 --json
+remote-runner session interrupt --session sess_abc123 --json
 ```
 
 ### Attach Session
@@ -519,14 +525,22 @@ local tmux session that is running `ssh -tt <ssh_alias>`, so the user can comple
 prompts or inspect the live shell. Detach with `Ctrl-b d`; do not exit the remote shell unless the
 session should end.
 
-`session send` sends raw input to the same session shell and presses Enter by default; use
-`--no-enter` for partial input. This is for shell-panel and interactive workflows. For normal agent
-automation, prefer `session exec` because it also records command boundaries, stdout/stderr,
-exit code, timestamps, and logs.
+`session send` accepts one terminal line, sends the exact supplied text to the same session shell,
+and presses Enter by default; use `--no-enter` for partial input. Embedded CR/LF is rejected rather
+than treating a pasted batch as one terminal action. The response echoes the accepted `input`, so
+callers can audit what was typed. A busy session rejects new input rather than interleaving it with
+an active structured command.
 
-`session read` returns captured transcript text, a `cursor`, and the requested `since` offset.
+For tmux-backed sessions the transcript is an append-only stream recorded from pane output; it is
+not reconstructed by repeatedly merging `capture-pane` snapshots. Thus commands visible to a human
+in tmux are visible to the agent through the same transcript. `session read` returns transcript
+text, a `cursor`, and the requested `since` offset.
 Callers can store the cursor and later request only the new transcript region. The local transcript
 file is preserved in Remote Runner state for recovery.
+
+`session interrupt` sends `Ctrl-C` to the current foreground process and keeps the terminal alive.
+It is the recovery operation for a hung foreground command; it does not create a command record or
+replace the shell.
 
 ### Logs
 

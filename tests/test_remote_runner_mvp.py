@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -151,6 +152,7 @@ class FakeBackend:
         cwd,
         terminal_id,
         terminal_name=None,
+        transcript_file_local=None,
         width=120,
         height=40,
         history_limit=10000,
@@ -188,6 +190,9 @@ class FakeBackend:
         elif input_text.startswith("echo "):
             terminal["transcript"] += input_text[len("echo ") :] + "\n"
         return {"input_sent": True}
+
+    def interrupt_terminal(self, machine, terminal_record):
+        return {"interrupt_sent": True}
 
     def capture_terminal(self, machine, terminal_record):
         terminal_id = terminal_record.get("terminal_id") or terminal_record["session_id"]
@@ -1009,13 +1014,21 @@ class FakeLocalTmux:
         action = args[0]
         if action == "new-session":
             name = args[args.index("-s") + 1]
-            command = args[-1]
+            command = None
             self.sessions[name] = {
-                "transcript": f"$ {command}\nauth prompt:\nuser@interactive-host:~$ ",
+                "transcript": "",
                 "command": command,
             }
             return subprocess.CompletedProcess(args, 0, "", "")
         if action in {"resize-window", "set-option"}:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if action == "pipe-pane":
+            target = args[args.index("-t") + 1]
+            if args[-1] == target:
+                self.sessions[target].pop("transcript_file", None)
+            else:
+                transcript_file = shlex.split(args[-1])[-1]
+                self.sessions[target]["transcript_file"] = transcript_file
             return subprocess.CompletedProcess(args, 0, "", "")
         if action == "has-session":
             target = args[args.index("-t") + 1]
@@ -1026,6 +1039,12 @@ class FakeLocalTmux:
             if "-l" in args:
                 text = args[-1]
                 self.sessions[target]["transcript"] += text + "\n"
+                if text.startswith("exec ") and self.sessions[target]["command"] is None:
+                    self.sessions[target]["command"] = text
+                transcript_file = self.sessions[target].get("transcript_file")
+                if transcript_file:
+                    with open(transcript_file, "a", encoding="utf-8") as handle:
+                        handle.write(text + "\n")
                 if "__REMOTE_RUNNER_CMD_BEGIN_" in text:
                     begin = re.search(
                         r"__REMOTE_RUNNER_CMD_BEGIN_[A-Za-z0-9_]+__",
@@ -1077,10 +1096,10 @@ def test_openssh_pty_backend_uses_local_tmux_for_interactive_session(
     assert created["backend"] == "openssh-pty"
     assert tmux_session == "rr_a100-pty"
     assert created["local_attach_command"] == f"tmux attach-session -t {tmux_session}"
-    assert fake_tmux.sessions[tmux_session]["command"] == "/usr/bin/ssh -tt 91_A100"
+    assert fake_tmux.sessions[tmux_session]["command"] == "exec /usr/bin/ssh -tt 91_A100"
 
-    pwd = session_manager.exec("a100-pty", "pwd", timeout=1)
-    failed = session_manager.exec("a100-pty", "exit-seven", timeout=1)
+    with pytest.raises(RuntimeError, match="session send"):
+        session_manager.exec("a100-pty", "pwd", timeout=1)
     session_manager.send("a100-pty", "echo manual")
     transcript = session_manager.read("a100-pty")
     destroyed = session_manager.destroy("a100-pty")
@@ -1091,18 +1110,10 @@ def test_openssh_pty_backend_uses_local_tmux_for_interactive_session(
     ]
     rr_exec_inputs = [text for text in literal_inputs if "__REMOTE_RUNNER_CMD_BEGIN_" in text]
 
-    assert pwd["stdout"] == "/tmp/temp\n"
-    assert pwd["exit_code"] == 0
-    assert pwd["command_backend"] == "local_tmux"
-    assert pwd["cwd"] == "/root"
-    assert pwd["cwd_applied"] is False
-    assert "cd /root" not in transcript["transcript"]
-    assert failed["exit_code"] == 7
+    assert created["transcript_mode"] == "append-only"
     assert "echo manual" in transcript["transcript"]
-    assert len(rr_exec_inputs) == 2
-    assert all('eval "$__rr_command"' in text for text in rr_exec_inputs)
-    assert all("bash -lc" not in text for text in rr_exec_inputs)
-    assert all("|| exit" not in text for text in rr_exec_inputs)
+    assert rr_exec_inputs == []
+    assert all('eval "$__rr_command"' not in text for text in literal_inputs)
     assert destroyed["destroy_result"] == "destroyed"
     assert tmux_session not in fake_tmux.sessions
 
@@ -1125,7 +1136,7 @@ def test_openssh_pty_local_tmux_name_falls_back_when_readable_name_is_busy(
 
     assert tmux_session.startswith("rr_work_")
     assert created["local_attach_command"] == f"tmux attach-session -t {tmux_session}"
-    assert fake_tmux.sessions[tmux_session]["command"] == "/usr/bin/ssh -tt 91_A100"
+    assert fake_tmux.sessions[tmux_session]["command"] == "exec /usr/bin/ssh -tt 91_A100"
 
 
 def test_openssh_pty_rejects_background_commands(remote_state_dir):

@@ -73,6 +73,7 @@ remote-runner session command wait --session project-tests --command-id cmd_abc1
 remote-runner session command stop --session project-tests --command-id cmd_abc123 --json
 remote-runner session send --session project-tests --input "cd src" --json
 remote-runner session read --session project-tests --json
+remote-runner session interrupt --session project-tests --json
 remote-runner session logs --session project-tests --json
 remote-runner session destroy --session project-tests --json
 
@@ -89,12 +90,15 @@ remote-runner run once \
   --json
 ```
 
-`session create` opens the persistent remote shell context for that work area. `session exec --json`
-runs inside that same shell and returns the command, stdout, stderr, exit code, timestamps,
-duration, local log path, and `command_id`; shell-local state such as `cd`, exported variables, and
-aliases carries across later `session exec` calls. Long-running jobs should use `--mode background`;
-later `session command show/wait/stop` calls recover state by `command_id`. `session send/read`
-provide raw input and transcript access for UI-style shell panels.
+`session create` opens a persistent terminal context. Its base contract is deliberately small:
+`session send` types the exact input, `session read --since <cursor>` reads the append-only terminal
+stream, and `session interrupt` sends `Ctrl-C` without replacing the shell. Shell-local state such
+as `cd`, exported variables, and aliases persists because every operation targets the same shell.
+
+`session exec --json` remains a structured compatibility interface on `ssh-tmux` and
+`windows-agent`; it returns stdout, stderr, exit code, timestamps, logs, and `command_id`.
+`openssh-pty` rejects `session exec` before pane input: a human-visible PTY is not an in-band RPC
+channel. Use `send/read/interrupt` there, and use `run once` for structured batch work.
 
 `session exec` is shell-native command entry, not an isolated batch runner: it should feel like
 typing one command into the persistent shell while Remote Runner captures structured evidence.

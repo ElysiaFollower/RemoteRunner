@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "plan": "plans/archive/2026-07-15-terminal-session-v2.md",
+  "feature_id": "F-027",
+  "anchors": [
+    {
+      "id": "append-only-transcript",
+      "severity": "fail",
+      "reason": "Terminal transcript 必须来自单调追加 transport，而不是 capture-pane snapshot overlap 猜测。",
+      "check": "glob_contains",
+      "glob": "remote_runner/*.py",
+      "pattern": "append[_-]only|pipe-pane|transcript_mode",
+      "suggest": "检查 tmux backend 是否建立持续 output recorder，以及 session read 是否使用稳定 cursor。"
+    },
+    {
+      "id": "session-interrupt",
+      "severity": "fail",
+      "reason": "人类终端模型必须支持等价于 Ctrl-C 的公开操作。",
+      "check": "glob_contains",
+      "glob": "remote_runner/*.py",
+      "pattern": "session_interrupt|interrupt_terminal|def interrupt",
+      "suggest": "补齐 backend、manager 和 CLI 的 session interrupt 契约。"
+    },
+    {
+      "id": "real-local-tmux-test",
+      "severity": "warn",
+      "reason": "Fake backend 无法证明真实 pane 中输入可见、cursor 单调和 Ctrl-C 恢复。",
+      "check": "path_exists",
+      "path": "tests/test_terminal_session_v2.py",
+      "suggest": "增加默认本地 tmux 集成测试，覆盖 bash/zsh、原样输入、cursor 和 interrupt。"
+    },
+    {
+      "id": "feature-evidence",
+      "severity": "warn",
+      "reason": "完成必须记录真实本地 tmux 与完整回归证据。",
+      "check": "evidence_contains",
+      "feature_id": "F-027",
+      "pattern": "local tmux|本地 tmux",
+      "suggest": "把验证命令、结果和真实 SSH 未运行边界写入 F-027 evidence。"
+    }
+  ]
+}

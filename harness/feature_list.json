@@ -277,11 +277,11 @@
       "priority": "P0",
       "area": "openssh-pty",
       "title": "Remote Runner OpenSSH PTY backend",
-      "behavior": "用户能登记只适合 `ssh -tt <alias>` 交互登录的机器；session create 启动本地 tmux 托管的持久 OpenSSH PTY，session attach 让用户手动登录，登录后 session send/read/exec/destroy 可作用于同一个交互 shell。",
+      "behavior": "用户能登记只适合 `ssh -tt <alias>` 交互登录的机器；session create 启动本地 tmux 托管的持久 OpenSSH PTY，session attach 让用户手动登录，登录后 session send/read/interrupt/destroy 作用于同一个交互 shell；session exec 明确拒绝。",
       "status": "passing",
       "verification": "tmux -V && python3 -m py_compile remote_runner/remote_machine.py remote_runner/remote_backend.py remote_runner/remote_session.py remote_runner/cli.py tests/test_remote_runner_mvp.py && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && git diff --check && 91_A100 手动 attach smoke && ./scripts/harness-check.sh",
       "evidence": "2026-07-07: 已实现 `backend=openssh-pty`、`auth_type=manual`、`ssh_alias` machine schema；`session create` 启动本机 tmux 托管 `/usr/bin/ssh -tt <alias>`，`session attach` 支持用户手动完成登录并 detach，登录后 `session send/read/exec/destroy` 作用于同一交互 PTY。`session exec` wait-mode 能解析 marker、返回 stdout/exit_code/timestamps/log；无显式 `--cwd` 时保留人工 shell 当前目录并返回 `cwd_applied=false`，避免覆盖用户手动切到的安全目录；有可读 session name 时，本地 tmux session 名优先使用 `rr_<name>`，占用时再追加短后缀。已明确拒绝 file transfer、background command、run once、tmux server restart。2026-07-08 修正 `session exec` 契约和中断恢复：`session exec` 被明确为向同一持久 shell 输入命令并捕获结构化证据，不是隔离 batch runner；Linux/tmux wrapper 正常完成只 `return` 回持久 shell，不再保留 `exit` 兜底；本地 KeyboardInterrupt/Ctrl-C 会记录 failed command 并清除 busy。验证：本机 `tmux 3.7b`；`tests/test_remote_runner_mvp.py` 53 passed；聚焦 wrapper/openssh-pty/KeyboardInterrupt 测试 3 passed；`./scripts/harness-check.sh` 0 warnings；`./init.sh` 通过；2026-07-07 完整 `python3 -m pytest -q` 74 passed, 4 skipped；真实 alias/name/usability smoke 已通过。",
-      "notes": "任务合同归档至 plans/archive/2026-07-07-openssh-pty-backend.md。第一切片依赖本机 tmux；不做 SFTP、background command、run once、端口转发、ControlMaster 管理、远端 tmux 自动接管或无人值守认证；不记录真实 host/user/password。已知限制：PTY backend 无独立 stderr 管道，stderr 会合入 stdout；长 transcript 下 `session read --since` 增量可能重新返回旧 transcript 片段；大输出 JSON 会截断，当前本地 command log 也未保留完整 9000 字符输出；硬杀 CLI 进程、系统崩溃等非 Python KeyboardInterrupt 场景仍建议后续做真实 PTY 回归。第一切片不支持 artifact/file get，91_A100 研究任务产物需保留远端路径或另行传输。"
+      "notes": "任务合同归档至 plans/archive/2026-07-07-openssh-pty-backend.md。2026-07-15 的 F-027 已取代其中 session exec/marker/snapshot 设计：PTY session 现在只走 send/read/interrupt，transcript 改为 append-only。第一切片依赖本机 tmux；不做 SFTP、background command、run once、端口转发、ControlMaster 管理、远端 tmux 自动接管或无人值守认证；不记录真实 host/user/password。PTY backend 无独立 stderr 管道，stderr 合入同一 terminal stream。"
     },
     {
       "id": "F-026",
@@ -293,6 +293,17 @@
       "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q -k openssh_pty_file_get && python3 -m pytest tests/test_remote_runner_mvp.py -q && ./scripts/harness-check.sh && git diff --check && 91_A100 real file-get smoke",
       "evidence": "2026-07-10: 真实 91_A100 session 先复现 `session exec` 成功而 `file get` 明确拒绝 openssh-pty；随后实现 session-aware PTY 分块下载、远端 size/SHA-256 校验、本地临时文件与原子替换。真实 session `91_A100-recovery-20260710` 成功回收 26 个研究产物，包括 5.8MB stereo WAV；每个 transfer record 均记录 size/hash。验证：聚焦 3 passed；MVP 56 passed；完整 pytest 79 passed, 4 skipped；Black check、git diff --check、harness-check 和 init 通过。",
       "notes": "任务合同归档至 plans/archive/2026-07-10-openssh-pty-file-get.md。本切片只做普通文件 get；put、目录、list、run once 继续明确拒绝。"
+    },
+    {
+      "id": "F-027",
+      "priority": "P0",
+      "area": "terminal-session",
+      "title": "Remote Runner 人类式 Terminal Session V2",
+      "behavior": "tmux-backed session 的默认使用方式等价于人类终端：Agent 原样发送一行输入，读取单调追加输出，能够 Ctrl-C；人工 attach 看到同一输入输出。",
+      "status": "passing",
+      "verification": "REMOTE_RUNNER_STATE_DIR=/tmp/remote-runner-v2-test python3 -m pytest tests/test_terminal_session_v2.py -q && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-07-15: 在独立 worktree `RemoteRunner-terminal-v2` / 分支 `codex/rr-terminal-session-v2` 完成。tmux-backed session create 建立 append-only `pipe-pane` transcript；openssh-pty 在 recorder 就绪后才在 pane 中可见地输入 `exec ssh -tt <alias>`。session send 只接受一行、回显 accepted input、busy 时拒绝；新增 session interrupt；openssh-pty session exec 在任何 pane 输入前拒绝，旧 marker/eval 路径已移除。Terminal V2 聚焦 14 passed：真实本地 tmux bash/zsh 场景 13 个，验证可见原样输入、cwd/env 连续、长输出 cursor 增量无重复、Ctrl-C 后同一 shell 恢复、multiline/busy/exec 拒绝和 CLI interrupt；remote recorder 命令构造单测 1 个。MVP 56 passed；launch 2 passed, 1 skipped；全仓 93 passed, 4 skipped；git diff --check 通过；harness-check 通过。未运行真实 SSH server smoke，按任务合同不阻塞核心终端语义。测试后无 `rr_local_sess_*` tmux 遗留；stable worktree、editable install、真实 state/session 均未修改。",
+      "notes": "任务合同：plans/archive/2026-07-15-terminal-session-v2.md。第一阶段把 openssh-pty 的隐藏 exec wrapper 退出主路径；其他 backend 的 structured exec 暂作兼容，后续迁移到独立 job 层。openssh-pty file get 仍是借用已登录 PTY 的 legacy transfer 兼容路径，不属于新的 terminal send 契约；后续应迁移到独立文件 transport。"
     }
   ]
 }

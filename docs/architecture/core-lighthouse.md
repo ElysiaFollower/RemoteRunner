@@ -23,8 +23,8 @@ Remote Runner 的不可变目标是：
 ## 分层
 
 1. 机器层：本地登记远程机器，支持查询、展示、诊断和删除。
-2. 会话层：为机器和远程目录创建可恢复执行上下文。
-3. 命令层：执行命令并返回结构化结果，保存完整日志。
+2. 会话层：提供持久终端流；原样发送输入、append-only 记录输入输出、按 cursor 增量读取，并可用 `Ctrl-C` 恢复前台 shell。
+3. 命令/作业层：在不把 live terminal 变成隐藏 RPC 通道的前提下返回结构化结果并保存完整日志；需要 wrapper、退出码和 batch 生命周期时使用独立 job/run 边界。
 4. 文件与产物层：显式上传、下载、列出文件，记录 transfer history 和 artifact manifest。
 5. Profile 层：operations、SEED、paper reproduction、model training、benchmark 等领域流程。
 

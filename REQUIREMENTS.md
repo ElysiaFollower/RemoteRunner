@@ -58,7 +58,7 @@ Windows backend 要求远端可通过 OpenSSH/SFTP 访问、可启动 `python` �
 
 Windows OpenSSH + WSL 不是 direct Windows 主路径。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
 
-`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session exec/send/read/destroy` 作用于同一个交互 shell。该 backend 支持从已登录且空闲的 session 分块下载普通文件，校验 size/SHA-256 后原子落盘；暂不支持 `file put`、目录下载、`file list`、`run once`、后台命令或无人值守认证。
+`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，先接入 append-only transcript recorder，再在 pane 中可见地启动 `ssh -tt <alias>`。`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session send/read/interrupt/destroy` 操作同一个交互 shell。该 backend 支持从已登录且空闲的 session 分块下载普通文件，校验 size/SHA-256 后原子落盘；不支持 `session exec`、`file put`、目录下载、`file list`、`run once`、后台命令或无人值守认证。
 
 详细平台边界见 `docs/platform-support.md`。
 
@@ -131,6 +131,9 @@ remote-runner session create
 remote-runner session list
 remote-runner session show
 remote-runner session exec
+remote-runner session send
+remote-runner session read
+remote-runner session interrupt
 remote-runner session logs
 remote-runner session destroy
 ```
@@ -182,9 +185,11 @@ remote-runner session exec \
 
 命令失败时仍应返回结构化信息。非零退出码是任务失败，不应自动销毁会话。
 
-`session exec` 的产品语义是“向这个持久 session shell 输入一条命令，并结构化捕获输出和退出码”。它不是隔离的 batch/job runner，也不应该让使用者把它当成 `ssh host command` 或 CI step。连续 `session exec` 必须共享同一个 shell 上下文：`cd`、`export`、alias、shell function 等 shell-local state 在同一 session 内延续。backend 可以为边界标记、日志和退出码注入包装，但包装必须回到原持久 shell，不能把正常命令执行包装成会关闭 shell 的流程。
+session 的基础契约是持久终端流，而不是 RPC：`session send` 把调用者提供的文本原样写入终端并按需发送 Enter；终端中的输入和输出都进入 append-only transcript；`session read --since <cursor>` 读取增量；`session interrupt` 向当前前台进程发送 `Ctrl-C`。同一个 session 必须保留 `cwd`、环境变量、alias、shell function 等 shell-local state。backend 不得为了识别命令边界而向终端注入隐藏的 `eval`、marker、退出码 wrapper 或批处理脚本。
 
-因此，`exit`、`logout` 等关闭 shell 的输入属于 session 生命周期操作，不是普通自动化收尾；需要关闭会话时使用 `session destroy`。需要上传输入、运行多步脚本、用 `exit "$rc"` 表达 batch 退出码、下载产物并销毁临时上下文时，应使用 `run once` 或后续 job/batch 能力，而不是把 batch 脚本直接塞进 `session exec`。
+`session exec` 是现有 `ssh-tmux` 和 `windows-agent` backend 的结构化命令兼容接口，不是 session 的基础语义。`openssh-pty` 明确拒绝 `session exec`，因为在人工可见 PTY 内注入 wrapper 会把终端错误地变成 in-band RPC 通道。需要结构化 stdout/stderr/退出码、上传—执行—下载或进程级 `exit` 语义时，应使用 `run once`；长期方向是独立 job/batch 层，而不是继续扩张 live terminal 的 wrapper 协议。
+
+`exit`、`logout` 等关闭 shell 的输入属于 session 生命周期操作；需要关闭会话时使用 `session destroy`。session busy 时不得继续 `send`，调用者应先 `read`、等待现有兼容命令完成，或用 `interrupt` 恢复终端。
 
 ### 3.4 文件传输
 

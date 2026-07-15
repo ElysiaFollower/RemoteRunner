@@ -378,6 +378,10 @@ def cmd_session_send(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_session_interrupt(args: argparse.Namespace) -> None:
+    _print(get_remote_session_manager().interrupt(args.session))
+
+
 def cmd_session_attach(args: argparse.Namespace) -> None:
     result = get_remote_session_manager().attach(args.session)
     if args.json:
@@ -631,6 +635,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_json_flag(session_send)
     session_send.set_defaults(func=cmd_session_send)
+
+    session_interrupt = session_sub.add_parser(
+        "interrupt",
+        help="Send Ctrl-C to the session's foreground process",
+    )
+    session_interrupt.add_argument("--session", required=True)
+    add_json_flag(session_interrupt)
+    session_interrupt.set_defaults(func=cmd_session_interrupt)
 
     session_attach = session_sub.add_parser(
         "attach",

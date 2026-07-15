@@ -7,11 +7,12 @@
 
 ## 当前状态
 
-- 当前功能项：`F-026 OpenSSH PTY session 文件回收` passing；`F-025` 至 `F-020` passing；`F-005` profile/report 层未开始。
-- 最近任务计划：`plans/archive/2026-07-10-openssh-pty-file-get.md`。
-- 当前阶段性分支：`dev-windows-agent-pwsh-backend`，用于隔离 direct Windows OpenSSH 支持工作，避免破坏当前 Linux/tmux 稳定路径。
-- 上次验证：2026-07-10，`openssh-pty file get` 真实回收 26 个 91_A100 研究产物并逐文件校验 size/SHA-256；MVP 56 passed；完整 pytest 79 passed, 4 skipped；Black check、git diff --check、harness-check 和 init 通过。
-- 下一步最佳动作：Remote Runner 侧只在真实需求出现时再扩展 `file put`、目录传输、`file list` 或 `run once`；当前 91_A100 recovery session 保留给后续实验使用。
+- 当前功能项：`F-027 Remote Runner 人类式 Terminal Session V2` passing；`F-026` 至 `F-020` passing；`F-005` profile/report 层未开始。
+- 最近任务计划：`plans/archive/2026-07-15-terminal-session-v2.md`。
+- 当前阶段性分支：`codex/rr-terminal-session-v2`，位于独立 worktree `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v2`；stable editable runtime 仍指向原 worktree。
+- 上次验证：2026-07-15，Terminal V2 聚焦 14 passed（真实本地 tmux bash/zsh 13 + remote recorder 构造单测 1）；MVP 56 passed；launch 2 passed, 1 skipped；完整 pytest 93 passed, 4 skipped；git diff --check、harness-check 通过。真实 SSH smoke 未运行，按任务合同不阻塞。
+- 下一步最佳动作：审阅并合并/安装该隔离分支后再发布 canonical `SKILL.md`；随后把其余 backend 的 structured exec 和 openssh-pty legacy file-get terminal protocol 迁移到独立 job/file transport。
+- 2026-07-15：完成 `F-027 Remote Runner 人类式 Terminal Session V2`。根因确认是把人工可见 PTY 同时当 terminal 和 in-band RPC：openssh-pty exec 向同一 shell 注入 marker、`eval`、退出码 wrapper，`set -e` 等 shell state 可使 wrapper 提前终止；read 又通过 snapshot overlap 猜测历史，造成重复和不可审计。实现改为先挂 `pipe-pane` append-only recorder，再可见地启动 SSH；公开基础操作收敛为单行 `send`、cursor `read`、`interrupt`、`destroy`；PTY exec 在 pane 输入前拒绝。canonical skill 已同步为“一次一行、读 cursor、挂起就 Ctrl-C”，但全局 live skill 未在开发中热更新。
 - 2026-07-10：完成 `F-026 OpenSSH PTY session 文件回收`。根因是 file manager 只路由 machine/SFTP，而 `openssh-pty` 虽已有登录态 session PTY，file API 仍在 backend 入口硬拒绝。新增 session-aware 普通文件下载：通过本地 tmux `pipe-pane` 捕获 PTY 输出，1MiB 分块 base64 传输，远端先取 size/SHA-256，本地写同目录 partial 文件，全部验证后 `os.replace`。真实 `91_A100-recovery-20260710` 回收 F-Actor eval3、dGSLM、Behavior-SD、BayLing 等 26 个文件；研究交付统一到本地 `DuplexOmni/competitor_audit_20260708/deliverables/`。
 - 2026-07-07：完成 `F-025 Remote Runner OpenSSH PTY backend` 并归档至 `plans/archive/2026-07-07-openssh-pty-backend.md`。Remote Runner 现在能登记本机 OpenSSH alias、创建本地 tmux 托管的 `ssh -tt <alias>` PTY、让用户 attach 手动登录、detach 后由 agent 执行 wait-mode 命令/读写 transcript/销毁 session。新增 `cwd_applied` 返回字段，明确区分记录 cwd 与实际注入 cwd，避免覆盖人工切换后的安全目录；本地 tmux session name 现在优先使用可读 session name，例如 `rr_a100-work`。
 - 2026-07-08：通过 `a100-work` 长期真实 session 在 91_A100 上完成 full-duplex/dialogue-synthesis 竞品审计总表更新。远端总表 `/home/lujingyu/project/ljm/FULL_DUPLEX_COMPETITOR_AUDIT_SUMMARY.md`；集中试听包 `/home/lujingyu/project/ljm/full_duplex_listening_pack/`。已实际跑通/抽样：dGSLM autonomous stereo samples、Behavior-SD public two-channel dataset sample、FireRedTTS-2 dialogue TTS、Dia dialogue TTS、ZipVoice stereo dialogue、BayLing-Duplex response，并收集 F-Actor public examples。新增 source-audit：F-Actor、TurnGuide、FD-Bench、DuplexChat、J-Moshi、fd-badcat；Full-Duplex-Bench 获取失败并记录为 network blocker。核心结论：不能安全声称“没人做过”；F-Actor、Behavior-SD/BeDLM、dGSLM 是必须正面对比的直接威胁。F-Actor NanoCodec 已通过 `hf-mirror.com` 下载并预热 cache；因 CUDA 2/3 满载，启动受限 watcher `F-Actor/outputs/factor_smoke/run_factor_when_gpu_free.sh`，每 600s 检查一次，最多 60 次，只在安全阈值下运行。真实使用曾暴露 Remote Runner `openssh-pty` 的 busy 状态漂移、复杂 heredoc/stdout 污染、artifact/file get 不支持等后续改进点；KeyboardInterrupt/Ctrl-C busy 漂移已在下一条修复，硬杀进程级恢复仍可后续强化。
@@ -295,3 +296,13 @@
 - `session show/exec/destroy` 会恢复 stale `active_command`：清除 `busy`、落一条 failed command record，并把不可用 session 标为 `lost`；后续 `session exec` 会拒绝非 active session。
 - configured Linux/tmux machine 新鲜压力自测通过：大量 stdout 截断、12 秒静默 wait、后台命令轮询/wait、最终 exec、cleanup 和 destroy 均正常。
 - 验证：py_compile 通过；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 41 passed；默认真实集成入口 2 skipped；真实历史 stale command/session 已按预期收敛。
+### 2026-07-15 - 人类式 Terminal Session V2 开工
+
+- 用户确认核心价值观：一个 Remote Runner session 就是一个持续存在的人类终端；Agent
+  原样输入一行，终端输出持续追加并可按 cursor 读取。
+- stable runtime 仍 editable 指向旧 worktree，本任务在独立
+  `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v2` 和
+  `codex/rr-terminal-session-v2` 分支开发，不修改 stable 源码/state/tmux。
+- 当前 active plan：`plans/active/2026-07-15-terminal-session-v2.md`，功能项 `F-027`。
+- 当前模式：高自治；开发原则：公共 CLI/library maintenance；下一步先建立真实本地 tmux
+  失败测试，再实现 append-only transcript、raw send 和 interrupt。

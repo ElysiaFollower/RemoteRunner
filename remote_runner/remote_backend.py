@@ -254,6 +254,24 @@ class ParamikoRemoteBackend:
     def _local_tmux_target(self, terminal_record: Dict[str, Any]) -> str:
         return terminal_record["local_tmux_session"]
 
+    def _configure_local_tmux_transcript(
+        self,
+        terminal_record: Dict[str, Any],
+    ) -> None:
+        transcript_file = terminal_record.get("local_transcript_file")
+        if not transcript_file:
+            raise RuntimeError("append-only terminal is missing local transcript path")
+        target = self._local_tmux_target(terminal_record)
+        self._run_local_tmux(
+            [
+                "pipe-pane",
+                "-O",
+                "-t",
+                target,
+                f"cat >> {shlex.quote(transcript_file)}",
+            ],
+        )
+
     def _connect(self, machine: RemoteMachine, timeout: int = 30) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -632,6 +650,7 @@ class ParamikoRemoteBackend:
         cwd: str,
         terminal_id: str,
         terminal_name: Optional[str] = None,
+        transcript_file_local: Optional[str] = None,
         width: int = 120,
         height: int = 40,
         history_limit: int = 10000,
@@ -647,6 +666,7 @@ class ParamikoRemoteBackend:
                 machine=machine,
                 terminal_id=terminal_id,
                 terminal_name=terminal_name,
+                transcript_file_local=transcript_file_local,
                 width=width,
                 height=height,
                 history_limit=history_limit,
@@ -656,27 +676,49 @@ class ParamikoRemoteBackend:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
         tmux_session = self._tmux_session_name(terminal_id)
-        script = " && ".join(
-            [
-                "command -v tmux >/dev/null 2>&1",
-                "command -v bash >/dev/null 2>&1",
-                (
-                    f"tmux new-session -d -s {shlex.quote(tmux_session)} "
-                    f"-c {shlex.quote(cwd)} bash --noprofile --norc"
-                ),
-                (
-                    f"tmux resize-window -t {shlex.quote(tmux_session)} "
-                    f"-x {int(width)} -y {int(height)}"
-                ),
-                (
-                    f"tmux set-option -t {shlex.quote(tmux_session)} "
-                    f"history-limit {int(history_limit)}"
-                ),
-                f"printf '%s\\n' {shlex.quote(tmux_session)}",
-            ]
-        )
         client = self._connect(machine)
         try:
+            _, home_stdout, home_stderr = client.exec_command(
+                "bash -lc 'printf %s \"$HOME\"'"
+            )
+            remote_home = home_stdout.read().decode("utf-8", errors="replace").strip()
+            home_error = home_stderr.read().decode("utf-8", errors="replace").strip()
+            if home_stdout.channel.recv_exit_status() != 0 or not remote_home:
+                raise RuntimeError(home_error or "could not resolve remote home directory")
+            remote_transcript_dir = posixpath.join(
+                remote_home,
+                ".remote-runner",
+                "sessions",
+                terminal_id,
+            )
+            remote_transcript_file = posixpath.join(remote_transcript_dir, "terminal.log")
+            pipe_command = f"cat >> {shlex.quote(remote_transcript_file)}"
+            script = " && ".join(
+                [
+                    "command -v tmux >/dev/null 2>&1",
+                    "command -v bash >/dev/null 2>&1",
+                    f"mkdir -p {shlex.quote(remote_transcript_dir)}",
+                    f": > {shlex.quote(remote_transcript_file)}",
+                    f"chmod 600 {shlex.quote(remote_transcript_file)}",
+                    (
+                        f"tmux new-session -d -s {shlex.quote(tmux_session)} "
+                        f"-c {shlex.quote(cwd)} bash --noprofile --norc"
+                    ),
+                    (
+                        f"tmux resize-window -t {shlex.quote(tmux_session)} "
+                        f"-x {int(width)} -y {int(height)}"
+                    ),
+                    (
+                        f"tmux set-option -t {shlex.quote(tmux_session)} "
+                        f"history-limit {int(history_limit)}"
+                    ),
+                    (
+                        f"tmux pipe-pane -O -t {shlex.quote(tmux_session)} "
+                        f"{shlex.quote(pipe_command)}"
+                    ),
+                    f"printf '%s\\n' {shlex.quote(tmux_session)}",
+                ]
+            )
             _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
             stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
             stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
@@ -686,6 +728,8 @@ class ParamikoRemoteBackend:
             return {
                 "backend": "tmux",
                 "remote_terminal_name": stdout or tmux_session,
+                "transcript_mode": "append-only",
+                "remote_transcript_file": remote_transcript_file,
                 "history_limit": history_limit,
                 "width": width,
                 "height": height,
@@ -698,16 +742,19 @@ class ParamikoRemoteBackend:
         machine: RemoteMachine,
         terminal_id: str,
         terminal_name: Optional[str],
+        transcript_file_local: Optional[str],
         width: int,
         height: int,
         history_limit: int,
     ) -> Dict[str, Any]:
         if not machine.ssh_alias:
             raise RuntimeError("openssh-pty machine is missing ssh_alias")
+        if not transcript_file_local:
+            raise RuntimeError("openssh-pty terminal requires a local transcript file")
         tmux_session = self._available_local_tmux_session_name(terminal_id, terminal_name)
         ssh_command = f"{shlex.quote(self._ssh_binary())} -tt {shlex.quote(machine.ssh_alias)}"
         self._run_local_tmux(
-            ["new-session", "-d", "-s", tmux_session, ssh_command],
+            ["new-session", "-d", "-s", tmux_session],
         )
         try:
             self._run_local_tmux(
@@ -724,6 +771,16 @@ class ParamikoRemoteBackend:
             self._run_local_tmux(
                 ["set-option", "-t", tmux_session, "history-limit", str(int(history_limit))],
             )
+            self._configure_local_tmux_transcript(
+                {
+                    "local_tmux_session": tmux_session,
+                    "local_transcript_file": transcript_file_local,
+                }
+            )
+            self._run_local_tmux(
+                ["send-keys", "-t", tmux_session, "-l", "--", f"exec {ssh_command}"],
+            )
+            self._run_local_tmux(["send-keys", "-t", tmux_session, "C-m"])
         except Exception:
             try:
                 self._run_local_tmux(["kill-session", "-t", tmux_session], check=False)
@@ -736,6 +793,8 @@ class ParamikoRemoteBackend:
             "remote_terminal_name": tmux_session,
             "ssh_alias": machine.ssh_alias,
             "local_attach_command": f"tmux attach-session -t {tmux_session}",
+            "transcript_mode": "append-only",
+            "local_transcript_file": transcript_file_local,
             "history_limit": history_limit,
             "width": width,
             "height": height,
@@ -778,12 +837,9 @@ class ParamikoRemoteBackend:
                 cwd=cwd if cwd_override else None,
             )
         if self._uses_openssh_pty(machine):
-            return self._start_local_tmux_session_command(
-                session_record=session_record,
-                command=command,
-                command_id=command_id,
-                cwd=cwd,
-                cwd_override=cwd_override,
+            raise RuntimeError(
+                "session exec is intentionally unavailable for openssh-pty terminals; "
+                "use session send, session read, and session interrupt"
             )
 
         if machine.startup_commands:
@@ -819,52 +875,6 @@ class ParamikoRemoteBackend:
         return {
             "command_backend": "tmux",
             **paths,
-        }
-
-    def _start_local_tmux_session_command(
-        self,
-        session_record: Dict[str, Any],
-        command: str,
-        command_id: str,
-        cwd: Optional[str] = None,
-        cwd_override: bool = False,
-    ) -> Dict[str, Any]:
-        target = self._local_tmux_target(session_record)
-        begin_marker = f"__REMOTE_RUNNER_CMD_BEGIN_{command_id}__"
-        end_marker = f"__REMOTE_RUNNER_CMD_END_{command_id}__"
-        transcript = self._capture_local_tmux_transcript(session_record)
-        should_cd = cwd_override and cwd is not None
-        script_parts = [
-            f"printf '\\n{begin_marker}\\n'",
-            "__rr_rc=0",
-        ]
-        if should_cd:
-            script_parts.extend(
-                [
-                    f"cd {shlex.quote(cwd)}",
-                    "__rr_rc=$?",
-                ]
-            )
-        script_parts.extend(
-            [
-                (
-                    'if [ "$__rr_rc" -eq 0 ]; then '
-                    f"__rr_command={shlex.quote(command)}; "
-                    'eval "$__rr_command"; '
-                    "__rr_rc=$?; "
-                    "fi"
-                ),
-                f"printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
-            ]
-        )
-        script = "; ".join(script_parts)
-        self._send_local_tmux_input(session_record, script, enter=True)
-        return {
-            "command_backend": "local_tmux",
-            "local_tmux_session": target,
-            "local_begin_marker": begin_marker,
-            "local_end_marker": end_marker,
-            "local_transcript_start_cursor": len(transcript),
         }
 
     def wait_session_command(
@@ -1141,6 +1151,31 @@ class ParamikoRemoteBackend:
             self._run_local_tmux(["send-keys", "-t", target, "C-m"])
         return {"input_sent": True}
 
+    def interrupt_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if self._uses_windows_agent(machine):
+            raise RuntimeError("session interrupt is not yet supported for windows-agent machines")
+        if self._uses_openssh_pty(machine):
+            target = self._local_tmux_target(terminal_record)
+            self._run_local_tmux(["send-keys", "-t", target, "C-c"])
+            return {"interrupt_sent": True}
+
+        target = terminal_record["remote_terminal_name"]
+        script = f"tmux send-keys -t {shlex.quote(target)} C-c"
+        client = self._connect(machine)
+        try:
+            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(script)}")
+            stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+            if stdout_file.channel.recv_exit_status() != 0:
+                raise RuntimeError(stderr or stdout or "terminal interrupt failed")
+            return {"interrupt_sent": True}
+        finally:
+            client.close()
+
     def capture_terminal(
         self,
         machine: RemoteMachine,
@@ -1149,6 +1184,14 @@ class ParamikoRemoteBackend:
         if self._uses_windows_agent(machine):
             return self._capture_windows_agent_terminal(machine, terminal_record)
         if self._uses_openssh_pty(machine):
+            if terminal_record.get("transcript_mode") == "append-only":
+                transcript_file = terminal_record.get("local_transcript_file")
+                if not transcript_file:
+                    raise RuntimeError("append-only terminal is missing local transcript path")
+                with open(transcript_file, "r", encoding="utf-8", errors="replace") as handle:
+                    transcript = handle.read()
+                status = "active" if self.terminal_exists(machine, terminal_record) else "lost"
+                return {"status": status, "transcript": transcript}
             transcript = self._capture_local_tmux_transcript(terminal_record)
             return {"status": "active", "transcript": transcript}
 
@@ -1156,6 +1199,28 @@ class ParamikoRemoteBackend:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
         target = terminal_record["remote_terminal_name"]
+        if terminal_record.get("transcript_mode") == "append-only":
+            remote_transcript_file = terminal_record.get("remote_transcript_file")
+            if not remote_transcript_file:
+                raise RuntimeError("append-only terminal is missing remote transcript path")
+            client = self._connect(machine)
+            try:
+                script = f"tmux has-session -t {shlex.quote(target)} >/dev/null 2>&1"
+                _, stdout_file, _ = client.exec_command(f"bash -lc {shlex.quote(script)}")
+                status = "active" if stdout_file.channel.recv_exit_status() == 0 else "lost"
+                sftp = client.open_sftp()
+                try:
+                    transcript = self._read_remote_text(
+                        sftp,
+                        machine,
+                        remote_transcript_file,
+                        missing_ok=True,
+                    )
+                finally:
+                    sftp.close()
+                return {"status": status, "transcript": transcript}
+            finally:
+                client.close()
         history_limit = int(terminal_record.get("history_limit") or 10000)
         script = (
             f"tmux has-session -t {shlex.quote(target)} >/dev/null 2>&1 && "
@@ -1367,6 +1432,8 @@ class ParamikoRemoteBackend:
                 time.sleep(min(0.05, max(0, deadline - time.time())))
         finally:
             self._run_local_tmux(["pipe-pane", "-t", target], check=False)
+            if session_record.get("transcript_mode") == "append-only":
+                self._configure_local_tmux_transcript(session_record)
             try:
                 os.unlink(capture_path)
             except FileNotFoundError:

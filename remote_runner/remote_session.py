@@ -118,12 +118,15 @@ class RemoteSessionManager:
         log_dir = get_log_dir(session_id)
         ensure_dir(log_dir)
         transcript_file = os.path.join(log_dir, "transcript.txt")
+        write_file(transcript_file, "")
+        os.chmod(transcript_file, 0o600)
         created_at = get_timestamp()
         backend_record = self.backend.create_terminal(
             machine=machine,
             cwd=remote_cwd,
             terminal_id=session_id,
             terminal_name=session_name,
+            transcript_file_local=transcript_file,
         )
         session = {
             "session_id": session_id,
@@ -148,8 +151,6 @@ class RemoteSessionManager:
             "commands": [],
             **backend_record,
         }
-        write_file(transcript_file, "")
-        os.chmod(transcript_file, 0o600)
         try:
             with remote_state_lock():
                 if session_name:
@@ -201,6 +202,14 @@ class RemoteSessionManager:
             return self.start_background(session_id, command, cwd=cwd, timeout=timeout)
         if mode != "wait":
             raise ValueError("mode must be 'wait' or 'background'")
+
+        session = load_session_state(session_id)
+        machine = self.machine_manager.get(session["machine_id"])
+        if machine.backend == "openssh-pty":
+            raise RuntimeError(
+                "session exec is intentionally unavailable for openssh-pty terminals; "
+                "use session send, session read, and session interrupt"
+            )
 
         reservation = self._reserve_command(session_id, command, cwd)
         machine = self.machine_manager.get(reservation["machine_id"])
@@ -521,9 +530,18 @@ class RemoteSessionManager:
 
     def send(self, session_id: str, input_text: str, enter: bool = True) -> Dict[str, Any]:
         session_id = self.resolve_session_id(session_id)
+        if "\n" in input_text or "\r" in input_text:
+            raise ValueError(
+                "session send accepts one terminal line at a time; "
+                "use run once or a job interface for multiline batch input"
+            )
         session = load_session_state(session_id)
         if session.get("status") != "active":
             raise RuntimeError(f"Session '{session_id}' is not active")
+        if session.get("busy"):
+            raise RuntimeError(
+                f"Session '{session_id}' is busy; use session read or session interrupt"
+            )
         machine = self.machine_manager.get(session["machine_id"])
         send_result = self.backend.send_terminal_input(
             machine=machine,
@@ -537,7 +555,27 @@ class RemoteSessionManager:
             save_session_state(session)
         result = self._public_session(session)
         result.update(send_result)
+        result["input"] = input_text
         result["enter"] = enter
+        return result
+
+    def interrupt(self, session_id: str) -> Dict[str, Any]:
+        """Send Ctrl-C to the foreground process without replacing the terminal."""
+        session_id = self.resolve_session_id(session_id)
+        self._refresh_session_liveness(session_id)
+        session = load_session_state(session_id)
+        if session.get("status") != "active":
+            raise RuntimeError(f"Session '{session_id}' is not active")
+        machine = self.machine_manager.get(session["machine_id"])
+        interrupt_result = self.backend.interrupt_terminal(
+            machine=machine,
+            terminal_record=session,
+        )
+        session["updated_at"] = get_timestamp()
+        with remote_state_lock():
+            save_session_state(session)
+        result = self._public_session(session)
+        result.update(interrupt_result)
         return result
 
     def attach(self, session_id: str) -> Dict[str, Any]:
@@ -593,10 +631,11 @@ class RemoteSessionManager:
                 or status != session.get("status")
                 or cursor != session.get("transcript_cursor", 0)
             )
-            if state_changed:
+            if transcript != existing_transcript:
                 write_file(transcript_file, transcript)
                 if not transcript_file_exists:
                     os.chmod(transcript_file, 0o600)
+            if state_changed:
                 session["status"] = status
                 session["transcript_cursor"] = cursor
                 session["updated_at"] = get_timestamp()
@@ -996,6 +1035,7 @@ class RemoteSessionManager:
             "log_dir_local": session["log_dir_local"],
             "transcript_cursor": session.get("transcript_cursor", 0),
             "transcript_file_local": session.get("transcript_file_local"),
+            "transcript_mode": session.get("transcript_mode"),
             "remote_backend_name": session.get("remote_terminal_name"),
             "local_attach_command": session.get("local_attach_command"),
         }

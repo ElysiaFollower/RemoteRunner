@@ -14,8 +14,8 @@ Use this skill when work must happen on a remote machine through the `remote-run
 Use `remote-runner` as the stable interface:
 
 - machine registry and diagnostics: `machine list/show/doctor`
-- remote command context: `session create/exec`, `session command list/show/wait/stop`,
-  `session send/read/logs/destroy`
+- persistent terminal: `session create/attach/send/read/interrupt/logs/destroy`
+- structured compatibility commands: `session exec`, `session command list/show/wait/stop`
 - explicit file movement: `file put/get/list`
 - one-shot closed loop: `run once`
 
@@ -30,6 +30,8 @@ match the target OS:
   available.
 - Direct Windows work: Windows OpenSSH/SFTP machine with `backend=windows-agent`, `shell=pwsh`,
   Python 3, and PowerShell 7 available.
+- Interactive gateway work: `backend=openssh-pty`, where local tmux owns `ssh -tt <alias>` and the
+  live-terminal operations are `attach/send/read/interrupt/destroy`.
 
 Windows OpenSSH + WSL records that depend on `startup_commands` and `path_mappings` are
 compatibility inputs, not the primary direct Windows path.
@@ -52,7 +54,7 @@ conda run -n seedrunner remote-runner --help
 If `remote-runner` is missing, install the tool from the Remote Runner repo:
 
 ```bash
-cd /Users/ely/workspace/research/old/agent/SEEDRunner
+cd /Users/ely/workspace/research/agent/RemoteRunner
 conda run -n seedrunner python -m pip install -e .
 ```
 
@@ -80,12 +82,12 @@ Do not continue if `reachable`, `auth_ok`, or `default_cwd_ok` is false. Report 
 remote-runner session create --machine <machine-id> --cwd <remote-dir> --name <session-name> --json
 ```
 
-`session create` opens the persistent remote shell context for this work area. `machine doctor` and
-the first `session exec` are still the practical connectivity checks. `--name` is optional, but use
-a readable name for non-temporary sessions. Later `--session` arguments accept either the generated
-`session_id` or a unique readable name.
+`session create` opens the persistent remote shell context for this work area. `--name` is optional,
+but use a readable name for non-temporary sessions. Later `--session` arguments accept either the
+generated `session_id` or a unique readable name. Inspect the machine backend before choosing the
+next operation.
 
-5. Run bounded commands through the session:
+5. On `ssh-tmux` or `windows-agent`, run bounded structured commands through the compatibility API:
 
 ```bash
 remote-runner session exec \
@@ -130,6 +132,34 @@ running background commands cannot be destroyed until those commands finish or a
 direct Windows backend currently supports persistent wait-mode execution and raw send/read, but
 rejects background commands with a clear error.
 
+For `openssh-pty`, never call `session exec`: that backend rejects it before pane input because a
+human-visible terminal must not become an in-band RPC channel. Attach if login is incomplete, then
+use the literal terminal loop:
+
+```bash
+remote-runner session send \
+  --session <session-ref> \
+  --input '<one shell command line>' \
+  --json
+
+remote-runner session read \
+  --session <session-ref> \
+  --since <last-cursor> \
+  --json
+```
+
+Send one deliberate command line at a time. The accepted input and resulting shell output are both
+visible in the same tmux pane and append-only transcript. Keep the returned cursor and poll with
+`read --since`; do not infer completion from a fixed sleep. If the foreground command hangs:
+
+```bash
+remote-runner session interrupt --session <session-ref> --json
+```
+
+Then read again until output confirms the same shell is responsive. Do not paste hidden markers,
+`eval` wrappers, exit-code probes, heredoc batches, or cleanup `exit` commands into this terminal.
+Use `run once` for structured batch work.
+
 6. Clean up when finished:
 
 ```bash
@@ -138,8 +168,8 @@ remote-runner session destroy --session <session-ref> --json
 
 ## Persistent Session Transcript
 
-Use `session send/read` when the task needs raw shell-panel behavior in the existing session. Do
-not create a separate top-level terminal resource.
+`session send/read/interrupt` are the base session contract, not a UI-only escape hatch. Do not
+create a separate top-level terminal resource.
 
 ```bash
 remote-runner session send \
@@ -152,8 +182,9 @@ remote-runner session read \
   --json
 ```
 
-`session read` returns transcript text and a cursor for incremental reads. `session destroy` stops
-the remote backend shell and preserves local command logs and transcript state.
+`session read` returns append-only transcript text and a cursor for incremental reads. The agent sees
+the same input/output stream a human sees while attached. `session destroy` stops the backend shell
+and preserves local command logs and transcript state.
 
 ## File Transfer
 
@@ -183,9 +214,9 @@ File transfer is built into Remote Runner through SSH/SFTP. It does not require 
 If file transfer fails, classify before retrying:
 
 - `machine doctor` fails: machine auth/connectivity problem.
-- `session exec` fails similarly: not an SFTP-only issue.
-- `session exec` succeeds but `file put` fails with permission denied: remote path permissions problem.
-- `session exec` succeeds but SFTP cannot open paths: check SFTP subsystem and path mappings.
+- The backend's normal terminal/command probe fails similarly: not an SFTP-only issue.
+- Terminal/command access succeeds but `file put` fails with permission denied: remote path permissions problem.
+- Terminal/command access succeeds but SFTP cannot open paths: check SFTP subsystem and path mappings.
 - Windows OpenSSH + WSL path mismatch on a compatibility backend: use `machine configure-path-map`.
 
 ## Run Once

@@ -133,6 +133,7 @@ class LaunchBackend:
         cwd,
         terminal_id,
         terminal_name=None,
+        transcript_file_local=None,
         width=120,
         height=40,
         history_limit=10000,
