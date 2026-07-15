@@ -11,8 +11,9 @@
 - `F-027`、`F-028` passing；任务合同分别归档于
   `plans/archive/2026-07-15-terminal-session-v2.md` 和
   `plans/archive/2026-07-15-terminal-debt-audit.md`。
-- 旧的本地 PTY session record 已按实际 pane liveness 收敛为 `lost`；另建了一个 V2
-  replacement session，当前停在人工认证边界，没有发送远端业务命令。
+- 旧的本地 PTY session record 已按实际 pane liveness 收敛为 `lost`。部署时曾误建一个
+  未经用户要求的 V2 replacement session；未发送远端业务命令，发现越界后已立即 destroy，
+  本地 pane 不再存在。
 
 ## 当前设计事实
 
@@ -55,8 +56,6 @@
 
 - 未运行真实 SSH server smoke；它只覆盖认证、网络、远端 tmux/SFTP 环境边界，不阻塞当前
   terminal/batch 协议正确性。
-- 新建的 manual-auth replacement session 仍需人工 attach 完成登录；登录前不能恢复远端
-  工作。这是认证边界，不是 runtime 或 session-state 漂移。
 - mypy 尚不能作为仓库 gate；需要单独任务升级 Python typing baseline、补 Paramiko stubs 并
   清理既存跨平台类型错误，不能在本次 terminal 重构里用大范围无关修改掩盖。
 - 全仓默认 Black 仍会格式化 6 个本轮未改的旧文件；默认 flake8 的 610 项均为与 Black
@@ -72,7 +71,8 @@
 
 ## 下一步最佳动作
 
-1. 人工 attach 当前 replacement session，完成登录并 detach。
+1. 不主动创建业务 session；远端工作开始时使用用户明确选择的现有 session，或在用户要求后
+   再创建。
 2. 后续 agent 只用 `session send/read/interrupt` 操作持久 terminal；结构化工作走 batch。
 3. 可选对一台预配置 SSH machine 做只写测试目录的
    `create -> send -> read -> interrupt -> destroy` 和 direct batch smoke。
