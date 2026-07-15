@@ -303,7 +303,7 @@
       "status": "passing",
       "verification": "/Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest tests/test_terminal_debt_audit.py -q && /Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest -q && ./scripts/harness-check.sh && git diff --check",
       "evidence": "2026-07-15: failure regressions 先确定性复现 4 类问题：ssh-tmux exec/background 写 live pane、openssh-pty file get 劫持 recorder、remote transcript 全量重读。修复后删除 tmux wrapper/eval 与 PTY file protocol；ssh-tmux exec/background/run once 改走 direct SSH batch，pane input 均为 0；remote transcript 用 byte cursor 增量读取，12002-byte 首读后第二次只读 7 bytes、空读 0 bytes，跨块 UTF-8 正确，并发双读重复 20 轮无重复 append。真实本地 tmux bash/zsh 各执行 20 轮失败命令 stress，输入原文可见、cursor 单调、shell 最终存活、无 marker/eval。聚焦：debt 10 passed；terminal 16 passed；MVP 54 passed；launch 2 passed/1 skipped；全仓 103 passed/4 skipped。Black、flake8 非格式规则、git diff check、harness-check 均通过。额外修复审计发现的 Windows wait 轮询缩进和 destroy 缺失返回，并有回归。",
-      "notes": "任务合同：plans/archive/2026-07-15-terminal-debt-audit.md。保留的 tmux/local_tmux command inspect/stop 只用于读取或停止升级前已持久化的 legacy record；新记录只能是 direct_ssh/direct_ssh_background，不会创建 in-pane protocol。未热更新 stable runtime/global skill。"
+      "notes": "任务合同：plans/archive/2026-07-15-terminal-debt-audit.md。保留的 tmux/local_tmux command inspect/stop 只用于读取或停止升级前已持久化的 legacy record；新记录只能是 direct_ssh/direct_ssh_background，不会创建 in-pane protocol。2026-07-15 已在安全窗口快进合入 main；editable runtime 和 global live skill 均已切换。"
     }
   ]
 }

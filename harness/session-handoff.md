@@ -4,13 +4,15 @@
 
 ## 仓库状态
 
-- 开发 worktree：`/Users/ely/workspace/research/agent/RemoteRunner-terminal-v2`
-- 分支：`codex/rr-terminal-session-v2`
-- stable worktree、editable install、真实 Remote Runner state 和既有 tmux session 均未修改。
+- `main` 已快进到 `06c47cf`，包含 OpenSSH PTY runtime 基线、Terminal Session V2 和债务
+  清零审计三个提交。
+- 当前 `remote-runner` editable install 从主 worktree 导入；仓库 canonical `SKILL.md` 与
+  global live skill 字节一致。
 - `F-027`、`F-028` passing；任务合同分别归档于
   `plans/archive/2026-07-15-terminal-session-v2.md` 和
   `plans/archive/2026-07-15-terminal-debt-audit.md`。
-- canonical `SKILL.md` 已在当前分支更新；global live skill 未热更新。
+- 旧的本地 PTY session record 已按实际 pane liveness 收敛为 `lost`；另建了一个 V2
+  replacement session，当前停在人工认证边界，没有发送远端业务命令。
 
 ## 当前设计事实
 
@@ -40,44 +42,48 @@
   `false` 后继续输出；每轮输入原文可见、cursor 单调，最终 shell 存活，无 marker/eval。
 - MVP：54 passed。Launch：2 passed, 1 skipped。
 - 完整验证：103 passed, 4 skipped；默认 skips 只包含显式 opt-in 的真实机器/VM 测试。
-- Black check、flake8 非格式规则、`git diff --check`、JSON parse 和 harness-check 通过；
+- 本轮改动的 10 个 Python 文件通过 Black check；全仓 flake8 非格式规则、
+  `git diff --check`、JSON parse 和 harness-check 通过；
   harness-check 0 warnings。测试结束无 `rr_local_sess_*` 或开发 shim 进程遗留。
+- 为排除测试误杀既有 tmux，会先创建独立 sentinel，再分别运行真实 tmux 聚焦测试和完整
+  pytest；两次 sentinel 均存活。测试只销毁其精确随机 session name。
 - mypy 不是当前可用 gate：配置仍声明 Python 3.8，而安装的 mypy 已不支持 3.8；同时仓库有
   既存 Windows 分支类型错误和缺失 Paramiko stubs。本轮暴露的新增类型推断错误已修复，且
   mypy 发现的 Windows destroy 缺失返回也已补回归。
 
 ## 仍未完成
 
-- stable editable runtime 和 global skill 尚未切换；这是为了不影响运行中任务，必须留到合并
-  后的安全窗口执行。
 - 未运行真实 SSH server smoke；它只覆盖认证、网络、远端 tmux/SFTP 环境边界，不阻塞当前
   terminal/batch 协议正确性。
+- 新建的 manual-auth replacement session 仍需人工 attach 完成登录；登录前不能恢复远端
+  工作。这是认证边界，不是 runtime 或 session-state 漂移。
 - mypy 尚不能作为仓库 gate；需要单独任务升级 Python typing baseline、补 Paramiko stubs 并
   清理既存跨平台类型错误，不能在本次 terminal 重构里用大范围无关修改掩盖。
+- 全仓默认 Black 仍会格式化 6 个本轮未改的旧文件；默认 flake8 的 610 项均为与 Black
+  不兼容的 `E203/E501` 格式规则。当前可靠 gate 是变更文件 Black + 全仓非格式规则。
 
 ## 安全与隐私边界
 
-- 未连接真实机器，未读取或写入真实 session transcript/state，未记录 host、密码、token、
-  私钥内容或真实远程目录。
+- 只启动了 manual-auth SSH PTY 并验证启动命令在 append-only transcript 可见；未完成人工
+  认证、未读取远端 shell 输出、未发送远端业务命令。没有记录 host、密码、token、私钥内容
+  或真实远程目录。
 - 未运行真实 SSH server smoke。核心 terminal transport 已由真实本地 tmux 覆盖；真实 smoke
   只验证认证、网络、远端 tmux/SFTP 的环境边界，不是隐藏协议的替代方案。
-- 合并前保持 stable editable runtime 不变。只有确认依赖旧版本的运行中任务都结束后，才可
-  切换 editable install 并发布当前 canonical skill 到 global skill。
 
 ## 下一步最佳动作
 
-1. 审阅当前分支 diff 和提交。
-2. 合并后，在安全窗口切换 editable install/global skill。
+1. 人工 attach 当前 replacement session，完成登录并 detach。
+2. 后续 agent 只用 `session send/read/interrupt` 操作持久 terminal；结构化工作走 batch。
 3. 可选对一台预配置 SSH machine 做只写测试目录的
    `create -> send -> read -> interrupt -> destroy` 和 direct batch smoke。
 
 ## 常用命令
 
 ```bash
-cd /Users/ely/workspace/research/agent/RemoteRunner-terminal-v2
-/Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest tests/test_terminal_debt_audit.py -q
-/Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest tests/test_terminal_session_v2.py -q
-/Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest -q
+cd /Users/ely/workspace/research/agent/RemoteRunner
+python3 -m pytest tests/test_terminal_debt_audit.py -q
+python3 -m pytest tests/test_terminal_session_v2.py -q
+python3 -m pytest -q
 ./scripts/harness-check.sh
 git diff --check
 ```
