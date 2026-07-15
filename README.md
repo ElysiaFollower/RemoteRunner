@@ -91,20 +91,23 @@ remote-runner run once \
 ```
 
 `session create` opens a persistent terminal context. Its base contract is deliberately small:
-`session send` types the exact input, `session read --since <cursor>` reads the append-only terminal
-stream, and `session interrupt` sends `Ctrl-C` without replacing the shell. Shell-local state such
-as `cd`, exported variables, and aliases persists because every operation targets the same shell.
+`session send` types the exact input and `session read --since <cursor>` reads the append-only
+terminal stream. Tmux-backed sessions also provide `session interrupt`, which sends `Ctrl-C`
+without replacing the shell; the current Windows agent rejects interrupt because its piped
+PowerShell transport has no reliable console-control channel. Shell-local state such as `cd`,
+exported variables, and aliases persists because terminal operations target the same shell.
 
 `session exec --json` remains a structured compatibility interface on `ssh-tmux` and
-`windows-agent`; it returns stdout, stderr, exit code, timestamps, logs, and `command_id`.
+`windows-agent`; it returns stdout, stderr, exit code, timestamps, logs, and `command_id`. On
+`ssh-tmux`, it runs through an independent direct-SSH batch channel and does not enter or mutate the
+live terminal. On `windows-agent`, the agent's explicit request/result channel owns the structured
+operation.
 `openssh-pty` rejects `session exec` before pane input: a human-visible PTY is not an in-band RPC
 channel. Use `send/read/interrupt` there, and use `run once` for structured batch work.
 
-`session exec` is shell-native command entry, not an isolated batch runner: it should feel like
-typing one command into the persistent shell while Remote Runner captures structured evidence.
-Backend wrappers may add markers and logs, but normal execution must return to the same shell.
-Use `session destroy` for teardown and `run once` for upload-run-download workflows or scripts that
-end with process-level `exit` semantics.
+Only `session send/read/interrupt` operate the persistent terminal stream. Use `send` when a command
+must observe or change shell-local state, `session destroy` for teardown, and `run once` for
+upload-run-download workflows or scripts with process-level exit semantics.
 
 `session create --name` is optional but recommended for non-temporary work; later `--session`
 arguments accept either the generated `session_id` or a unique readable name.
@@ -118,9 +121,9 @@ Machines include explicit `platform`, `backend`, and `shell` fields. Linux defau
 `backend=ssh-tmux` and `shell=bash`; direct Windows defaults to `backend=windows-agent` and
 `shell=pwsh`. `openssh-pty` machines store an OpenSSH alias and use `auth_type=manual`; users attach
 to a local tmux session to complete password, OTP, or gateway prompts, then detach while the
-interactive shell remains available to Remote Runner. An active idle PTY session can also download
-ordinary files with `file get`; size and SHA-256 are checked before atomic local replacement.
-Ordered startup commands and path mappings
+interactive shell remains available to Remote Runner. Because this backend has no independent file
+transport, `file put/get/list` are rejected instead of tunneling a file protocol through the live
+terminal. Ordered startup commands and path mappings
 remain available for compatibility backends, such as Windows OpenSSH hosts that first enter WSL, but
 direct Windows support does not depend on WSL.
 

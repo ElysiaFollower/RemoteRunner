@@ -180,122 +180,6 @@ class LaunchBackend:
         terminal["status"] = "destroyed"
         return {"destroy_result": "destroyed"}
 
-    def start_session_command(
-        self,
-        machine,
-        session_record,
-        command,
-        command_id,
-        cwd=None,
-        cwd_override=False,
-    ):
-        terminal = self.terminals[session_record["session_id"]]
-        self.commands.append(
-            {
-                "machine_id": machine.machine_id,
-                "cwd": cwd or session_record["cwd"],
-                "command": command,
-                "timeout": None,
-                "cwd_override": cwd_override,
-            }
-        )
-        stdout, stderr, exit_code = self._execute_terminal_command(
-            machine,
-            terminal,
-            command,
-            cwd,
-            cwd_override,
-        )
-        status = "running" if command == "sleep 30" else "exited"
-        if command == "sleep 30":
-            stdout = "launch-background-started\n"
-            stderr = ""
-            exit_code = None
-        self.background_commands[command_id] = {
-            "machine_id": machine.machine_id,
-            "cwd": cwd or session_record["cwd"],
-            "command": command,
-            "status": status,
-            "exit_code": exit_code,
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-            "started_at": "2026-05-11T00:00:01Z",
-            "ended_at": None if status == "running" else "2026-05-11T00:00:02Z",
-        }
-        remote_state_dir = f"{session_record['cwd']}/.remote-runner/commands/{command_id}"
-        return {
-            "command_backend": "tmux",
-            "remote_state_dir": remote_state_dir,
-            "remote_stdout_file": f"{remote_state_dir}/stdout.log",
-            "remote_stderr_file": f"{remote_state_dir}/stderr.log",
-            "remote_status_file": f"{remote_state_dir}/status",
-            "remote_exit_code_file": f"{remote_state_dir}/exit_code",
-            "remote_started_at_file": f"{remote_state_dir}/started_at",
-            "remote_ended_at_file": f"{remote_state_dir}/ended_at",
-            "remote_wrapper_file": f"{remote_state_dir}/run.sh",
-        }
-
-    def wait_session_command(self, machine, command_record, timeout=300, stdout_limit=8192, stderr_limit=8192):
-        self.commands[-1]["timeout"] = timeout
-        return self.inspect_session_command(
-            machine,
-            command_record,
-            stdout_limit=stdout_limit,
-            stderr_limit=stderr_limit,
-        )
-
-    def inspect_session_command(self, machine, command_record, stdout_limit=8192, stderr_limit=8192):
-        record = self.background_commands[command_record["command_id"]]
-        return {
-            "status": record["status"],
-            "exit_code": record["exit_code"],
-            "stdout": record["stdout"][:stdout_limit],
-            "stderr": record["stderr"][:stderr_limit],
-            "stdout_truncated": len(record["stdout"]) > stdout_limit,
-            "stderr_truncated": len(record["stderr"]) > stderr_limit,
-            "started_at": record["started_at"],
-            "ended_at": record["ended_at"],
-        }
-
-    def stop_session_command(self, machine, session_record, command_record):
-        record = self.background_commands[command_record["command_id"]]
-        record["status"] = "stopped"
-        record["exit_code"] = 143
-        record["ended_at"] = "2026-05-11T00:00:04Z"
-        return {"stop_result": "stopped"}
-
-    def _execute_terminal_command(self, machine, terminal, command, cwd=None, cwd_override=False):
-        if cwd_override and cwd:
-            terminal["cwd"] = cwd
-        terminal["transcript"] += f"$ {command}\n"
-        if command.startswith("cd "):
-            terminal["cwd"] = command.split(" ", 1)[1].strip()
-            return "", "", 0
-        if command.startswith("export "):
-            key, value = command[len("export ") :].split("=", 1)
-            terminal["env"][key] = value
-            return "", "", 0
-        if command == "pwd":
-            stdout = f"{terminal['cwd']}\n"
-            terminal["transcript"] += stdout
-            return stdout, "", 0
-        if command == 'printf "$LAUNCH_TOKEN\\n"':
-            stdout = f"{terminal['env'].get('LAUNCH_TOKEN', '')}\n"
-            terminal["transcript"] += stdout
-            return stdout, "", 0
-        if command == "launch-run-once":
-            output_path = posixpath.join(cwd or terminal["cwd"], "launch_output.txt")
-            self.files[machine.map_file_path(output_path)] = "launch artifact\n"
-            terminal["transcript"] += "launch-run-once\n"
-            return "launch-run-once\n", "", 0
-        if command.startswith("echo "):
-            stdout = command[len("echo ") :] + "\n"
-            terminal["transcript"] += stdout
-            return stdout, "", 0
-        return f"ran {command}\n", "", 0
-
     def put(self, machine, local_path, remote_path):
         file_path = machine.map_file_path(remote_path)
         self.puts.append(
@@ -423,10 +307,10 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
     background = session_manager.exec(session_id, "sleep 30", mode="background")
     background_show = session_manager.command_show(session_id, background["command_id"])
     background_stop = session_manager.command_stop(session_id, background["command_id"])
-    session_manager.exec(session_id, "cd /srv/app/subdir")
-    session_manager.exec(session_id, "export LAUNCH_TOKEN=launch-session")
-    session_pwd = session_manager.exec(session_id, "pwd")
-    session_token = session_manager.exec(session_id, 'printf "$LAUNCH_TOKEN\\n"')
+    session_manager.send(session_id, "cd /srv/app/subdir")
+    session_manager.send(session_id, "export LAUNCH_TOKEN=launch-session")
+    session_manager.send(session_id, "pwd")
+    session_manager.send(session_id, 'printf "$LAUNCH_TOKEN\\n"')
     session_read = session_manager.read(session_id)
 
     local_input = tmp_path / "launch_input.txt"
@@ -470,8 +354,6 @@ def run_fake_launch_smoke(tmp_path: Path) -> Dict[str, Any]:
         "background": background,
         "background_show": background_show,
         "background_stop": background_stop,
-        "session_pwd": session_pwd,
-        "session_token": session_token,
         "session_read": session_read,
         "put": put,
         "list": listing,

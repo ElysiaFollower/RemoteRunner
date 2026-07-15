@@ -13,8 +13,10 @@ Linux 路径要求远端具备：
 - SSH/SFTP，用于命令通道和显式文件传输
 - 一个用户明确授权的可写工作目录
 
-Linux backend 当前支持 `session create/exec/send/read/destroy`、`session exec --mode
-background`、`session command show/wait/stop`、`file put/get/list` 和 `run once`。
+Linux backend 当前支持 `session create/exec/send/read/interrupt/destroy`、`session exec --mode
+background`、`session command show/wait/stop`、`file put/get/list` 和 `run once`。其中 live
+tmux terminal 只承载 `send/read/interrupt`；结构化 exec/background/run once 通过独立 SSH
+batch transport 执行，不进入 pane，也不共享 terminal shell-local state。
 
 ## Direct Windows OpenSSH / PowerShell
 
@@ -59,6 +61,7 @@ Windows backend 会通过 SSH/SFTP 把内嵌 Python agent 放到远端工作目�
 
 当前 Windows P0 不支持：
 
+- `session interrupt`；piped PowerShell transport 没有可靠的 console-control channel
 - `session exec --mode background`
 - `session command stop` 一类后台命令控制
 - `cmd.exe` 作为一等目标 shell
@@ -94,13 +97,12 @@ ssh -tt <SSH_ALIAS>
 
 - `machine add/list/show/doctor`
 - `session create/attach/send/read/interrupt/destroy`
-- `file get` 下载普通文件；复用已登录 PTY，分块传输并校验 size/SHA-256 后原子落盘
 - 同一交互 shell 内 cwd、环境变量等 shell-local state 持久化
 - pane 输出的 append-only transcript；agent 和 attach 中的人类观察同一输入输出流
 
 当前 `openssh-pty` 不支持：
 
-- `file put`、目录 `file get`、`file list`
+- `file put/get/list`；该 backend 没有独立文件 transport，live PTY 不承载文件协议
 - `run once`
 - `session exec`（包括 wait/background）；live PTY 不承载隐藏 wrapper RPC
 - 无人值守认证、密码保存或平台网关状态机硬编码

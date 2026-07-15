@@ -36,8 +36,6 @@ def test_launch_suite_fake_core_smoke(launch_state_dir, tmp_path):
     assert result["background"]["remote_status_file"].endswith("/status")
     assert result["background_show"]["stdout"] == "launch-background-started\n"
     assert result["background_stop"]["status"] == "stopped"
-    assert result["session_pwd"]["stdout"] == "/srv/app/subdir\n"
-    assert result["session_token"]["stdout"] == "launch-session\n"
     assert "/srv/app/subdir" in result["session_read"]["transcript"]
     assert "launch-session" in result["session_read"]["transcript"]
     assert result["put"]["status"] == "completed"

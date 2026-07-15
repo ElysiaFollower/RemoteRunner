@@ -1,11 +1,8 @@
 """Tests for the mount-free Remote Runner MVP core."""
 
-import base64
-import hashlib
 import io
 import json
 import os
-import re
 import shlex
 import stat
 import subprocess
@@ -74,6 +71,8 @@ class FakeBackend:
             assert self.block_release.wait(timeout=2)
         if command == "backend-error":
             raise RuntimeError("ssh failed")
+        if command == "local-interrupt":
+            raise KeyboardInterrupt()
         if command == "exit-seven":
             return RemoteCommandResult(
                 stdout="",
@@ -83,8 +82,11 @@ class FakeBackend:
                 ended_at="2026-05-08T00:00:02Z",
                 duration_ms=1000,
             )
+        stdout = (
+            f"{command[len('echo '):]}\n" if command.startswith("echo ") else f"ran {command}\n"
+        )
         return RemoteCommandResult(
-            stdout=f"ran {command}\n",
+            stdout=stdout,
             stderr="",
             exit_code=0,
             started_at="2026-05-08T00:00:01Z",
@@ -223,131 +225,6 @@ class FakeBackend:
         if isinstance(result, Exception):
             raise result
         return result
-
-    def start_session_command(
-        self,
-        machine,
-        session_record,
-        command,
-        command_id,
-        cwd=None,
-        cwd_override=False,
-    ):
-        terminal = self.terminals[session_record["session_id"]]
-        self.commands.append(
-            {
-                "machine_id": machine.machine_id,
-                "cwd": cwd or session_record["cwd"],
-                "command": command,
-                "timeout": None,
-                "cwd_override": cwd_override,
-            }
-        )
-        if command == "backend-error":
-            raise RuntimeError("ssh failed")
-        if command == "block":
-            self.block_started.set()
-            assert self.block_release.wait(timeout=2)
-
-        stdout, stderr, exit_code = self._execute_terminal_command(
-            terminal, command, cwd, cwd_override
-        )
-        status = "running" if command in {"sleep 30", "tail -f app.log"} else "exited"
-        if command in {"sleep 30", "tail -f app.log"}:
-            stdout = "started\n"
-            stderr = ""
-            exit_code = None
-        self.background_commands[command_id] = {
-            "machine_id": machine.machine_id,
-            "cwd": cwd or session_record["cwd"],
-            "command": command,
-            "status": status,
-            "exit_code": exit_code,
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-            "started_at": "2026-05-08T00:00:01Z",
-            "ended_at": None if status == "running" else "2026-05-08T00:00:02Z",
-        }
-        remote_state_dir = f"{session_record['cwd']}/.remote-runner/commands/{command_id}"
-        return {
-            "command_backend": "tmux",
-            "remote_state_dir": remote_state_dir,
-            "remote_stdout_file": f"{remote_state_dir}/stdout.log",
-            "remote_stderr_file": f"{remote_state_dir}/stderr.log",
-            "remote_status_file": f"{remote_state_dir}/status",
-            "remote_exit_code_file": f"{remote_state_dir}/exit_code",
-            "remote_started_at_file": f"{remote_state_dir}/started_at",
-            "remote_ended_at_file": f"{remote_state_dir}/ended_at",
-            "remote_wrapper_file": f"{remote_state_dir}/run.sh",
-        }
-
-    def wait_session_command(
-        self, machine, command_record, timeout=300, stdout_limit=8192, stderr_limit=8192
-    ):
-        self.commands[-1]["timeout"] = timeout
-        if command_record["command"] == "local-interrupt":
-            raise KeyboardInterrupt()
-        return self.inspect_session_command(
-            machine,
-            command_record,
-            stdout_limit=stdout_limit,
-            stderr_limit=stderr_limit,
-        )
-
-    def inspect_session_command(
-        self, machine, command_record, stdout_limit=8192, stderr_limit=8192
-    ):
-        record = self.background_commands[command_record["command_id"]]
-        stdout = record["stdout"]
-        stderr = record["stderr"]
-        return {
-            "status": record["status"],
-            "exit_code": record["exit_code"],
-            "stdout": stdout[:stdout_limit],
-            "stderr": stderr[:stderr_limit],
-            "stdout_truncated": len(stdout) > stdout_limit,
-            "stderr_truncated": len(stderr) > stderr_limit,
-            "started_at": record["started_at"],
-            "ended_at": record["ended_at"],
-        }
-
-    def stop_session_command(self, machine, session_record, command_record):
-        record = self.background_commands[command_record["command_id"]]
-        record["status"] = "stopped"
-        record["exit_code"] = 143
-        record["ended_at"] = "2026-05-08T00:00:05Z"
-        return {"stop_result": "stopped"}
-
-    def _execute_terminal_command(self, terminal, command, cwd=None, cwd_override=False):
-        if cwd_override and cwd:
-            terminal["cwd"] = cwd
-        terminal["transcript"] += f"$ {command}\n"
-        if command.startswith("cd "):
-            path = command.split(" ", 1)[1].strip()
-            terminal["cwd"] = path
-            return "", "", 0
-        if command.startswith("export "):
-            key, value = command[len("export ") :].split("=", 1)
-            terminal["env"][key] = value
-            return "", "", 0
-        if command == "pwd":
-            stdout = f"{terminal['cwd']}\n"
-            terminal["transcript"] += stdout
-            return stdout, "", 0
-        if command == 'printf "$RR_TOKEN\\n"':
-            stdout = f"{terminal['env'].get('RR_TOKEN', '')}\n"
-            terminal["transcript"] += stdout
-            return stdout, "", 0
-        if command.startswith("echo "):
-            stdout = command[len("echo ") :] + "\n"
-            terminal["transcript"] += stdout
-            return stdout, "", 0
-        if command == "exit-seven":
-            terminal["transcript"] += "failed\n"
-            return "", "failed\n", 7
-        return f"ran {command}\n", "", 0
 
     def put(self, machine, local_path, remote_path):
         self.puts.append((machine.machine_id, local_path, remote_path))
@@ -814,9 +691,7 @@ def test_session_background_command_stop_blocks_destroy_until_stopped(remote_sta
     assert session_manager.destroy(session_id)["status"] == "destroyed"
 
 
-def test_session_background_command_marks_stale_when_tmux_session_is_missing(
-    remote_state_dir, tmp_path
-):
+def test_session_background_command_survives_missing_terminal(remote_state_dir, tmp_path):
     machine_manager = RemoteMachineManager()
     _add_key_machine(machine_manager, tmp_path)
     backend = FakeBackend()
@@ -826,15 +701,15 @@ def test_session_background_command_marks_stale_when_tmux_session_is_missing(
 
     backend.terminals[session_id]["status"] = "destroyed"
 
-    stale = session_manager.command_show(session_id, command_id)
+    running = session_manager.command_show(session_id, command_id)
 
-    assert stale["status"] == "failed"
-    assert stale["exit_code"] is None
-    assert "tmux session is no longer running" in stale["error"]
-    assert load_session_state(session_id)["status"] == "lost"
-    record = load_session_state(session_id)["commands"][0]
-    assert record["status"] == "failed"
-    assert "tmux session is no longer running" in Path(record["log_file_local"]).read_text()
+    assert running["status"] == "running"
+    assert running["command_backend"] == "direct_ssh_background"
+    assert load_session_state(session_id)["commands"][0]["status"] == "running"
+
+    backend.finish_background(command_id)
+    assert session_manager.command_wait(session_id, command_id)["status"] == "exited"
+    assert session_manager.show(session_id)["status"] == "lost"
     assert session_manager.destroy(session_id)["status"] == "destroyed"
 
 
@@ -948,13 +823,15 @@ def test_session_preserves_shell_state_and_incremental_transcript(
     assert Path(created["transcript_file_local"]).exists()
 
     reloaded = RemoteSessionManager(machine_manager=RemoteMachineManager(), backend=backend)
-    reloaded.exec(session_id, "cd /home/ely/project/subdir")
-    reloaded.exec(session_id, "export RR_TOKEN=terminal-ok")
-    pwd = reloaded.exec(session_id, "pwd")
-    token = reloaded.exec(session_id, 'printf "$RR_TOKEN\\n"')
+    reloaded.send(session_id, "cd /home/ely/project/subdir")
+    reloaded.send(session_id, "export RR_TOKEN=terminal-ok")
+    reloaded.send(session_id, "pwd")
+    reloaded.send(session_id, 'printf "$RR_TOKEN\\n"')
 
-    assert pwd["stdout"] == "/home/ely/project/subdir\n"
-    assert token["stdout"] == "terminal-ok\n"
+    batch = reloaded.exec(session_id, "pwd")
+    assert batch["stdout"] == "ran pwd\n"
+    assert batch["command_backend"] == "direct_ssh"
+    assert backend.terminals[session_id]["cwd"] == "/home/ely/project/subdir"
 
     transcript = reloaded.read(session_id)
     cursor = transcript["cursor"]
@@ -981,27 +858,11 @@ def test_session_preserves_shell_state_and_incremental_transcript(
         reloaded.send(session_id, "pwd")
 
 
-def test_session_command_wrapper_returns_without_exiting_persistent_shell():
+def test_ssh_tmux_backend_has_no_live_terminal_command_wrapper():
     backend = ParamikoRemoteBackend()
-    script = backend._session_command_wrapper_script(
-        paths={
-            "remote_state_dir": "/home/ely/project/.remote-runner/commands/cmd_test",
-            "remote_stdout_file": "/home/ely/project/.remote-runner/commands/cmd_test/stdout.log",
-            "remote_stderr_file": "/home/ely/project/.remote-runner/commands/cmd_test/stderr.log",
-            "remote_status_file": "/home/ely/project/.remote-runner/commands/cmd_test/status",
-            "remote_exit_code_file": "/home/ely/project/.remote-runner/commands/cmd_test/exit_code",
-            "remote_started_at_file": "/home/ely/project/.remote-runner/commands/cmd_test/started_at",
-            "remote_ended_at_file": "/home/ely/project/.remote-runner/commands/cmd_test/ended_at",
-        },
-        command="pytest -q",
-        command_id="cmd_test",
-        cwd="/home/ely/project",
-        cwd_override=True,
-    )
 
-    assert "Must be sourced in bash" in script
-    assert 'return "$__rr_rc"' in script
-    assert 'exit "$__rr_rc"' not in script
+    assert not hasattr(backend, "_session_command_wrapper_script")
+    assert not hasattr(backend, "_run_openssh_pty_transfer_command")
 
 
 class FakeLocalTmux:
@@ -1045,25 +906,6 @@ class FakeLocalTmux:
                 if transcript_file:
                     with open(transcript_file, "a", encoding="utf-8") as handle:
                         handle.write(text + "\n")
-                if "__REMOTE_RUNNER_CMD_BEGIN_" in text:
-                    begin = re.search(
-                        r"__REMOTE_RUNNER_CMD_BEGIN_[A-Za-z0-9_]+__",
-                        text,
-                    ).group(0)
-                    end = re.search(
-                        r"__REMOTE_RUNNER_CMD_END_[A-Za-z0-9_]+__",
-                        text,
-                    ).group(0)
-                    if "__rr_command=pwd" in text:
-                        output = "/tmp/temp\n"
-                        exit_code = 0
-                    elif "__rr_command=exit-seven" in text:
-                        output = "failed\n"
-                        exit_code = 7
-                    else:
-                        output = "ok\n"
-                        exit_code = 0
-                    self.sessions[target]["transcript"] += f"{begin}\n{output}{end}:{exit_code}\n"
             return subprocess.CompletedProcess(args, 0, "", "")
         if action == "capture-pane":
             target = args[args.index("-t") + 1]
@@ -1090,7 +932,6 @@ def test_openssh_pty_backend_uses_local_tmux_for_interactive_session(
     session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
 
     created = session_manager.create("manual-a100", name="a100-pty")
-    session_id = created["session_id"]
     tmux_session = created["remote_backend_name"]
 
     assert created["backend"] == "openssh-pty"
@@ -1156,11 +997,7 @@ def test_openssh_pty_rejects_background_commands(remote_state_dir):
     assert session_manager.command_list("a100-pty")["summary"]["command_count"] == 0
 
 
-def test_openssh_pty_file_get_uses_session_transport_and_verifies_content(
-    remote_state_dir,
-    tmp_path,
-    monkeypatch,
-):
+def test_openssh_pty_file_get_rejects_without_touching_terminal(remote_state_dir, tmp_path):
     machine_manager = RemoteMachineManager()
     _add_openssh_pty_machine(machine_manager)
     backend = ParamikoRemoteBackend()
@@ -1175,111 +1012,17 @@ def test_openssh_pty_file_get_uses_session_transport_and_verifies_content(
         session_manager=session_manager,
         backend=backend,
     )
-    content = b"first-block\x00" + b"second-block"
-    remote_sha256 = hashlib.sha256(content).hexdigest()
-    chunks = [content[:12], content[12:]]
-    responses = [
-        f"{len(content)}\t{remote_sha256}\n",
-        *(base64.b64encode(chunk).decode("ascii") + "\n" for chunk in chunks),
-    ]
-    calls = []
-
-    def fake_transfer_command(session_record, command, timeout=300):
-        calls.append((session_record, command, timeout))
-        return responses.pop(0)
-
-    monkeypatch.setattr(backend, "_run_openssh_pty_transfer_command", fake_transfer_command)
-    monkeypatch.setattr(backend, "OPENSSH_PTY_TRANSFER_CHUNK_SIZE", 12)
     local_path = tmp_path / "artifact.bin"
+    terminal_before = fake_tmux.sessions[session["remote_backend_name"]]["transcript"]
 
-    transfer = file_manager.get(
-        "artifact-pull",
-        "/remote/artifact.bin",
-        str(local_path),
-    )
-
-    assert local_path.read_bytes() == content
-    assert transfer["size_bytes"] == len(content)
-    assert transfer["sha256"] == remote_sha256
-    assert calls[0][0]["session_id"] == session["session_id"]
-    assert len(calls) == 3
-    assert not responses
-
-
-def test_openssh_pty_file_get_keeps_existing_target_on_hash_mismatch(
-    remote_state_dir,
-    tmp_path,
-    monkeypatch,
-):
-    machine_manager = RemoteMachineManager()
-    _add_openssh_pty_machine(machine_manager)
-    backend = ParamikoRemoteBackend()
-    fake_tmux = FakeLocalTmux()
-    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
-    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
-    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
-    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
-    session_manager.create("manual-a100", name="artifact-pull")
-    file_manager = RemoteFileManager(
-        machine_manager=machine_manager,
-        session_manager=session_manager,
-        backend=backend,
-    )
-    content = b"corrupt-on-arrival"
-    responses = [
-        f"{len(content)}\t{'0' * 64}\n",
-        base64.b64encode(content).decode("ascii") + "\n",
-    ]
-
-    monkeypatch.setattr(
-        backend,
-        "_run_openssh_pty_transfer_command",
-        lambda *args, **kwargs: responses.pop(0),
-    )
-    local_path = tmp_path / "artifact.bin"
-    local_path.write_bytes(b"keep-me")
-
-    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+    with pytest.raises(RuntimeError, match="independent file transport"):
         file_manager.get("artifact-pull", "/remote/artifact.bin", str(local_path))
 
-    assert local_path.read_bytes() == b"keep-me"
+    assert not local_path.exists()
+    assert fake_tmux.sessions[session["remote_backend_name"]]["transcript"] == terminal_before
     records = load_transfer_records(session_manager.show("artifact-pull")["session_id"])
     assert records[-1]["status"] == "failed"
-    assert "SHA-256 mismatch" in records[-1]["error"]
-
-
-def test_openssh_pty_file_get_rejects_non_regular_remote_path(
-    remote_state_dir,
-    tmp_path,
-    monkeypatch,
-):
-    machine_manager = RemoteMachineManager()
-    _add_openssh_pty_machine(machine_manager)
-    backend = ParamikoRemoteBackend()
-    fake_tmux = FakeLocalTmux()
-    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
-    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
-    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
-    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
-    session_manager.create("manual-a100", name="artifact-pull")
-    file_manager = RemoteFileManager(
-        machine_manager=machine_manager,
-        session_manager=session_manager,
-        backend=backend,
-    )
-    monkeypatch.setattr(
-        backend,
-        "_run_openssh_pty_transfer_command",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("remote path is not a regular file")
-        ),
-    )
-    local_path = tmp_path / "artifact.bin"
-
-    with pytest.raises(RuntimeError, match="not a regular file"):
-        file_manager.get("artifact-pull", "/remote/directory", str(local_path))
-
-    assert not local_path.exists()
+    assert "independent file transport" in records[-1]["error"]
 
 
 def test_session_read_appends_rotated_remote_transcript(

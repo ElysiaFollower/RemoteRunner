@@ -43,29 +43,12 @@ class RemoteFileManager:
             direction="get",
             source=remote_path,
             destination=local_path,
-            action=lambda machine, session: self._get(
+            action=lambda machine, session: self.backend.get(
                 machine,
-                session,
                 remote_path,
                 local_path,
             ),
         )
-
-    def _get(
-        self,
-        machine: Any,
-        session: Dict[str, Any],
-        remote_path: str,
-        local_path: str,
-    ) -> Dict[str, Any]:
-        if machine.backend == "openssh-pty":
-            return self.backend.get(
-                machine,
-                remote_path,
-                local_path,
-                session_record=session,
-            )
-        return self.backend.get(machine, remote_path, local_path)
 
     def list(self, session_id: str, remote_path: str) -> Dict[str, Any]:
         session_id = self.session_manager.resolve_session_id(session_id)

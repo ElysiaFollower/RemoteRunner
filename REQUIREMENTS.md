@@ -58,7 +58,7 @@ Windows backend 要求远端可通过 OpenSSH/SFTP 访问、可启动 `python` �
 
 Windows OpenSSH + WSL 不是 direct Windows 主路径。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
 
-`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，先接入 append-only transcript recorder，再在 pane 中可见地启动 `ssh -tt <alias>`。`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session send/read/interrupt/destroy` 操作同一个交互 shell。该 backend 支持从已登录且空闲的 session 分块下载普通文件，校验 size/SHA-256 后原子落盘；不支持 `session exec`、`file put`、目录下载、`file list`、`run once`、后台命令或无人值守认证。
+`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，先接入 append-only transcript recorder，再在 pane 中可见地启动 `ssh -tt <alias>`。`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session send/read/interrupt/destroy` 操作同一个交互 shell。该 backend 没有独立文件通道，因此明确拒绝 `session exec`、`file put/get/list`、`run once`、后台命令和无人值守认证；不得借 live terminal 传输隐藏文件协议。
 
 详细平台边界见 `docs/platform-support.md`。
 
@@ -185,11 +185,11 @@ remote-runner session exec \
 
 命令失败时仍应返回结构化信息。非零退出码是任务失败，不应自动销毁会话。
 
-session 的基础契约是持久终端流，而不是 RPC：`session send` 把调用者提供的文本原样写入终端并按需发送 Enter；终端中的输入和输出都进入 append-only transcript；`session read --since <cursor>` 读取增量；`session interrupt` 向当前前台进程发送 `Ctrl-C`。同一个 session 必须保留 `cwd`、环境变量、alias、shell function 等 shell-local state。backend 不得为了识别命令边界而向终端注入隐藏的 `eval`、marker、退出码 wrapper 或批处理脚本。
+session 的基础契约是持久终端流，而不是 RPC：`session send` 把调用者提供的文本原样写入终端并按需发送 Enter；终端中的输入和输出都进入 append-only transcript；`session read --since <cursor>` 读取增量；支持真实 terminal control 的 tmux-backed backend 用 `session interrupt` 向当前前台进程发送 `Ctrl-C`。同一个 session 必须保留 `cwd`、环境变量、alias、shell function 等 shell-local state。backend 不得为了识别命令边界而向终端注入隐藏的 `eval`、marker、退出码 wrapper 或批处理脚本。`windows-agent` 的 piped PowerShell transport 当前无法可靠发送 console interrupt，必须明确拒绝而不是伪装成功。
 
-`session exec` 是现有 `ssh-tmux` 和 `windows-agent` backend 的结构化命令兼容接口，不是 session 的基础语义。`openssh-pty` 明确拒绝 `session exec`，因为在人工可见 PTY 内注入 wrapper 会把终端错误地变成 in-band RPC 通道。需要结构化 stdout/stderr/退出码、上传—执行—下载或进程级 `exit` 语义时，应使用 `run once`；长期方向是独立 job/batch 层，而不是继续扩张 live terminal 的 wrapper 协议。
+`session exec` 是现有 `ssh-tmux` 和 `windows-agent` backend 的结构化兼容接口，不是 session 的基础语义。`ssh-tmux` 通过独立 direct-SSH batch transport 执行，不进入 live pane，也不读取或改变 terminal 的 cwd、环境变量、alias、function 等 shell-local state；`windows-agent` 使用其显式 request/result 通道。`openssh-pty` 在 pane 输入前拒绝。需要上传—执行—下载闭环时应使用 `run once`，它在 `ssh-tmux` 上同样直接走 batch transport，不委托给 terminal exec。
 
-`exit`、`logout` 等关闭 shell 的输入属于 session 生命周期操作；需要关闭会话时使用 `session destroy`。session busy 时不得继续 `send`，调用者应先 `read`、等待现有兼容命令完成，或用 `interrupt` 恢复终端。
+`exit`、`logout` 等关闭 shell 的输入属于 session 生命周期操作；需要关闭会话时使用 `session destroy`。独立 batch 工作不得阻塞 tmux-backed terminal 的 `send`；仅当某 backend 的结构化协议与 terminal 共享同一状态机时，才可用 busy 拒绝交错输入。
 
 ### 3.4 文件传输
 

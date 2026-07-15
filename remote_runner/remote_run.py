@@ -1,6 +1,6 @@
 """Closed-loop run orchestration for Remote Runner."""
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from remote_runner.remote_file import RemoteFileManager, get_remote_file_manager
 from remote_runner.remote_session import (
@@ -77,11 +77,34 @@ class RemoteRunManager:
                 run["status"] = "failed"
                 run["error"] = "one or more input transfers failed"
             else:
-                command_result = self.session_manager.exec(
-                    session_id=session_id,
-                    command=command,
-                    timeout=timeout,
-                )
+                if machine.backend == "ssh-tmux":
+                    batch = self.session_manager.backend.run(
+                        machine=machine,
+                        cwd=run["cwd"],
+                        command=command,
+                        timeout=timeout,
+                    )
+                    command_result = {
+                        "machine_id": machine_id,
+                        "cwd": run["cwd"],
+                        "command": command,
+                        "command_backend": "direct_ssh",
+                        "status": "completed",
+                        "exit_code": batch.exit_code,
+                        "stdout": batch.stdout,
+                        "stderr": batch.stderr,
+                        "started_at": batch.started_at,
+                        "ended_at": batch.ended_at,
+                        "duration_ms": batch.duration_ms,
+                    }
+                else:
+                    # The Windows agent owns a structured PowerShell request/result
+                    # channel. It is separate from tmux and remains its batch path.
+                    command_result = self.session_manager.exec(
+                        session_id=session_id,
+                        command=command,
+                        timeout=timeout,
+                    )
                 run["command_result"] = command_result
                 run["status"] = "succeeded" if command_result["exit_code"] == 0 else "failed"
 

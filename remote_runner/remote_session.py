@@ -15,6 +15,7 @@ from remote_runner.remote_state import (
     save_session_state,
 )
 from remote_runner.utils import (
+    append_file,
     ensure_dir,
     generate_id,
     get_timestamp,
@@ -222,42 +223,62 @@ class RemoteSessionManager:
         ensure_dir(reservation["log_dir_local"])
 
         started_at = get_timestamp()
+        result: Dict[str, Any]
         try:
-            backend_record = self.backend.start_session_command(
-                machine=machine,
-                session_record=load_session_state(session_id),
-                command=command,
-                command_id=command_id,
-                cwd=remote_cwd,
-                cwd_override=reservation["cwd_override"],
-            )
-            running_record = {
-                "index": command_index,
-                "command_id": command_id,
-                "command": command,
-                "cwd": remote_cwd,
-                "cwd_applied": cwd_applied,
-                "mode": "wait",
-                "exit_code": None,
-                "stdout": "",
-                "stderr": "",
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-                "started_at": started_at,
-                "ended_at": None,
-                "duration_ms": None,
-                "log_file_local": log_file,
-                "status": "running",
-                **backend_record,
-            }
-            result = self.backend.wait_session_command(
-                machine=machine,
-                command_record=running_record,
-                timeout=timeout,
-            )
-            ended_at = result.get("ended_at") or get_timestamp()
-            started_at = result.get("started_at") or started_at
-            status = result.get("status", "exited")
+            if machine.backend == "ssh-tmux":
+                direct_result = self.backend.run(
+                    machine=machine,
+                    cwd=remote_cwd,
+                    command=command,
+                    timeout=timeout,
+                )
+                backend_record = {"command_backend": "direct_ssh"}
+                result = {
+                    "status": "exited",
+                    "exit_code": direct_result.exit_code,
+                    "stdout": direct_result.stdout,
+                    "stderr": direct_result.stderr,
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                    "started_at": direct_result.started_at,
+                    "ended_at": direct_result.ended_at,
+                }
+            else:
+                backend_record = self.backend.start_session_command(
+                    machine=machine,
+                    session_record=load_session_state(session_id),
+                    command=command,
+                    command_id=command_id,
+                    cwd=remote_cwd,
+                    cwd_override=reservation["cwd_override"],
+                )
+                running_record = {
+                    "index": command_index,
+                    "command_id": command_id,
+                    "command": command,
+                    "cwd": remote_cwd,
+                    "cwd_applied": cwd_applied,
+                    "mode": "wait",
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                    "started_at": started_at,
+                    "ended_at": None,
+                    "duration_ms": None,
+                    "log_file_local": log_file,
+                    "status": "running",
+                    **backend_record,
+                }
+                result = self.backend.wait_session_command(
+                    machine=machine,
+                    command_record=running_record,
+                    timeout=timeout,
+                )
+            ended_at = str(result.get("ended_at") or get_timestamp())
+            started_at = str(result.get("started_at") or started_at)
+            status = str(result.get("status", "exited"))
             record = {
                 "index": command_index,
                 "command_id": command_id,
@@ -349,14 +370,26 @@ class RemoteSessionManager:
         started_at = get_timestamp()
 
         try:
-            backend_record = self.backend.start_session_command(
-                machine=machine,
-                session_record=load_session_state(session_id),
-                command=command,
-                command_id=command_id,
-                cwd=remote_cwd,
-                cwd_override=reservation["cwd_override"],
-            )
+            if machine.backend == "ssh-tmux":
+                backend_record = {
+                    "command_backend": "direct_ssh_background",
+                    **self.backend.start_background(
+                        machine=machine,
+                        cwd=remote_cwd,
+                        command=command,
+                        command_id=command_id,
+                        timeout=timeout,
+                    ),
+                }
+            else:
+                backend_record = self.backend.start_session_command(
+                    machine=machine,
+                    session_record=load_session_state(session_id),
+                    command=command,
+                    command_id=command_id,
+                    cwd=remote_cwd,
+                    cwd_override=reservation["cwd_override"],
+                )
             record = {
                 "index": command_index,
                 "command_id": command_id,
@@ -436,6 +469,8 @@ class RemoteSessionManager:
         machine = self.machine_manager.get(self._session_machine_id(session_id))
         try:
             if record.get("command_backend") in {"tmux", "local_tmux"}:
+                # Read-only recovery for records created before Terminal V2. New tmux-backed
+                # commands are always direct_ssh(_background) and never enter this branch.
                 update = self.backend.inspect_session_command(
                     machine=machine,
                     command_record=record,
@@ -519,6 +554,8 @@ class RemoteSessionManager:
 
         machine = self.machine_manager.get(machine_id)
         if record.get("command_backend") in {"tmux", "local_tmux"}:
+            # Preserve explicit stop for already-persisted legacy records without creating
+            # any new in-pane command protocol.
             session = load_session_state(session_id)
             stop_result = self.backend.stop_session_command(machine, session, record)
         else:
@@ -538,11 +575,11 @@ class RemoteSessionManager:
         session = load_session_state(session_id)
         if session.get("status") != "active":
             raise RuntimeError(f"Session '{session_id}' is not active")
-        if session.get("busy"):
+        machine = self.machine_manager.get(session["machine_id"])
+        if session.get("busy") and machine.backend == "windows-agent":
             raise RuntimeError(
                 f"Session '{session_id}' is busy; use session read or session interrupt"
             )
-        machine = self.machine_manager.get(session["machine_id"])
         send_result = self.backend.send_terminal_input(
             machine=machine,
             terminal_record=session,
@@ -603,22 +640,44 @@ class RemoteSessionManager:
         session = load_session_state(session_id)
         transcript_file = session["transcript_file_local"]
         captured_transcript: Optional[str] = None
+        captured_delta: Optional[str] = None
+        capture_state: Dict[str, Any] = {}
+        capture_remote_cursor = int(session.get("remote_transcript_cursor_bytes") or 0)
         if session.get("status") == "active":
             machine = self.machine_manager.get(session["machine_id"])
             capture = self.backend.capture_terminal(machine=machine, terminal_record=session)
-            captured_transcript = capture.get("transcript", "")
+            if "transcript_delta" in capture:
+                captured_delta = capture.get("transcript_delta", "")
+                for key in (
+                    "remote_transcript_cursor_bytes",
+                    "remote_transcript_utf8_tail_b64",
+                ):
+                    if key in capture:
+                        capture_state[key] = capture[key]
+            else:
+                captured_transcript = capture.get("transcript", "")
             status = capture.get("status") or session.get("status", "active")
         else:
             status = session.get("status", "destroyed")
 
         with remote_state_lock():
             session = load_session_state(session_id)
+            if (
+                captured_delta is not None
+                and int(session.get("remote_transcript_cursor_bytes") or 0) != capture_remote_cursor
+            ):
+                # Another reader committed this cursor while the network read was in flight.
+                # Discard the stale delta; the next read starts from the committed byte offset.
+                captured_delta = None
+                capture_state = {}
             transcript_file_exists = os.path.exists(transcript_file)
             if transcript_file_exists:
                 existing_transcript = read_file(transcript_file)
             else:
                 existing_transcript = ""
-            if captured_transcript is None:
+            if captured_delta is not None:
+                transcript = existing_transcript + captured_delta
+            elif captured_transcript is None:
                 transcript = existing_transcript
             else:
                 transcript = self._merge_transcript_capture(
@@ -630,14 +689,19 @@ class RemoteSessionManager:
                 transcript != existing_transcript
                 or status != session.get("status")
                 or cursor != session.get("transcript_cursor", 0)
+                or any(session.get(key) != value for key, value in capture_state.items())
             )
             if transcript != existing_transcript:
-                write_file(transcript_file, transcript)
+                if captured_delta is not None:
+                    append_file(transcript_file, captured_delta)
+                else:
+                    write_file(transcript_file, transcript)
                 if not transcript_file_exists:
                     os.chmod(transcript_file, 0o600)
             if state_changed:
                 session["status"] = status
                 session["transcript_cursor"] = cursor
+                session.update(capture_state)
                 session["updated_at"] = get_timestamp()
                 save_session_state(session)
 

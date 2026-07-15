@@ -123,7 +123,9 @@ cursor 读取 append-only transcript、向前台进程发送 `Ctrl-C`。同一�
 Linux 持久 session 后端要求 Linux/SSH 机器上有 `tmux`。Windows 持久 session 后端见下方 direct Windows 章节。
 
 `session exec` 目前是 `ssh-tmux` 和 `windows-agent` 的结构化兼容接口，不是 session 的
-基础语义。需要多步脚本、产物回收和进程级退出语义时，用 `run once`。
+基础语义。`ssh-tmux` 的 exec 走独立 direct-SSH batch channel，不进入 terminal，也不继承
+terminal 中的 `cd/export/alias/function`。需要操作持久 shell state 时用 `session send/read`；
+需要多步脚本、产物回收和进程级退出语义时用 `run once`。
 
 ```bash
 remote-runner session create \
@@ -132,19 +134,19 @@ remote-runner session create \
   --name demo-shell \
   --json
 
-remote-runner session exec \
+remote-runner session send \
   --session demo-shell \
-  --cmd 'cd /home/ely/tmp' \
+  --input 'cd /home/ely/tmp' \
   --json
 
-remote-runner session exec \
+remote-runner session send \
   --session demo-shell \
-  --cmd 'export RR_DEMO=ok' \
+  --input 'export RR_DEMO=ok' \
   --json
 
-remote-runner session exec \
+remote-runner session send \
   --session demo-shell \
-  --cmd 'pwd && printf "$RR_DEMO\n"' \
+  --input 'pwd && printf "$RR_DEMO\n"' \
   --json
 
 remote-runner session read \
@@ -287,10 +289,10 @@ remote-runner session destroy --session interactive-shell --json
 `session read` 读取的也是这条 append-only 流。`openssh-pty` 会在向 pane 写入任何东西前
 拒绝 `session exec`，避免隐藏 `eval`、marker 或退出码 wrapper 污染 live shell。
 
-边界：`openssh-pty` 支持 `session create/attach/send/read/interrupt/destroy`，以及从已登录且空闲的
-session 下载普通文件的 `file get`。下载会分块传输，校验远端 size/SHA-256 后原子落盘。
-它仍不支持 `file put`、目录下载、`file list`、`run once`、任何 `session exec`
-或无人值守认证；密码不写入 Remote Runner 配置。
+边界：`openssh-pty` 只支持 `session create/attach/send/read/interrupt/destroy`。它没有独立
+SFTP/file transport，因此 `file put/get/list` 全部明确拒绝，不会借 live PTY 注入 base64、
+marker 或传输脚本。它也不支持 `run once`、任何 `session exec` 或无人值守认证；密码不写入
+Remote Runner 配置。
 
 ## 10. 真实机器验收
 

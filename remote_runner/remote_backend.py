@@ -12,7 +12,6 @@ import shutil
 import shlex
 import stat
 import subprocess
-import tempfile
 import time
 from typing import Any, Dict, List, Optional
 import uuid
@@ -179,8 +178,6 @@ def _remap_entries_paths(
 
 class ParamikoRemoteBackend:
     """Remote backend implemented with SSH and SFTP."""
-
-    OPENSSH_PTY_TRANSFER_CHUNK_SIZE = 1024 * 1024
 
     def _uses_windows_agent(self, machine: RemoteMachine) -> bool:
         return machine.backend == "windows-agent"
@@ -678,9 +675,7 @@ class ParamikoRemoteBackend:
         tmux_session = self._tmux_session_name(terminal_id)
         client = self._connect(machine)
         try:
-            _, home_stdout, home_stderr = client.exec_command(
-                "bash -lc 'printf %s \"$HOME\"'"
-            )
+            _, home_stdout, home_stderr = client.exec_command("bash -lc 'printf %s \"$HOME\"'")
             remote_home = home_stdout.read().decode("utf-8", errors="replace").strip()
             home_error = home_stderr.read().decode("utf-8", errors="replace").strip()
             if home_stdout.channel.recv_exit_status() != 0 or not remote_home:
@@ -730,6 +725,8 @@ class ParamikoRemoteBackend:
                 "remote_terminal_name": stdout or tmux_session,
                 "transcript_mode": "append-only",
                 "remote_transcript_file": remote_transcript_file,
+                "remote_transcript_cursor_bytes": 0,
+                "remote_transcript_utf8_tail_b64": "",
                 "history_limit": history_limit,
                 "width": width,
                 "height": height,
@@ -841,41 +838,10 @@ class ParamikoRemoteBackend:
                 "session exec is intentionally unavailable for openssh-pty terminals; "
                 "use session send, session read, and session interrupt"
             )
-
-        if machine.startup_commands:
-            raise RuntimeError(
-                "persistent session commands do not yet support startup_commands machines"
-            )
-
-        paths = self._session_command_paths(session_record["cwd"], command_id)
-        sftp_paths = {key: machine.map_file_path(value) for key, value in paths.items()}
-        wrapper_script = self._session_command_wrapper_script(
-            paths=paths,
-            command=command,
-            command_id=command_id,
-            cwd=cwd,
-            cwd_override=cwd_override,
+        raise RuntimeError(
+            "ssh-tmux structured commands use direct batch transport; "
+            "start_session_command must not write to the live terminal"
         )
-
-        client = self._connect(machine)
-        sftp = client.open_sftp()
-        try:
-            self._mkdir_p(sftp, sftp_paths["remote_state_dir"])
-            self._write_remote_script(sftp, sftp_paths["remote_wrapper_file"], wrapper_script)
-        finally:
-            sftp.close()
-            client.close()
-
-        self.send_terminal_input(
-            machine=machine,
-            terminal_record=session_record,
-            input_text=f"source {shlex.quote(paths['remote_wrapper_file'])}",
-            enter=True,
-        )
-        return {
-            "command_backend": "tmux",
-            **paths,
-        }
 
     def wait_session_command(
         self,
@@ -894,40 +860,13 @@ class ParamikoRemoteBackend:
                     stdout_limit=stdout_limit,
                     stderr_limit=stderr_limit,
                 )
-            if result["status"] != "running":
-                return result
-            if time.time() >= deadline:
-                raise TimeoutError("Windows agent command did not finish before timeout")
-            time.sleep(min(0.2, max(0, deadline - time.time())))
-
-        if self._uses_openssh_pty(machine):
-            deadline = time.time() + max(0, timeout)
-            while True:
-                result = self.inspect_session_command(
-                    machine=machine,
-                    command_record=command_record,
-                    stdout_limit=stdout_limit,
-                    stderr_limit=stderr_limit,
-                )
                 if result["status"] != "running":
                     return result
                 if time.time() >= deadline:
-                    raise TimeoutError("openssh-pty command did not finish before timeout")
+                    raise TimeoutError("Windows agent command did not finish before timeout")
                 time.sleep(min(0.2, max(0, deadline - time.time())))
 
-        deadline = time.time() + max(0, timeout)
-        while True:
-            result = self.inspect_session_command(
-                machine=machine,
-                command_record=command_record,
-                stdout_limit=stdout_limit,
-                stderr_limit=stderr_limit,
-            )
-            if result["status"] != "running":
-                return result
-            if time.time() >= deadline:
-                raise TimeoutError("persistent session command did not finish before timeout")
-            time.sleep(min(0.2, max(0, deadline - time.time())))
+        raise RuntimeError("wait_session_command is only valid for windows-agent commands")
 
     def inspect_session_command(
         self,
@@ -1210,15 +1149,14 @@ class ParamikoRemoteBackend:
                 status = "active" if stdout_file.channel.recv_exit_status() == 0 else "lost"
                 sftp = client.open_sftp()
                 try:
-                    transcript = self._read_remote_text(
-                        sftp,
-                        machine,
-                        remote_transcript_file,
-                        missing_ok=True,
+                    delta = self._read_remote_transcript_delta(
+                        sftp=sftp,
+                        machine=machine,
+                        terminal_record=terminal_record,
                     )
                 finally:
                     sftp.close()
-                return {"status": status, "transcript": transcript}
+                return {"status": status, **delta}
             finally:
                 client.close()
         history_limit = int(terminal_record.get("history_limit") or 10000)
@@ -1381,180 +1319,17 @@ class ParamikoRemoteBackend:
             sftp.close()
             client.close()
 
-    def _run_openssh_pty_transfer_command(
-        self,
-        session_record: Dict[str, Any],
-        command: str,
-        timeout: int = 300,
-    ) -> str:
-        """Run a bounded transfer command through the logged-in PTY without polluting history."""
-        target = self._local_tmux_target(session_record)
-        token = uuid.uuid4().hex
-        begin_marker = f"__REMOTE_RUNNER_TRANSFER_BEGIN_{token}__"
-        end_marker = f"__REMOTE_RUNNER_TRANSFER_END_{token}__"
-        capture_fd, capture_path = tempfile.mkstemp(prefix="remote-runner-pty-transfer-")
-        os.close(capture_fd)
-        pipe_command = f"cat > {shlex.quote(capture_path)}"
-        wrapper = "; ".join(
-            [
-                f"printf '\\033[?1049h\\033[?25l\\n{begin_marker}\\n'",
-                f"__rr_transfer_command={shlex.quote(command)}",
-                'eval "$__rr_transfer_command"',
-                "__rr_transfer_rc=$?",
-                (f"printf '\\n{end_marker}:%s\\n\\033[?25h\\033[?1049l' " '"$__rr_transfer_rc"'),
-            ]
-        )
-        deadline = time.time() + max(0, timeout)
-        end_pattern = re.compile(rf"{re.escape(end_marker)}:(\d+)")
-
-        try:
-            self._run_local_tmux(["pipe-pane", "-t", target, pipe_command])
-            self._send_local_tmux_input(session_record, wrapper, enter=True)
-            while True:
-                with open(capture_path, "rb") as capture_file:
-                    output = capture_file.read().decode("utf-8", errors="replace")
-                begin_index = output.rfind(begin_marker)
-                end_matches = [
-                    match for match in end_pattern.finditer(output) if match.start() > begin_index
-                ]
-                if begin_index >= 0 and end_matches:
-                    end_match = end_matches[-1]
-                    payload_start = begin_index + len(begin_marker)
-                    payload = _normalize_terminal_output(output[payload_start : end_match.start()])
-                    payload = payload.strip("\n")
-                    exit_code = int(end_match.group(1))
-                    if exit_code != 0:
-                        detail = payload.strip() or "remote transfer command failed"
-                        raise RuntimeError(detail)
-                    return payload
-                if time.time() >= deadline:
-                    raise TimeoutError("openssh-pty file transfer did not finish before timeout")
-                time.sleep(min(0.05, max(0, deadline - time.time())))
-        finally:
-            self._run_local_tmux(["pipe-pane", "-t", target], check=False)
-            if session_record.get("transcript_mode") == "append-only":
-                self._configure_local_tmux_transcript(session_record)
-            try:
-                os.unlink(capture_path)
-            except FileNotFoundError:
-                pass
-
-    def _get_openssh_pty_file(
-        self,
-        session_record: Dict[str, Any],
-        remote_path: str,
-        local_path: str,
-    ) -> Dict[str, Any]:
-        if session_record.get("status") != "active":
-            raise RuntimeError("openssh-pty file get requires an active session")
-        if session_record.get("busy"):
-            raise RuntimeError("openssh-pty file get requires an idle session")
-
-        quoted_remote_path = shlex.quote(remote_path)
-        metadata_command = " ".join(
-            [
-                f"if [ ! -e {quoted_remote_path} ]; then",
-                "printf 'remote path does not exist\\n'; false;",
-                f"elif [ ! -f {quoted_remote_path} ]; then",
-                "printf 'remote path is not a regular file\\n'; false;",
-                "elif ! command -v sha256sum >/dev/null 2>&1; then",
-                "printf 'sha256sum is required on the remote machine\\n'; false;",
-                "else",
-                f"__rr_transfer_size=$(wc -c < {quoted_remote_path});",
-                f"__rr_transfer_sha=$(sha256sum {quoted_remote_path});",
-                "__rr_transfer_sha=${__rr_transfer_sha%% *};",
-                'printf \'%s\\t%s\\n\' "$__rr_transfer_size" "$__rr_transfer_sha";',
-                "fi",
-            ]
-        )
-        metadata = self._run_openssh_pty_transfer_command(
-            session_record,
-            metadata_command,
-        )
-        metadata_match = re.fullmatch(
-            r"\s*(\d+)\t([0-9a-fA-F]{64})\s*",
-            metadata,
-        )
-        if not metadata_match:
-            raise RuntimeError("openssh-pty file metadata response is invalid")
-        remote_size = int(metadata_match.group(1))
-        remote_sha256 = metadata_match.group(2).lower()
-
-        local_path = os.path.abspath(os.path.expanduser(local_path))
-        local_parent = os.path.dirname(local_path) or os.curdir
-        os.makedirs(local_parent, exist_ok=True)
-        temp_fd, temp_path = tempfile.mkstemp(
-            prefix=f".{os.path.basename(local_path)}.",
-            suffix=".partial",
-            dir=local_parent,
-        )
-        digest = hashlib.sha256()
-        written = 0
-        chunk_size = int(self.OPENSSH_PTY_TRANSFER_CHUNK_SIZE)
-
-        try:
-            with os.fdopen(temp_fd, "wb") as output_file:
-                chunk_count = (remote_size + chunk_size - 1) // chunk_size
-                for chunk_index in range(chunk_count):
-                    chunk_command = " ".join(
-                        [
-                            f"if [ -f {quoted_remote_path} ]; then",
-                            (
-                                f"dd if={quoted_remote_path} bs={chunk_size} "
-                                f"skip={chunk_index} count=1 2>/dev/null | base64;"
-                            ),
-                            "else printf 'remote file disappeared during transfer\\n'; false; fi",
-                        ]
-                    )
-                    encoded = self._run_openssh_pty_transfer_command(
-                        session_record,
-                        chunk_command,
-                    )
-                    try:
-                        chunk = base64.b64decode("".join(encoded.split()), validate=True)
-                    except Exception as exc:
-                        raise RuntimeError("openssh-pty file chunk is not valid base64") from exc
-                    expected_size = min(chunk_size, remote_size - written)
-                    if len(chunk) != expected_size:
-                        raise RuntimeError(
-                            "openssh-pty file chunk size mismatch: "
-                            f"expected {expected_size}, got {len(chunk)}"
-                        )
-                    output_file.write(chunk)
-                    digest.update(chunk)
-                    written += len(chunk)
-                output_file.flush()
-                os.fsync(output_file.fileno())
-
-            if written != remote_size:
-                raise RuntimeError(
-                    f"openssh-pty file size mismatch: expected {remote_size}, got {written}"
-                )
-            local_sha256 = digest.hexdigest()
-            if local_sha256 != remote_sha256:
-                raise RuntimeError(
-                    "openssh-pty file SHA-256 mismatch: "
-                    f"expected {remote_sha256}, got {local_sha256}"
-                )
-            os.replace(temp_path, local_path)
-            return {"size_bytes": written, "sha256": local_sha256}
-        finally:
-            try:
-                os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
-
     def get(
         self,
         machine: RemoteMachine,
         remote_path: str,
         local_path: str,
-        session_record: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if self._uses_openssh_pty(machine):
-            if session_record is None:
-                raise RuntimeError("openssh-pty file get requires a session record")
-            return self._get_openssh_pty_file(session_record, remote_path, local_path)
+            raise RuntimeError(
+                "openssh-pty file get requires an independent file transport; "
+                "Remote Runner will not tunnel file protocols through the live terminal"
+            )
         remote_path = machine.map_file_path(remote_path)
         client = self._connect(machine)
         sftp = client.open_sftp()
@@ -2002,6 +1777,7 @@ class ParamikoRemoteBackend:
         finally:
             sftp.close()
             client.close()
+        return {"destroy_result": "destroyed"}
 
     def _windows_agent_running(
         self,
@@ -2024,7 +1800,6 @@ class ParamikoRemoteBackend:
             return exit_code == 0
         finally:
             client.close()
-        return {"destroy_result": "destroyed"}
 
     def _windows_agent_dir(self, cwd: str, terminal_id: str) -> str:
         normalized_cwd = cwd.replace("\\", "/").rstrip("/")
@@ -2156,6 +1931,48 @@ class ParamikoRemoteBackend:
             return data
         return data.decode("utf-8", errors="replace")
 
+    def _read_remote_transcript_delta(
+        self,
+        sftp: paramiko.SFTPClient,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Read only newly appended terminal bytes while preserving UTF-8 boundaries."""
+        remote_path = terminal_record["remote_transcript_file"]
+        sftp_path = machine.map_file_path(remote_path)
+        cursor = int(terminal_record.get("remote_transcript_cursor_bytes") or 0)
+        encoded_tail = terminal_record.get("remote_transcript_utf8_tail_b64") or ""
+        try:
+            pending = base64.b64decode(encoded_tail, validate=True)
+        except Exception as exc:
+            raise RuntimeError("remote transcript UTF-8 tail state is invalid") from exc
+
+        try:
+            size = int(sftp.stat(sftp_path).st_size)
+        except IOError:
+            size = 0
+        if size < cursor:
+            raise RuntimeError(
+                "remote append-only transcript shrank; refusing to duplicate or reorder history"
+            )
+
+        raw = b""
+        if size > cursor:
+            with sftp.open(sftp_path, "rb") as remote_file:
+                remote_file.seek(cursor)
+                raw = remote_file.read()
+            if isinstance(raw, str):
+                raw = raw.encode("utf-8", errors="replace")
+
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        text = decoder.decode(pending + raw, final=False)
+        next_pending, _ = decoder.getstate()
+        return {
+            "transcript_delta": text,
+            "remote_transcript_cursor_bytes": cursor + len(raw),
+            "remote_transcript_utf8_tail_b64": base64.b64encode(next_pending).decode("ascii"),
+        }
+
     def _read_remote_text_limited(
         self,
         sftp: paramiko.SFTPClient,
@@ -2188,83 +2005,6 @@ class ParamikoRemoteBackend:
     def _tmux_session_name(self, terminal_id: str) -> str:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", terminal_id)
         return f"rr_{safe}"
-
-    def _session_command_paths(self, session_cwd: str, command_id: str) -> Dict[str, str]:
-        remote_state_dir = posixpath.join(session_cwd, ".remote-runner", "commands", command_id)
-        return {
-            "remote_state_dir": remote_state_dir,
-            "remote_stdout_file": posixpath.join(remote_state_dir, "stdout.log"),
-            "remote_stderr_file": posixpath.join(remote_state_dir, "stderr.log"),
-            "remote_status_file": posixpath.join(remote_state_dir, "status"),
-            "remote_exit_code_file": posixpath.join(remote_state_dir, "exit_code"),
-            "remote_started_at_file": posixpath.join(remote_state_dir, "started_at"),
-            "remote_ended_at_file": posixpath.join(remote_state_dir, "ended_at"),
-            "remote_wrapper_file": posixpath.join(remote_state_dir, "run.sh"),
-        }
-
-    def _session_command_wrapper_script(
-        self,
-        paths: Dict[str, str],
-        command: str,
-        command_id: str,
-        cwd: Optional[str],
-        cwd_override: bool,
-    ) -> str:
-        begin_marker = f"__REMOTE_RUNNER_CMD_BEGIN_{command_id}__"
-        end_marker = f"__REMOTE_RUNNER_CMD_END_{command_id}__"
-        lines = [
-            "# Remote Runner persistent session command wrapper. Must be sourced in bash.",
-            "set +e",
-            f"__rr_dir={shlex.quote(paths['remote_state_dir'])}",
-            f"__rr_stdout={shlex.quote(paths['remote_stdout_file'])}",
-            f"__rr_stderr={shlex.quote(paths['remote_stderr_file'])}",
-            f"__rr_status={shlex.quote(paths['remote_status_file'])}",
-            f"__rr_exit_code={shlex.quote(paths['remote_exit_code_file'])}",
-            f"__rr_started_at={shlex.quote(paths['remote_started_at_file'])}",
-            f"__rr_ended_at={shlex.quote(paths['remote_ended_at_file'])}",
-            f"__rr_command={shlex.quote(command)}",
-            f"__rr_cwd={shlex.quote(cwd or '')}",
-            f"__rr_cwd_override={'1' if cwd_override else '0'}",
-            'mkdir -p "$__rr_dir"',
-            ': > "$__rr_stdout"',
-            ': > "$__rr_stderr"',
-            "printf '%s\\n' running > \"$__rr_status\"",
-            "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_started_at\"",
-            f"printf '\\n{begin_marker}\\n'",
-            "__rr_stopped=0",
-            "trap '__rr_stopped=1' INT TERM",
-            'if [ "$__rr_cwd_override" = 1 ]; then',
-            '  cd "$__rr_cwd"',
-            "  __rr_cd_rc=$?",
-            '  if [ "$__rr_cd_rc" -ne 0 ]; then',
-            '    printf \'cd failed: %s\\n\' "$__rr_cwd" | tee -a "$__rr_stderr" >&2',
-            "    __rr_rc=$__rr_cd_rc",
-            '    printf \'%s\\n\' "$__rr_rc" > "$__rr_exit_code"',
-            "    date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_ended_at\"",
-            "    printf '%s\\n' failed > \"$__rr_status\"",
-            f"    printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
-            "    trap - INT TERM",
-            '    return "$__rr_rc"',
-            "  fi",
-            "fi",
-            '{ eval "$__rr_command"; } > >(tee -a "$__rr_stdout") 2> >(tee -a "$__rr_stderr" >&2)',
-            "__rr_rc=$?",
-            '__rr_existing_status=$(cat "$__rr_status" 2>/dev/null || true)',
-            'if [ "$__rr_existing_status" = stopped ] || [ "$__rr_stopped" = 1 ] || [ "$__rr_rc" -eq 130 ] || [ "$__rr_rc" -eq 143 ]; then',
-            "  __rr_status_value=stopped",
-            "  __rr_rc=143",
-            "else",
-            "  __rr_status_value=exited",
-            "fi",
-            f"printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
-            'printf \'%s\\n\' "$__rr_rc" > "$__rr_exit_code"',
-            "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_ended_at\"",
-            'printf \'%s\\n\' "$__rr_status_value" > "$__rr_status"',
-            "trap - INT TERM",
-            'return "$__rr_rc"',
-            "",
-        ]
-        return "\n".join(lines)
 
     def _get_dir(self, sftp: paramiko.SFTPClient, remote_dir: str, local_dir: str) -> int:
         os.makedirs(local_dir, exist_ok=True)

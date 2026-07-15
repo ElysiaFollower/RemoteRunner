@@ -568,7 +568,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_exec = session_sub.add_parser(
         "exec",
-        help="Run a command in the session shell",
+        help="Run a structured command associated with a session",
     )
     session_exec.add_argument("--session", required=True)
     session_exec.add_argument("--cmd", required=True)

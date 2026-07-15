@@ -172,19 +172,19 @@ Shows one session, including last command, last exit code, command count, log di
 
 ### `remote-runner session exec --session <session_id> --cmd <command> [--cwd <remote_cwd>] [--mode wait|background] --timeout <seconds> --json`
 
-Enters the command into the persistent session shell. It must not require a mount. The default cwd
-is the session shell's current directory; `--cwd` is an explicit shell-state change before command
-execution, not a separate isolated process context.
+Runs a structured command associated with the session. It must not require a mount. On `ssh-tmux`,
+the command uses independent direct SSH execution; the recorded/default cwd is a batch process cwd,
+not the live terminal's current directory.
 
 Default `--mode wait` runs a bounded command and returns after completion. `--mode background`
 starts a long-running command and returns after a durable `command_id` and remote state/log
 references exist. In background mode, `--timeout` is the launch timeout, not the remote command
 runtime limit.
 
-`session exec` is shell-native command entry, not an isolated batch runner. Multiple exec calls to
-the same session preserve shell-local state. Backend wrappers may capture markers, logs, and exit
-codes, but normal completion must return to the same shell; session teardown belongs to
-`session destroy`, while upload-run-download batch workflows belong to `run once`.
+`session exec` is a structured compatibility API, not the persistent terminal's input primitive.
+`ssh-tmux` exec/background commands must not write wrappers, markers, or protocol traffic into the
+live pane. Shell-local continuity belongs to `session send/read`; upload-run-download batch
+workflows belong to `run once`.
 
 Minimum response fields:
 
@@ -292,16 +292,15 @@ explicitly rejected by backends that do not implement interactive startup termin
 
 ### `remote-runner session exec --session <session_id> --cmd <cmd> --json`
 
-Runs the command in the same session shell. Multiple exec calls to the same session must preserve
-shell-local state such as `cd`, exported environment variables, aliases, and jobs. `session exec`
-must still return structured `command_id`, `exit_code`, stdout/stderr, timestamps, duration, and
-log references. Command boundary and exit code recovery are handled by Remote Runner wrappers and
-state files, not by parsing chat history or by converting the command into an isolated batch runner.
+Runs a structured command associated with the session and returns `command_id`, `exit_code`,
+stdout/stderr, timestamps, duration, and log references. On `ssh-tmux`, it is an isolated direct-SSH
+batch process and deliberately does not preserve terminal shell-local state. On `windows-agent`, the
+agent's explicit request/result protocol provides the documented persistent PowerShell behavior.
 
 ### `remote-runner session send --session <session_id> --input <text> [--no-enter] --json`
 
-Sends raw input into the selected session shell. This is for UI shell panels or unusual interactive
-flows. Normal agent automation should prefer `session exec`.
+Sends one literal line into the selected session shell. This is the normal operation whenever the
+caller expects human-terminal semantics or shell-local continuity.
 
 ### `remote-runner session read --session <session_id> [--since <cursor>] [--max-chars <n>] --json`
 
@@ -320,8 +319,8 @@ transfer backend.
 
 Downloads a remote file or directory to the local path.
 
-`openssh-pty` 当前只下载普通文件：传输复用已登录且空闲的 session PTY，按块编码，校验
-远端 size/SHA-256，并在全部验证通过后原子替换本地目标。目录下载仍明确拒绝。
+`openssh-pty` 没有独立文件 transport，因此明确拒绝 `file get`；不得复用 session PTY 注入
+分块编码、marker 或隐藏传输脚本。
 
 ### `remote-runner file list --session <session_id> --remote <path> --json`
 

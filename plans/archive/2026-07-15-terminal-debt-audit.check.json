@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "plan": "plans/archive/2026-07-15-terminal-debt-audit.md",
+  "feature_id": "F-028",
+  "anchors": [
+    {
+      "id": "no-hidden-tmux-protocol",
+      "severity": "fail",
+      "reason": "Live tmux terminal 不得继续承载 eval/marker/wrapper RPC。",
+      "check": "glob_not_contains",
+      "glob": "remote_runner/*.py",
+      "pattern": "_run_openssh_pty_transfer_command|_session_command_wrapper_script",
+      "suggest": "删除 live terminal protocol，并把 structured work 路由到 run/batch transport。"
+    },
+    {
+      "id": "debt-regression-suite",
+      "severity": "fail",
+      "reason": "必须有针对本轮四个风险的 deterministic regression。",
+      "check": "path_exists",
+      "path": "tests/test_terminal_debt_audit.py",
+      "suggest": "补齐 failure injection、batch separation、delta SFTP 和 UTF-8 测试。"
+    },
+    {
+      "id": "incremental-remote-transcript",
+      "severity": "warn",
+      "reason": "remote transcript 不得每次重读完整历史。",
+      "check": "glob_contains",
+      "glob": "remote_runner/*.py",
+      "pattern": "remote_transcript_cursor_bytes|transcript_delta",
+      "suggest": "实现并测试 byte cursor、delta append 和 UTF-8 tail。"
+    },
+    {
+      "id": "audit-evidence",
+      "severity": "warn",
+      "reason": "完成必须记录故障复现、stress 和读取量证据。",
+      "check": "evidence_contains",
+      "feature_id": "F-028",
+      "pattern": "failure|故障|stress|增量",
+      "suggest": "把 deterministic regression 与最终验证写入 F-028 evidence。"
+    }
+  ]
+}

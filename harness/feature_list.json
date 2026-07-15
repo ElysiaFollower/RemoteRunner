@@ -211,7 +211,7 @@
       "priority": "P0",
       "area": "terminal-session",
       "title": "Remote Runner 持久 Terminal Session",
-      "behavior": "用户或上层 UI 能创建真实远程 terminal/shell session，多次输入在同一 shell 上下文中连续执行，并可读取同一 transcript；现有 automation-safe session exec 行为继续可用。",
+      "behavior": "用户或上层 UI 能创建真实远程 terminal/shell session，通过 send 多次输入并在同一 shell 上下文中连续执行，通过 read 读取同一 append-only transcript；结构化 exec 作为独立 batch 兼容接口继续可用。",
       "status": "passing",
       "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=linux-01 REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
       "evidence": "2026-05-14: 已新增 terminal create/list/show/send/read/destroy、terminal state、tmux backend、transcript 本地保存和 cursor 增量读取；聚焦测试 31 passed；launch suite 2 passed, 1 skipped；默认真实集成入口 1 skipped；完整 pytest 54 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；Linux/SSH opt-in 真实集成测试 1 passed，验证同一 terminal 内 cd/export/pwd/printf 状态连续保留，测试目录限制在 /tmp。",
@@ -222,11 +222,11 @@
       "priority": "P0",
       "area": "session-terminal",
       "title": "Remote Runner Session 持久 Terminal 统一模型",
-      "behavior": "用户创建 session 后获得唯一远程工作上下文；session exec/send/read/destroy 都作用于同一个持久 shell，命令结果仍有 command_id、exit_code、日志和可恢复 transcript。",
+      "behavior": "用户创建 session 后获得唯一远程工作上下文；send/read/interrupt/destroy 作用于持久 shell，结构化 exec/background 关联同一 session 记录但不向 live terminal 注入协议流量。",
       "status": "passing",
       "verification": "./scripts/harness-check.sh && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && git diff --check && REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=linux-01 REMOTE_RUNNER_REAL_TEST_CWD=/tmp python3 -m pytest tests/test_remote_runner_real_integration.py -q",
       "evidence": "2026-05-14: 已将 F-019 顶层 terminal 能力并入 session；session create 创建 tmux-backed 持久 shell，session exec 在同一 shell 内通过 wrapper 记录 command_id/stdout/stderr/exit_code/timestamps/log，session send/read 提供原始输入和 transcript/cursor，session destroy 销毁远端 backend 并保留本地日志/transcript；删除公开 terminal CLI 和 remote_terminal 模块；PR #6 review 后补齐 transcript 增量合并，避免有限 tmux buffer 覆盖本地累计 transcript；聚焦测试 32 passed；launch suite 2 passed, 1 skipped；默认真实集成入口 1 skipped；完整 pytest 55 passed, 3 skipped；./scripts/harness-check.sh 0 warnings；git diff --check 通过；Linux/SSH opt-in 真实集成测试 1 passed，验证 session 内 cd/export 状态连续、后台命令 wait/stop、文件传输和 cleanup。",
-      "notes": "任务合同已归档至 plans/archive/2026-05-14-remote-runner-session-terminal-unification.md。F-019 作为实现 spike 保留历史记录；目标公开 API 是 session，不是顶层 terminal。第一后端为 Linux/SSH + tmux；startup_commands 机器暂不支持持久 session backend。"
+      "notes": "任务合同已归档至 plans/archive/2026-05-14-remote-runner-session-terminal-unification.md。F-019 作为实现 spike 保留历史记录；目标公开 API 是 session，不是顶层 terminal。2026-07-15 的 F-027/F-028 已取代原先 exec 与 live shell 共用 wrapper 的设计。"
     },
     {
       "id": "F-021",
@@ -284,17 +284,6 @@
       "notes": "任务合同归档至 plans/archive/2026-07-07-openssh-pty-backend.md。2026-07-15 的 F-027 已取代其中 session exec/marker/snapshot 设计：PTY session 现在只走 send/read/interrupt，transcript 改为 append-only。第一切片依赖本机 tmux；不做 SFTP、background command、run once、端口转发、ControlMaster 管理、远端 tmux 自动接管或无人值守认证；不记录真实 host/user/password。PTY backend 无独立 stderr 管道，stderr 合入同一 terminal stream。"
     },
     {
-      "id": "F-026",
-      "priority": "P0",
-      "area": "openssh-pty",
-      "title": "OpenSSH PTY session 文件回收",
-      "behavior": "已完成交互登录的 openssh-pty session 能通过 `file get` 分块下载普通文件，校验远端大小与 SHA-256，并在成功后原子落盘。",
-      "status": "passing",
-      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q -k openssh_pty_file_get && python3 -m pytest tests/test_remote_runner_mvp.py -q && ./scripts/harness-check.sh && git diff --check && 91_A100 real file-get smoke",
-      "evidence": "2026-07-10: 真实 91_A100 session 先复现 `session exec` 成功而 `file get` 明确拒绝 openssh-pty；随后实现 session-aware PTY 分块下载、远端 size/SHA-256 校验、本地临时文件与原子替换。真实 session `91_A100-recovery-20260710` 成功回收 26 个研究产物，包括 5.8MB stereo WAV；每个 transfer record 均记录 size/hash。验证：聚焦 3 passed；MVP 56 passed；完整 pytest 79 passed, 4 skipped；Black check、git diff --check、harness-check 和 init 通过。",
-      "notes": "任务合同归档至 plans/archive/2026-07-10-openssh-pty-file-get.md。本切片只做普通文件 get；put、目录、list、run once 继续明确拒绝。"
-    },
-    {
       "id": "F-027",
       "priority": "P0",
       "area": "terminal-session",
@@ -302,8 +291,19 @@
       "behavior": "tmux-backed session 的默认使用方式等价于人类终端：Agent 原样发送一行输入，读取单调追加输出，能够 Ctrl-C；人工 attach 看到同一输入输出。",
       "status": "passing",
       "verification": "REMOTE_RUNNER_STATE_DIR=/tmp/remote-runner-v2-test python3 -m pytest tests/test_terminal_session_v2.py -q && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
-      "evidence": "2026-07-15: 在独立 worktree `RemoteRunner-terminal-v2` / 分支 `codex/rr-terminal-session-v2` 完成。tmux-backed session create 建立 append-only `pipe-pane` transcript；openssh-pty 在 recorder 就绪后才在 pane 中可见地输入 `exec ssh -tt <alias>`。session send 只接受一行、回显 accepted input、busy 时拒绝；新增 session interrupt；openssh-pty session exec 在任何 pane 输入前拒绝，旧 marker/eval 路径已移除。Terminal V2 聚焦 14 passed：真实本地 tmux bash/zsh 场景 13 个，验证可见原样输入、cwd/env 连续、长输出 cursor 增量无重复、Ctrl-C 后同一 shell 恢复、multiline/busy/exec 拒绝和 CLI interrupt；remote recorder 命令构造单测 1 个。MVP 56 passed；launch 2 passed, 1 skipped；全仓 93 passed, 4 skipped；git diff --check 通过；harness-check 通过。未运行真实 SSH server smoke，按任务合同不阻塞核心终端语义。测试后无 `rr_local_sess_*` tmux 遗留；stable worktree、editable install、真实 state/session 均未修改。",
-      "notes": "任务合同：plans/archive/2026-07-15-terminal-session-v2.md。第一阶段把 openssh-pty 的隐藏 exec wrapper 退出主路径；其他 backend 的 structured exec 暂作兼容，后续迁移到独立 job 层。openssh-pty file get 仍是借用已登录 PTY 的 legacy transfer 兼容路径，不属于新的 terminal send 契约；后续应迁移到独立文件 transport。"
+      "evidence": "2026-07-15: 在独立 worktree `RemoteRunner-terminal-v2` / 分支 `codex/rr-terminal-session-v2` 完成。tmux-backed session create 建立 append-only `pipe-pane` transcript；openssh-pty 在 recorder 就绪后才在 pane 中可见地输入 `exec ssh -tt <alias>`。session send 只接受一行并回显 accepted input；新增 session interrupt；openssh-pty session exec 在任何 pane 输入前拒绝，旧 marker/eval 路径已移除。Terminal V2 初始聚焦 14 passed，MVP 56 passed，launch 2 passed/1 skipped，全仓 93 passed/4 skipped。F-028 随后进一步移除其他 tmux hidden protocol，并确认独立 batch 不阻塞 terminal send。",
+      "notes": "任务合同：plans/archive/2026-07-15-terminal-session-v2.md。F-028 已完成第二阶段边界收敛：tmux-backed terminal 只承载 send/read/interrupt；structured batch 使用独立 transport；openssh-pty 不再提供借 PTY 传输的 file get。"
+    },
+    {
+      "id": "F-028",
+      "priority": "P0",
+      "area": "terminal-session",
+      "title": "Terminal Session V2 债务清零审计",
+      "behavior": "tmux-backed live session 不承载隐藏 exec/file-transfer protocol；structured batch 经 run once 独立执行；remote transcript 按 byte cursor 增量读取且 UTF-8 完整。",
+      "status": "passing",
+      "verification": "/Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest tests/test_terminal_debt_audit.py -q && /Users/ely/.cache/remote-runner-terminal-v2-venv/bin/python -m pytest -q && ./scripts/harness-check.sh && git diff --check",
+      "evidence": "2026-07-15: failure regressions 先确定性复现 4 类问题：ssh-tmux exec/background 写 live pane、openssh-pty file get 劫持 recorder、remote transcript 全量重读。修复后删除 tmux wrapper/eval 与 PTY file protocol；ssh-tmux exec/background/run once 改走 direct SSH batch，pane input 均为 0；remote transcript 用 byte cursor 增量读取，12002-byte 首读后第二次只读 7 bytes、空读 0 bytes，跨块 UTF-8 正确，并发双读重复 20 轮无重复 append。真实本地 tmux bash/zsh 各执行 20 轮失败命令 stress，输入原文可见、cursor 单调、shell 最终存活、无 marker/eval。聚焦：debt 10 passed；terminal 16 passed；MVP 54 passed；launch 2 passed/1 skipped；全仓 103 passed/4 skipped。Black、flake8 非格式规则、git diff check、harness-check 均通过。额外修复审计发现的 Windows wait 轮询缩进和 destroy 缺失返回，并有回归。",
+      "notes": "任务合同：plans/archive/2026-07-15-terminal-debt-audit.md。保留的 tmux/local_tmux command inspect/stop 只用于读取或停止升级前已持久化的 legacy record；新记录只能是 direct_ssh/direct_ssh_background，不会创建 in-pane protocol。未热更新 stable runtime/global skill。"
     }
   ]
 }

@@ -97,9 +97,11 @@ remote-runner session exec \
   --json
 ```
 
-Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command.
-Commands in the same session share shell-local state: a prior `cd`, `export`, or alias can affect
-later `session exec` calls.
+Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command. On `ssh-tmux`,
+this is an independent direct-SSH batch command associated with the session: it does not enter the
+pane and does not share shell-local state. Use `session send/read` when cwd, exports, aliases, or
+functions from the live shell matter. `windows-agent` structured commands use its explicit agent
+request/result channel and retain that backend's documented PowerShell state.
 
 For long-running or persistent commands on the Linux/tmux backend, do not compensate by using very
 large synchronous timeouts. Start the command in background mode and keep the returned `command_id`:
@@ -168,8 +170,9 @@ remote-runner session destroy --session <session-ref> --json
 
 ## Persistent Session Transcript
 
-`session send/read/interrupt` are the base session contract, not a UI-only escape hatch. Do not
-create a separate top-level terminal resource.
+`session send/read` are the base session contract, not a UI-only escape hatch. Tmux-backed sessions
+also support `interrupt`; the current `windows-agent` does not. Do not create a separate top-level
+terminal resource.
 
 ```bash
 remote-runner session send \
@@ -209,7 +212,9 @@ remote-runner file get \
   --json
 ```
 
-File transfer is built into Remote Runner through SSH/SFTP. It does not require mounted folders, sshfs, rsync, or scp.
+File transfer is built into Remote Runner through SSH/SFTP. It does not require mounted folders,
+sshfs, rsync, or scp. `openssh-pty` has no independent SFTP channel, so Remote Runner rejects its
+file operations instead of tunneling a protocol through the visible terminal.
 
 If file transfer fails, classify before retrying:
 

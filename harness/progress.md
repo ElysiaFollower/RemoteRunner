@@ -7,11 +7,12 @@
 
 ## 当前状态
 
-- 当前功能项：`F-027 Remote Runner 人类式 Terminal Session V2` passing；`F-026` 至 `F-020` passing；`F-005` profile/report 层未开始。
-- 最近任务计划：`plans/archive/2026-07-15-terminal-session-v2.md`。
+- 当前功能项：`F-028 Terminal Session V2 债务清零审计` passing；F-027 passing；`F-005` profile/report 层未开始。
+- 当前任务计划：`plans/archive/2026-07-15-terminal-debt-audit.md`。
 - 当前阶段性分支：`codex/rr-terminal-session-v2`，位于独立 worktree `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v2`；stable editable runtime 仍指向原 worktree。
 - 上次验证：2026-07-15，Terminal V2 聚焦 14 passed（真实本地 tmux bash/zsh 13 + remote recorder 构造单测 1）；MVP 56 passed；launch 2 passed, 1 skipped；完整 pytest 93 passed, 4 skipped；git diff --check、harness-check 通过。真实 SSH smoke 未运行，按任务合同不阻塞。
-- 下一步最佳动作：审阅并合并/安装该隔离分支后再发布 canonical `SKILL.md`；随后把其余 backend 的 structured exec 和 openssh-pty legacy file-get terminal protocol 迁移到独立 job/file transport。
+- 下一步最佳动作：审阅并合并 `codex/rr-terminal-session-v2`；确认没有使用旧 editable runtime 的任务后，再切换安装和发布 global skill。
+- 2026-07-15：完成 `F-028 Terminal Session V2 债务清零审计`。删除 ssh-tmux session wrapper/eval 与 openssh-pty file-get pane protocol；structured exec/background/run once 改走独立 batch；remote append-only transcript 改为 byte cursor 增量 SFTP，并处理 UTF-8 跨块和并发 reader 去重。真实本地 bash/zsh tmux 各完成 20 轮失败命令 stress，shell/recorder 存活且无隐藏输入。审计同时修复 Windows wait 轮询缩进和 destroy 返回缺失。当前文档、skill、feature facts 已统一到 terminal 与 batch/file transport 分离的契约。
 - 2026-07-15：完成 `F-027 Remote Runner 人类式 Terminal Session V2`。根因确认是把人工可见 PTY 同时当 terminal 和 in-band RPC：openssh-pty exec 向同一 shell 注入 marker、`eval`、退出码 wrapper，`set -e` 等 shell state 可使 wrapper 提前终止；read 又通过 snapshot overlap 猜测历史，造成重复和不可审计。实现改为先挂 `pipe-pane` append-only recorder，再可见地启动 SSH；公开基础操作收敛为单行 `send`、cursor `read`、`interrupt`、`destroy`；PTY exec 在 pane 输入前拒绝。canonical skill 已同步为“一次一行、读 cursor、挂起就 Ctrl-C”，但全局 live skill 未在开发中热更新。
 - 2026-07-10：完成 `F-026 OpenSSH PTY session 文件回收`。根因是 file manager 只路由 machine/SFTP，而 `openssh-pty` 虽已有登录态 session PTY，file API 仍在 backend 入口硬拒绝。新增 session-aware 普通文件下载：通过本地 tmux `pipe-pane` 捕获 PTY 输出，1MiB 分块 base64 传输，远端先取 size/SHA-256，本地写同目录 partial 文件，全部验证后 `os.replace`。真实 `91_A100-recovery-20260710` 回收 F-Actor eval3、dGSLM、Behavior-SD、BayLing 等 26 个文件；研究交付统一到本地 `DuplexOmni/competitor_audit_20260708/deliverables/`。
 - 2026-07-07：完成 `F-025 Remote Runner OpenSSH PTY backend` 并归档至 `plans/archive/2026-07-07-openssh-pty-backend.md`。Remote Runner 现在能登记本机 OpenSSH alias、创建本地 tmux 托管的 `ssh -tt <alias>` PTY、让用户 attach 手动登录、detach 后由 agent 执行 wait-mode 命令/读写 transcript/销毁 session。新增 `cwd_applied` 返回字段，明确区分记录 cwd 与实际注入 cwd，避免覆盖人工切换后的安全目录；本地 tmux session name 现在优先使用可读 session name，例如 `rr_a100-work`。

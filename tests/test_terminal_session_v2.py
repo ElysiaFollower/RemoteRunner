@@ -93,7 +93,7 @@ def test_literal_input_is_visible_and_shell_state_persists(local_terminal, tmp_p
     workdir.mkdir()
     manager.send(session_id, f"cd {workdir}")
     manager.send(session_id, "export RR_PERSISTED=terminal-state")
-    state_command = "printf 'RR_STATE=%s|%s\\n' \"$PWD\" \"$RR_PERSISTED\""
+    state_command = 'printf \'RR_STATE=%s|%s\\n\' "$PWD" "$RR_PERSISTED"'
     manager.send(session_id, state_command)
     persisted = _wait_for_transcript(
         manager,
@@ -127,10 +127,7 @@ def test_interrupt_recovers_the_same_terminal(local_terminal):
 def test_long_output_remains_append_only_across_repeated_reads(local_terminal):
     manager, created = local_terminal
     session_id = created["session_id"]
-    command = (
-        "i=0; while [ $i -lt 400 ]; do "
-        "printf 'RR_LONG_%04d\\n' \"$i\"; i=$((i+1)); done"
-    )
+    command = "i=0; while [ $i -lt 400 ]; do " "printf 'RR_LONG_%04d\\n' \"$i\"; i=$((i+1)); done"
 
     manager.send(session_id, command)
     long_read = _wait_for_transcript(manager, session_id, "RR_LONG_0399")
@@ -145,6 +142,32 @@ def test_long_output_remains_append_only_across_repeated_reads(local_terminal):
         since=long_read["cursor"],
     )
     assert "RR_LONG_0000" not in tail["transcript"]
+
+
+def test_repeated_failures_keep_input_visible_and_cursor_monotonic(local_terminal):
+    manager, created = local_terminal
+    session_id = created["session_id"]
+    manager.send(session_id, "set +e")
+    cursor = manager.read(session_id)["cursor"]
+
+    for index in range(20):
+        command = f"false; printf 'RR_STRESS_{index:02d}\\n'"
+        manager.send(session_id, command)
+        read = _wait_for_transcript(
+            manager,
+            session_id,
+            f"RR_STRESS_{index:02d}",
+            since=cursor,
+        )
+        assert command in read["transcript"]
+        assert read["cursor"] > cursor
+        assert "__REMOTE_RUNNER_CMD_" not in read["transcript"]
+        assert 'eval "$__rr_command"' not in read["transcript"]
+        cursor = read["cursor"]
+
+    manager.send(session_id, "printf 'RR_STRESS_ALIVE\\n'")
+    alive = _wait_for_transcript(manager, session_id, "RR_STRESS_ALIVE", since=cursor)
+    assert "RR_STRESS_ALIVE" in alive["transcript"]
 
 
 def test_openssh_pty_exec_is_rejected_without_writing_to_terminal(local_terminal):
@@ -162,7 +185,7 @@ def test_openssh_pty_exec_is_rejected_without_writing_to_terminal(local_terminal
     assert 'eval "$__rr_command"' not in after["transcript"]
 
 
-def test_send_refuses_a_busy_session_before_backend_input(local_terminal):
+def test_terminal_send_remains_available_during_independent_batch_work(local_terminal):
     manager, created = local_terminal
     session_id = created["session_id"]
     with remote_state_lock():
@@ -170,15 +193,14 @@ def test_send_refuses_a_busy_session_before_backend_input(local_terminal):
         session["busy"] = True
         save_session_state(session)
 
-    with pytest.raises(RuntimeError, match="busy"):
-        manager.send(session_id, "printf 'MUST_NOT_BE_SENT\\n'")
+    manager.send(session_id, "printf 'SENT_DURING_BATCH\\n'")
 
     with remote_state_lock():
         session = load_session_state(session_id)
         session["busy"] = False
         save_session_state(session)
-    transcript = manager.read(session_id)["transcript"]
-    assert "MUST_NOT_BE_SENT" not in transcript
+    transcript = _wait_for_transcript(manager, session_id, "SENT_DURING_BATCH")
+    assert "SENT_DURING_BATCH" in transcript["transcript"]
 
 
 def test_send_rejects_multiline_batch_input(local_terminal):
@@ -193,9 +215,7 @@ def test_send_rejects_multiline_batch_input(local_terminal):
 
 
 def test_cli_exposes_session_interrupt():
-    args = build_parser().parse_args(
-        ["session", "interrupt", "--session", "demo-shell", "--json"]
-    )
+    args = build_parser().parse_args(["session", "interrupt", "--session", "demo-shell", "--json"])
     assert args.session == "demo-shell"
     assert args.func.__name__ == "cmd_session_interrupt"
 

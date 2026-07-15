@@ -32,11 +32,10 @@ Windows backend. See [Platform Support](../platform-support.md).
 The `openssh-pty` backend is for machines where `ssh -tt <alias>` is the stable user-facing entry
 point but standard SSH exec/SFTP is unavailable or unreliable. It starts a local tmux session running
 `ssh -tt <alias>`, lets the user attach and complete password, OTP, jump-host, or gateway prompts,
-then controls the same interactive shell through local tmux. It supports `session create`,
-`session attach`, `session send/read/interrupt`, `session destroy`, and ordinary-file
-`file get`. PTY downloads stream base64 chunks through the already logged-in shell, verify remote
-size and SHA-256, and atomically replace the local target. It does not yet support `file put`,
-directory transfer, `file list`, `run once`, `session exec`, background commands, or unattended authentication.
+then controls the same interactive shell through local tmux. It supports `session create/attach`,
+`session send/read/interrupt`, and `session destroy`. It rejects `file put/get/list`, `run once`,
+`session exec`, background commands, and unattended authentication. Remote Runner will not tunnel
+file or command protocols through the human-visible terminal.
 
 ## Global Options
 
@@ -388,15 +387,11 @@ remote-runner session exec \
   --json
 ```
 
-This is the default synchronous path. `--mode wait` runs the command inside the persistent session
-shell and returns only after the command finishes. Shell-local state such as `cd`, exported
-variables, aliases, and shell functions remains available to later commands in the same session.
-
-`session exec` is a shell-native command-entry API for an existing persistent shell. Its mental
-model is "type this command into the session shell, then capture stdout, stderr, exit code, timing,
-and logs"; it is not an isolated batch runner. Backend wrappers may add markers, log files, and
-exit-code bookkeeping, but they must return to the same persistent shell during normal execution.
-They must not require callers to append cleanup such as `exit "$rc"` to preserve command status.
+This is the default synchronous structured path. On `ssh-tmux`, `--mode wait` runs through an
+independent direct-SSH batch channel; it does not type into the pane and does not observe or mutate
+the terminal's cwd, exports, aliases, functions, or jobs. On `windows-agent`, the explicit agent
+request/result protocol owns structured PowerShell execution and retains that backend's documented
+state.
 
 Commands that close the shell, such as `exit` or `logout`, are session lifecycle operations. Use
 `session destroy` for intentional teardown. Use `run once` or a future job/batch layer for
@@ -408,8 +403,8 @@ This structured compatibility API is currently available on `ssh-tmux` and `wind
 as an in-band RPC channel by injecting hidden `eval`, marker, or exit-code wrappers; use
 `session send/read/interrupt` for that backend and `run once` for structured batch work.
 
-Optional cwd override. This changes the persistent shell's current directory before running the
-command:
+Optional cwd override. On `ssh-tmux`, this selects the independent batch process cwd and does not
+change the persistent terminal's directory:
 
 ```bash
 remote-runner session exec \
@@ -454,11 +449,10 @@ Behavior requirements:
 - `session exec` defaults to synchronous wait mode; long-running jobs should use
   `--mode background` on backends that support it. The current Windows agent rejects background
   mode, while `openssh-pty` rejects `session exec` entirely.
-- `session exec` runs in the session shell. It must keep command boundaries and exit codes through
-  Remote Runner command wrappers and state files, not by relying on chat memory or by converting the
-  command into an isolated non-interactive SSH exec.
-- Wrapper implementation must preserve the shell-native contract: normal completion returns to the
-  persistent shell; lifecycle teardown goes through `session destroy`.
+- `ssh-tmux session exec` uses isolated direct SSH execution. It must never source wrappers, inject
+  markers, or write command/file protocols into the live tmux pane.
+- Persistent shell state is controlled only through `session send/read/interrupt`; lifecycle
+  teardown goes through `session destroy`.
 - `cwd_applied=false` means the `cwd` field is only the recorded session cwd, not a directory that
   Remote Runner injected before the command.
 
@@ -472,7 +466,8 @@ remote-runner session exec \
   --json
 ```
 
-Background start returns immediately after the command is accepted in the session shell. The
+On `ssh-tmux`, background start uses the independent SSH background transport and returns without
+writing the live pane. The
 response includes `command_id`, `status=running`, `remote_state_dir`, remote log/status file
 references, timestamps, and `log_file_local` for the local summary record.
 
@@ -528,8 +523,8 @@ session should end.
 `session send` accepts one terminal line, sends the exact supplied text to the same session shell,
 and presses Enter by default; use `--no-enter` for partial input. Embedded CR/LF is rejected rather
 than treating a pasted batch as one terminal action. The response echoes the accepted `input`, so
-callers can audit what was typed. A busy session rejects new input rather than interleaving it with
-an active structured command.
+callers can audit what was typed. Independent `ssh-tmux` batch work does not block terminal input;
+the `windows-agent` request/result state machine rejects send while it is busy.
 
 For tmux-backed sessions the transcript is an append-only stream recorded from pane output; it is
 not reconstructed by repeatedly merging `capture-pane` snapshots. Thus commands visible to a human
@@ -538,9 +533,10 @@ text, a `cursor`, and the requested `since` offset.
 Callers can store the cursor and later request only the new transcript region. The local transcript
 file is preserved in Remote Runner state for recovery.
 
-`session interrupt` sends `Ctrl-C` to the current foreground process and keeps the terminal alive.
-It is the recovery operation for a hung foreground command; it does not create a command record or
-replace the shell.
+On tmux-backed sessions, `session interrupt` sends `Ctrl-C` to the current foreground process and
+keeps the terminal alive. It is the recovery operation for a hung foreground command; it does not
+create a command record or replace the shell. `windows-agent` does not currently expose a reliable
+console interrupt through its piped PowerShell transport and therefore rejects this operation.
 
 ### Logs
 
@@ -582,9 +578,9 @@ remote-runner file get --session sess_abc123 --remote /home/ely/project/output.t
 
 Downloads a remote file or directory to the local path.
 
-Backend boundary: `ssh-tmux` and `windows-agent` use the normal file backend and support files and
-directories. `openssh-pty` supports downloading ordinary files only; it requires an active, idle,
-already logged-in session and verifies size/SHA-256 before atomically replacing the local target.
+Backend boundary: `ssh-tmux` and `windows-agent` use the independent SFTP file backend and support
+files and directories. `openssh-pty` rejects file operations because it has no independent file
+transport; it does not tunnel base64 or other transfer protocols through the live pane.
 
 ### List
 
