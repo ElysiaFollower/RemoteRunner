@@ -15,17 +15,28 @@ This document describes the current target user- and agent-facing CLI contract f
 
 ## Platform Support
 
-The current MVP supports two persistent session backends:
+The current MVP supports three persistent session backends:
 
 - Linux machines reachable over SSH/SFTP with `tmux` available on the remote host
   (`platform=linux`, `backend=ssh-tmux`, `shell=bash`).
 - Direct Windows OpenSSH machines with SFTP, Python 3, and PowerShell 7 available
   (`platform=windows`, `backend=windows-agent`, `shell=pwsh`).
+- Interactive OpenSSH aliases that need a human-driven PTY login, with local `tmux` available on
+  the user's machine (`platform=linux` or `mac`, `backend=openssh-pty`, `auth_type=manual`).
 
 The Windows agent backend currently supports wait-mode session commands, transcript reads, explicit
 file transfer, and `run once`. It does not yet support background session commands or `cmd.exe` as a
 first-class shell. Windows + WSL via `startup_commands` remains a compatibility path, not the direct
 Windows backend. See [Platform Support](../platform-support.md).
+
+The `openssh-pty` backend is for machines where `ssh -tt <alias>` is the stable user-facing entry
+point but standard SSH exec/SFTP is unavailable or unreliable. It starts a local tmux session running
+`ssh -tt <alias>`, lets the user attach and complete password, OTP, jump-host, or gateway prompts,
+then controls the same interactive shell through local tmux. It supports `session create`,
+`session attach`, `session send/read`, wait-mode `session exec`, `session destroy`, and ordinary-file
+`file get`. PTY downloads stream base64 chunks through the already logged-in shell, verify remote
+size and SHA-256, and atomically replace the local target. It does not yet support `file put`,
+directory transfer, `file list`, `run once`, background commands, or unattended authentication.
 
 ## Global Options
 
@@ -101,6 +112,38 @@ For a direct Windows OpenSSH machine using the Windows agent backend:
   "platform": "windows",
   "backend": "windows-agent",
   "shell": "pwsh",
+  "startup_commands": [],
+  "path_mappings": []
+}
+```
+
+For an interactive OpenSSH alias using local tmux:
+
+```bash
+remote-runner machine add \
+  --machine-id lab-interactive-01 \
+  --backend openssh-pty \
+  --ssh-alias lab-interactive-01 \
+  --auth-type manual \
+  --platform linux \
+  --default-cwd /home/example \
+  --json
+```
+
+Stored fields do not include the gateway host, remote user, password, or key material:
+
+```json
+{
+  "machine_id": "lab-interactive-01",
+  "host": "localhost",
+  "port": 0,
+  "user": "",
+  "auth_type": "manual",
+  "ssh_alias": "lab-interactive-01",
+  "default_cwd": "/home/example",
+  "platform": "linux",
+  "backend": "openssh-pty",
+  "shell": "bash",
   "startup_commands": [],
   "path_mappings": []
 }
@@ -266,10 +309,30 @@ remote-runner session create \
 }
 ```
 
-If `--cwd` is omitted, use the machine's `default_cwd`. A session is the persistent remote shell
-context for this work area; backend details such as tmux or the Windows agent are implementation
-details, not a separate top-level resource. In the current MVP, persistent backends are Linux/SSH +
-tmux and direct Windows OpenSSH + windows-agent/pwsh.
+For `openssh-pty`, `session create` starts a local tmux session running `ssh -tt <ssh_alias>` and
+returns `local_attach_command`. The user must attach once and complete the interactive login:
+
+```bash
+remote-runner session create --machine lab-interactive-01 --name gateway-shell --cwd /home/example --json
+remote-runner session attach --session gateway-shell
+```
+
+Detach from the local tmux session with `Ctrl-b d` after the target shell is ready. The OpenSSH PTY
+stays alive in local tmux, and later `session exec/send/read/destroy` commands act on that same
+interactive shell. For this backend, the recorded `cwd` is not forced into the shell after attach:
+commands run in whatever directory the user left the interactive shell in, unless `session exec
+--cwd <path>` is passed explicitly.
+
+When a session has a readable `--name`, the local tmux session name is derived from it, for example
+`--name a100-work` yields `tmux attach-session -t rr_a100-work`. If that local tmux name is already
+in use, Remote Runner appends a short generated suffix; unnamed sessions still use the immutable
+session id to avoid collisions.
+
+If `--cwd` is omitted, the session record uses the machine's `default_cwd`. A session is the
+persistent remote shell context for this work area; backend details such as tmux or the Windows
+agent are implementation details, not a separate top-level resource. In the current MVP, persistent
+backends are Linux/SSH + tmux, direct Windows OpenSSH + windows-agent/pwsh, and local OpenSSH PTY
+bridging.
 
 `--name` is optional. When provided, it is a readable short label that may contain only letters,
 digits, `.`, `_`, and `-`; names beginning with `sess_` are rejected to avoid confusion with
@@ -328,6 +391,17 @@ This is the default synchronous path. `--mode wait` runs the command inside the 
 shell and returns only after the command finishes. Shell-local state such as `cd`, exported
 variables, aliases, and shell functions remains available to later commands in the same session.
 
+`session exec` is a shell-native command-entry API for an existing persistent shell. Its mental
+model is "type this command into the session shell, then capture stdout, stderr, exit code, timing,
+and logs"; it is not an isolated batch runner. Backend wrappers may add markers, log files, and
+exit-code bookkeeping, but they must return to the same persistent shell during normal execution.
+They must not require callers to append cleanup such as `exit "$rc"` to preserve command status.
+
+Commands that close the shell, such as `exit` or `logout`, are session lifecycle operations. Use
+`session destroy` for intentional teardown. Use `run once` or a future job/batch layer for
+upload-run-download workflows or multi-step scripts that naturally end with process-level `exit`
+semantics.
+
 Optional cwd override. This changes the persistent shell's current directory before running the
 command:
 
@@ -347,6 +421,7 @@ Return shape:
   "command_id": "cmd_abc123",
   "machine_id": "lab-gpu-01",
   "cwd": "/home/ely/project",
+  "cwd_applied": true,
   "command": "pytest -q",
   "mode": "wait",
   "status": "completed",
@@ -371,10 +446,16 @@ Behavior requirements:
   `log_file_local` or a recoverable remote log reference.
 - Do not require sshfs, FUSE, reverse SSH, or mount setup.
 - `session exec` defaults to synchronous wait mode; long-running jobs should use
-  `--mode background` on backends that support it. The current Windows agent backend rejects
-  background mode explicitly.
+  `--mode background` on backends that support it. The current Windows agent and `openssh-pty`
+  backends reject background mode explicitly.
 - `session exec` runs in the session shell. It must keep command boundaries and exit codes through
-  Remote Runner command wrappers and state files, not by relying on chat memory.
+  Remote Runner command wrappers and state files, not by relying on chat memory or by converting the
+  command into an isolated non-interactive SSH exec.
+- Wrapper implementation must preserve the shell-native contract: normal completion returns to the
+  persistent shell; lifecycle teardown goes through `session destroy`.
+- `cwd_applied=false` means the `cwd` field is only the recorded session cwd, not a directory that
+  Remote Runner injected before the command. This currently happens for `openssh-pty` commands
+  without an explicit `--cwd`, because that backend preserves the manually attached shell state.
 
 ### Background Command Start
 
@@ -427,6 +508,17 @@ remote-runner session read --session sess_abc123 --json
 remote-runner session read --session sess_abc123 --since 1200 --json
 ```
 
+### Attach Session
+
+```bash
+remote-runner session attach --session gateway-shell
+```
+
+`session attach` is currently for `openssh-pty` sessions. It attaches the current terminal to the
+local tmux session that is running `ssh -tt <ssh_alias>`, so the user can complete manual login
+prompts or inspect the live shell. Detach with `Ctrl-b d`; do not exit the remote shell unless the
+session should end.
+
 `session send` sends raw input to the same session shell and presses Enter by default; use
 `--no-enter` for partial input. This is for shell-panel and interactive workflows. For normal agent
 automation, prefer `session exec` because it also records command boundaries, stdout/stderr,
@@ -475,6 +567,10 @@ remote-runner file get --session sess_abc123 --remote /home/ely/project/output.t
 ```
 
 Downloads a remote file or directory to the local path.
+
+Backend boundary: `ssh-tmux` and `windows-agent` use the normal file backend and support files and
+directories. `openssh-pty` supports downloading ordinary files only; it requires an active, idle,
+already logged-in session and verifies size/SHA-256 before atomically replacing the local target.
 
 ### List
 

@@ -127,7 +127,16 @@ class LaunchBackend:
         record["ended_at"] = "2026-05-11T00:00:04Z"
         return {"stop_result": "stopped"}
 
-    def create_terminal(self, machine, cwd, terminal_id, width=120, height=40, history_limit=10000):
+    def create_terminal(
+        self,
+        machine,
+        cwd,
+        terminal_id,
+        terminal_name=None,
+        width=120,
+        height=40,
+        history_limit=10000,
+    ):
         self.terminals[terminal_id] = {
             "machine_id": machine.machine_id,
             "cwd": cwd,

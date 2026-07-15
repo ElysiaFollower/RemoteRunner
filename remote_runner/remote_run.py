@@ -57,6 +57,10 @@ class RemoteRunManager:
 
         session_id: Optional[str] = None
         try:
+            machine = self.session_manager.machine_manager.get(machine_id)
+            if machine.backend == "openssh-pty":
+                raise RuntimeError("run once is not supported for openssh-pty machines")
+
             session = self.session_manager.create(machine_id=machine_id, cwd=cwd)
             session_id = session["session_id"]
             run["session_id"] = session_id

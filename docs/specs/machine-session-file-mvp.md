@@ -70,6 +70,7 @@ Linux records:
 
 - `platform=linux`, `backend=ssh-tmux`, `shell=bash`
 - `platform=windows`, `backend=windows-agent`, `shell=pwsh`
+- `platform=linux|mac`, `backend=openssh-pty`, `shell=bash`, `auth_type=manual`
 
 Direct Windows support targets Windows OpenSSH/SFTP without entering WSL. It requires Python 3 and
 PowerShell 7 on the remote host.
@@ -122,7 +123,7 @@ Minimum fields:
 - `auth_type`: `password` or `key`
 - `password` or `key_path`
 - `platform`: `linux`, `windows`, or `mac`
-- `backend`: `ssh-tmux` or `windows-agent`
+- `backend`: `ssh-tmux`, `windows-agent`, or `openssh-pty`
 - `shell`: `bash` or `pwsh`
 - `startup_commands`
 - `default_cwd`
@@ -171,12 +172,19 @@ Shows one session, including last command, last exit code, command count, log di
 
 ### `remote-runner session exec --session <session_id> --cmd <command> [--cwd <remote_cwd>] [--mode wait|background] --timeout <seconds> --json`
 
-Executes the command directly in the remote cwd. It must not require a mount.
+Enters the command into the persistent session shell. It must not require a mount. The default cwd
+is the session shell's current directory; `--cwd` is an explicit shell-state change before command
+execution, not a separate isolated process context.
 
 Default `--mode wait` runs a bounded command and returns after completion. `--mode background`
 starts a long-running command and returns after a durable `command_id` and remote state/log
 references exist. In background mode, `--timeout` is the launch timeout, not the remote command
 runtime limit.
+
+`session exec` is shell-native command entry, not an isolated batch runner. Multiple exec calls to
+the same session preserve shell-local state. Backend wrappers may capture markers, logs, and exit
+codes, but normal completion must return to the same shell; session teardown belongs to
+`session destroy`, while upload-run-download batch workflows belong to `run once`.
 
 Minimum response fields:
 
@@ -277,9 +285,9 @@ Minimum response fields:
 - `transcript_file_local`
 - `log_dir_local`
 
-Current persistent backends are Linux/SSH + `tmux` and direct Windows OpenSSH +
-`windows-agent`/PowerShell. Machines with `startup_commands` may be explicitly rejected by
-backends that do not implement interactive startup terminal semantics. See
+Current persistent backends are Linux/SSH + `tmux`, direct Windows OpenSSH +
+`windows-agent`/PowerShell, and local `tmux` + OpenSSH PTY. Machines with `startup_commands` may be
+explicitly rejected by backends that do not implement interactive startup terminal semantics. See
 `docs/platform-support.md` for the current platform boundary.
 
 ### `remote-runner session exec --session <session_id> --cmd <cmd> --json`
@@ -288,7 +296,7 @@ Runs the command in the same session shell. Multiple exec calls to the same sess
 shell-local state such as `cd`, exported environment variables, aliases, and jobs. `session exec`
 must still return structured `command_id`, `exit_code`, stdout/stderr, timestamps, duration, and
 log references. Command boundary and exit code recovery are handled by Remote Runner wrappers and
-state files, not by parsing chat history.
+state files, not by parsing chat history or by converting the command into an isolated batch runner.
 
 ### `remote-runner session send --session <session_id> --input <text> [--no-enter] --json`
 
@@ -311,6 +319,9 @@ transfer backend.
 ### `remote-runner file get --session <session_id> --remote <path> --local <path> --json`
 
 Downloads a remote file or directory to the local path.
+
+`openssh-pty` 当前只下载普通文件：传输复用已登录且空闲的 session PTY，按块编码，校验
+远端 size/SHA-256，并在全部验证通过后原子替换本地目标。目录下载仍明确拒绝。
 
 ### `remote-runner file list --session <session_id> --remote <path> --json`
 

@@ -30,6 +30,7 @@ class RemoteMachine:
     shell: str = "bash"
     password: Optional[str] = None
     key_path: Optional[str] = None
+    ssh_alias: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RemoteMachine":
@@ -50,17 +51,24 @@ class RemoteMachine:
             shell=shell,
             password=data.get("password"),
             key_path=data.get("key_path"),
+            ssh_alias=data.get("ssh_alias"),
         )
 
     def validate(self) -> None:
         if not self.machine_id:
             raise ValueError("machine_id is required")
-        if not self.host:
-            raise ValueError("host is required")
-        if not self.user:
-            raise ValueError("user is required")
-        if self.auth_type not in {"key", "password"}:
-            raise ValueError("auth_type must be 'key' or 'password'")
+        if self.backend == "openssh-pty":
+            if self.auth_type != "manual":
+                raise ValueError("openssh-pty backend requires auth_type 'manual'")
+            if not self.ssh_alias:
+                raise ValueError("ssh_alias is required for openssh-pty backend")
+        else:
+            if not self.host:
+                raise ValueError("host is required")
+            if not self.user:
+                raise ValueError("user is required")
+            if self.auth_type not in {"key", "password"}:
+                raise ValueError("auth_type must be 'key' or 'password'")
         if self.auth_type == "key":
             if not self.key_path:
                 raise ValueError("key_path is required for key auth")
@@ -71,13 +79,18 @@ class RemoteMachine:
             raise ValueError("password is required for password auth")
         if self.platform not in {"linux", "windows", "mac"}:
             raise ValueError("platform must be 'linux', 'windows', or 'mac'")
-        if self.backend not in {"ssh-tmux", "windows-agent"}:
-            raise ValueError("backend must be 'ssh-tmux' or 'windows-agent'")
+        if self.backend not in {"ssh-tmux", "windows-agent", "openssh-pty"}:
+            raise ValueError("backend must be 'ssh-tmux', 'windows-agent', or 'openssh-pty'")
         if self.backend == "windows-agent":
             if self.platform != "windows":
                 raise ValueError("windows-agent backend requires platform 'windows'")
             if self.shell != "pwsh":
                 raise ValueError("windows-agent backend currently requires shell 'pwsh'")
+        if self.backend == "openssh-pty":
+            if self.platform == "windows":
+                raise ValueError("openssh-pty backend currently requires a POSIX-like target shell")
+            if not self.shell:
+                raise ValueError("shell is required")
         if self.backend == "ssh-tmux" and not self.shell:
             raise ValueError("shell is required")
         if not isinstance(self.startup_commands, list):
@@ -115,6 +128,8 @@ class RemoteMachine:
             data["key_path"] = self.key_path
         if self.auth_type == "password":
             data["password"] = "***REDACTED***" if redact else self.password
+        if self.backend == "openssh-pty" or self.ssh_alias:
+            data["ssh_alias"] = self.ssh_alias
         return data
 
     def map_file_path(self, remote_path: str) -> str:
@@ -149,13 +164,14 @@ class RemoteMachineManager:
     def add(
         self,
         machine_id: str,
-        host: str,
-        port: int,
-        user: str,
-        auth_type: str,
-        default_cwd: str,
+        host: str = "",
+        port: int = 22,
+        user: str = "",
+        auth_type: str = "key",
+        default_cwd: str = "~",
         password: Optional[str] = None,
         key_path: Optional[str] = None,
+        ssh_alias: Optional[str] = None,
         startup_commands: Optional[Sequence[str]] = None,
         platform: str = "linux",
         backend: str = "ssh-tmux",
@@ -178,6 +194,7 @@ class RemoteMachineManager:
             shell=resolved_shell,
             password=password,
             key_path=key_path,
+            ssh_alias=ssh_alias,
         )
         machine.validate()
 
@@ -362,8 +379,7 @@ class RemoteMachineManager:
         if blockers:
             blocked_ids = ", ".join(blocker["session_id"] for blocker in blockers)
             raise RuntimeError(
-                "Active Remote Runner tmux sessions must be destroyed first: "
-                + blocked_ids
+                "Active Remote Runner tmux sessions must be destroyed first: " + blocked_ids
             )
 
         result = backend.restart_tmux_server(machine)

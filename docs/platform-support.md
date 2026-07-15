@@ -1,7 +1,7 @@
 # Platform Support
 
-Remote Runner 当前支持两条持久 session 路径：Linux/SSH + tmux，以及 direct Windows
-OpenSSH + Windows agent + PowerShell 7。两条路径共享同一套 `machine -> session ->
+Remote Runner 当前支持三条持久 session 路径：Linux/SSH + tmux、direct Windows
+OpenSSH + Windows agent + PowerShell 7，以及本机 tmux 托管的 OpenSSH 交互 PTY。这些路径共享同一套 `machine -> session ->
 command/logs/file/artifacts` 产品抽象；平台差异是 backend 细节。
 
 ## Linux / SSH / tmux
@@ -64,6 +64,47 @@ Windows backend 会通过 SSH/SFTP 把内嵌 Python agent 放到远端工作目�
 - `cmd.exe` 作为一等目标 shell
 - Windows Service 安装或开机常驻 agent
 
+## Local tmux / OpenSSH PTY
+
+`openssh-pty` 路径面向只能通过本机 OpenSSH alias 交互登录的机器。典型入口是：
+
+```bash
+ssh -tt <SSH_ALIAS>
+```
+
+机器记录应显式设置：
+
+```json
+{
+  "platform": "linux",
+  "backend": "openssh-pty",
+  "auth_type": "manual",
+  "ssh_alias": "<SSH_ALIAS>",
+  "shell": "bash"
+}
+```
+
+该 backend 要求本机具备：
+
+- `tmux`，用于托管长期 OpenSSH PTY。
+- `/usr/bin/ssh` 或 PATH 中可用的 `ssh`。
+- 用户能在 `session attach` 中手动完成密码、OTP、跳板机或平台网关提示。
+
+当前 `openssh-pty` 支持：
+
+- `machine add/list/show/doctor`
+- `session create/attach/exec/send/read/destroy`
+- `file get` 下载普通文件；复用已登录 PTY，分块传输并校验 size/SHA-256 后原子落盘
+- 同一交互 shell 内 cwd、环境变量等 shell-local state 持久化
+
+当前 `openssh-pty` 不支持：
+
+- `file put`、目录 `file get`、`file list`
+- `run once`
+- `session exec --mode background`
+- 无人值守认证、密码保存或平台网关状态机硬编码
+- 远端 tmux 自动接管
+
 ## Windows + WSL Compatibility
 
 仓库历史上验证过两类 Windows/WSL 兼容能力：
@@ -77,7 +118,7 @@ Windows backend 会通过 SSH/SFTP 把内嵌 Python agent 放到远端工作目�
 
 ## 不是长期产品边界
 
-Linux、Windows、SSH、tmux、Scheduled Task、PowerShell、Python agent 和 SFTP 都是 backend
+Linux、Windows、SSH、本机或远端 tmux、Scheduled Task、PowerShell、Python agent 和 SFTP 都是 backend
 选择，不是永久产品边界。长期产品抽象仍然是：
 
 ```text

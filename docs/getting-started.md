@@ -2,7 +2,7 @@
 
 这是给本地 agent 和人类共用的最小上手说明。目标是：先把工具装进 `seedrunner` conda 环境，再用稳定命令登记机器、验证连通、跑会话、传文件、执行一次性闭环。
 
-当前支持两条持久 session 路径：Linux/SSH + tmux，以及 direct Windows OpenSSH + windows-agent + PowerShell 7。
+当前支持三条持久 session 路径：Linux/SSH + tmux、direct Windows OpenSSH + windows-agent + PowerShell 7，以及本机 tmux 托管的 OpenSSH 交互 PTY。
 
 ## 1. 安装到 seedrunner 环境
 
@@ -121,6 +121,8 @@ remote-runner file get \
 等 shell-local state；如果需要原始 shell panel 输入和 transcript，用 `session send/read`。
 Linux 持久 session 后端要求 Linux/SSH 机器上有 `tmux`。Windows 持久 session 后端见下方 direct Windows 章节。
 
+把 `session exec` 理解成“在同一个 shell 里键入一条命令，并让 Remote Runner 记录输出和退出码”。它不是隔离 batch runner。不要为了返回退出码在命令末尾追加 `exit "$rc"`；那等价于在持久 shell 里键入 `exit`。需要多步脚本、产物回收和进程级退出语义时，用 `run once`。
+
 ```bash
 remote-runner session create \
   --machine linux-01 \
@@ -229,7 +231,64 @@ remote-runner machine configure-path-map my-windows \
 注意：这是兼容路径，不是 direct Windows 主路径。direct Windows 主路径应使用 `platform=windows`
 和 `backend=windows-agent`。
 
-## 9. 真实机器验收
+## 9. OpenSSH 交互 PTY 机器
+
+有些机器不能稳定支持标准 SSH exec/SFTP，但人类可以通过本机 OpenSSH alias 进入：
+
+```bash
+ssh -tt <SSH_ALIAS>
+```
+
+这类机器可以用 `openssh-pty` backend。它依赖本机 `tmux`，由本地 tmux 持有 `ssh -tt`
+进程；你通过 `session attach` 手动输入密码、OTP 或走平台网关流程，脱离后 agent 继续控制同一个交互 shell。
+
+```bash
+remote-runner machine add \
+  --machine-id interactive-01 \
+  --backend openssh-pty \
+  --ssh-alias <SSH_ALIAS> \
+  --auth-type manual \
+  --platform linux \
+  --default-cwd /home/<USERNAME> \
+  --json
+```
+
+创建 session 后先 attach：
+
+```bash
+remote-runner session create \
+  --machine interactive-01 \
+  --cwd /home/<USERNAME> \
+  --name interactive-shell \
+  --json
+
+remote-runner session attach --session interactive-shell
+```
+
+如果给了可读 `--name`，返回的本地 tmux attach 命令也会尽量使用这个名字，例如
+`tmux attach-session -t rr_interactive-shell`；只有本机 tmux 已经占用同名 session 时才会追加短后缀。
+
+在 attach 界面里完成登录；看到目标 shell 后可以手动切到安全工作目录，再按 `Ctrl-b d`
+脱离本地 tmux，不要 `exit`。`openssh-pty` 不会在第一次 `session exec` 时自动回到
+`--cwd` 或 `default_cwd`；后续命令默认沿用你脱离时的 shell 状态，只有显式传
+`session exec --cwd <path>` 才会先进入指定目录。之后可以运行：
+
+```bash
+remote-runner session exec --session interactive-shell --cmd 'pwd && whoami' --json
+remote-runner session send --session interactive-shell --input 'echo hello' --json
+remote-runner session read --session interactive-shell --json
+remote-runner session destroy --session interactive-shell --json
+```
+
+这里的 `session exec` 仍然是向同一个交互 shell 输入命令；人类 attach 着观察时，agent
+执行的命令会出现在同一个 tmux panel。复杂 batch 不要直接粘到这个 live shell 里收尾 `exit`。
+
+边界：`openssh-pty` 支持 `session create/attach/exec/send/read/destroy`，以及从已登录且空闲的
+session 下载普通文件的 `file get`。下载会分块传输，校验远端 size/SHA-256 后原子落盘。
+它仍不支持 `file put`、目录下载、`file list`、`run once`、`session exec --mode background`
+或无人值守认证；密码不写入 Remote Runner 配置。
+
+## 10. 真实机器验收
 
 默认测试不依赖真实机器。要跑真实门禁，必须显式设置环境变量：
 
@@ -250,7 +309,7 @@ REMOTE_RUNNER_REAL_TEST_CWD=C:/Users/<USERNAME> \
 python3 -m pytest tests/test_remote_runner_real_integration.py -q
 ```
 
-## 10. 记住这几个规则
+## 11. 记住这几个规则
 
 - `--json` 的 stdout 应该能被 `json.loads()` 直接解析。
 - 密码不会写到日志、handoff 或测试输出里。

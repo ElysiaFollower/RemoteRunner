@@ -8,8 +8,11 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import shlex
 import stat
+import subprocess
+import tempfile
 import time
 from typing import Any, Dict, List, Optional
 import uuid
@@ -177,8 +180,79 @@ def _remap_entries_paths(
 class ParamikoRemoteBackend:
     """Remote backend implemented with SSH and SFTP."""
 
+    OPENSSH_PTY_TRANSFER_CHUNK_SIZE = 1024 * 1024
+
     def _uses_windows_agent(self, machine: RemoteMachine) -> bool:
         return machine.backend == "windows-agent"
+
+    def _uses_openssh_pty(self, machine: RemoteMachine) -> bool:
+        return machine.backend == "openssh-pty"
+
+    def _local_tmux_binary(self) -> str:
+        tmux = shutil.which("tmux")
+        if not tmux:
+            raise RuntimeError("openssh-pty backend requires local tmux; install tmux and retry")
+        return tmux
+
+    def _ssh_binary(self) -> str:
+        if os.path.exists("/usr/bin/ssh"):
+            return "/usr/bin/ssh"
+        ssh = shutil.which("ssh")
+        if not ssh:
+            raise RuntimeError("openssh-pty backend requires local ssh")
+        return ssh
+
+    def _run_local_tmux(
+        self,
+        args: List[str],
+        check: bool = True,
+        capture_output: bool = True,
+    ) -> subprocess.CompletedProcess:
+        command = [self._local_tmux_binary(), *args]
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=capture_output,
+            text=True,
+        )
+        if check and result.returncode != 0:
+            message = (result.stderr or result.stdout or "local tmux command failed").strip()
+            raise RuntimeError(message)
+        return result
+
+    def _local_tmux_session_name(
+        self,
+        terminal_id: str,
+        terminal_name: Optional[str] = None,
+    ) -> str:
+        raw_name = terminal_name or terminal_id
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", raw_name).strip("._-")
+        if not safe:
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", terminal_id).strip("._-")
+        if terminal_name:
+            return f"rr_{safe[:48]}"
+        return f"rr_local_{safe}"
+
+    def _available_local_tmux_session_name(
+        self,
+        terminal_id: str,
+        terminal_name: Optional[str] = None,
+    ) -> str:
+        candidate = self._local_tmux_session_name(terminal_id, terminal_name)
+        result = self._run_local_tmux(["has-session", "-t", candidate], check=False)
+        if result.returncode != 0:
+            return candidate
+
+        suffix = terminal_id.rsplit("_", 1)[-1][:8]
+        fallback = f"{candidate}_{suffix}"
+        result = self._run_local_tmux(["has-session", "-t", fallback], check=False)
+        if result.returncode != 0:
+            return fallback
+
+        raise RuntimeError(f"local tmux session name is already in use: {candidate}")
+
+    def _local_tmux_target(self, terminal_record: Dict[str, Any]) -> str:
+        return terminal_record["local_tmux_session"]
 
     def _connect(self, machine: RemoteMachine, timeout: int = 30) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
@@ -199,6 +273,29 @@ class ParamikoRemoteBackend:
     def doctor(self, machine: RemoteMachine) -> Dict[str, Any]:
         if self._uses_windows_agent(machine):
             return self._doctor_windows_agent(machine)
+        if self._uses_openssh_pty(machine):
+            errors: List[str] = []
+            try:
+                self._local_tmux_binary()
+            except Exception as exc:
+                errors.append(str(exc))
+            try:
+                self._ssh_binary()
+            except Exception as exc:
+                errors.append(str(exc))
+            if not machine.ssh_alias:
+                errors.append("ssh_alias is required")
+            return {
+                "machine_id": machine.machine_id,
+                "reachable": not errors,
+                "auth_ok": False,
+                "default_cwd_ok": False,
+                "checked_at": get_timestamp(),
+                "errors": errors,
+                "backend": "openssh-pty",
+                "ssh_alias": machine.ssh_alias,
+                "next_action": "run session create and session attach to complete manual login",
+            }
 
         errors: List[str] = []
         reachable = False
@@ -246,6 +343,10 @@ class ParamikoRemoteBackend:
         command: str,
         timeout: int = 300,
     ) -> RemoteCommandResult:
+        if self._uses_openssh_pty(machine):
+            raise RuntimeError(
+                "openssh-pty backend requires a session; use session create/attach/exec"
+            )
         if machine.startup_commands:
             return self._run_with_startup_commands(machine, cwd, command, timeout=timeout)
 
@@ -356,6 +457,8 @@ class ParamikoRemoteBackend:
         command_id: str,
         timeout: int = 15,
     ) -> Dict[str, Any]:
+        if self._uses_openssh_pty(machine):
+            raise RuntimeError("background commands are not supported for openssh-pty machines")
         if machine.startup_commands:
             raise RuntimeError("background commands do not yet support startup_commands machines")
 
@@ -423,6 +526,8 @@ class ParamikoRemoteBackend:
         stdout_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
         stderr_limit: int = DEFAULT_BACKGROUND_OUTPUT_LIMIT,
     ) -> Dict[str, Any]:
+        if self._uses_openssh_pty(machine):
+            raise RuntimeError("background commands are not supported for openssh-pty machines")
         if machine.startup_commands:
             raise RuntimeError("background commands do not yet support startup_commands machines")
 
@@ -495,11 +600,11 @@ class ParamikoRemoteBackend:
         ended_at_file = command_record["remote_ended_at_file"]
         script = (
             f"pid={shlex.quote(str(pid))}; "
-            "if kill -0 \"$pid\" 2>/dev/null; then "
-            "kill -TERM -- \"-$pid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true; "
+            'if kill -0 "$pid" 2>/dev/null; then '
+            'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; '
             "sleep 0.3; "
-            "if kill -0 \"$pid\" 2>/dev/null; then "
-            "kill -KILL -- \"-$pid\" 2>/dev/null || kill -KILL \"$pid\" 2>/dev/null || true; "
+            'if kill -0 "$pid" 2>/dev/null; then '
+            'kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
             "fi; "
             f"printf '%s\\n' stopped > {shlex.quote(status_file)}; "
             f"printf '%s\\n' 143 > {shlex.quote(exit_code_file)}; "
@@ -526,6 +631,7 @@ class ParamikoRemoteBackend:
         machine: RemoteMachine,
         cwd: str,
         terminal_id: str,
+        terminal_name: Optional[str] = None,
         width: int = 120,
         height: int = 40,
         history_limit: int = 10000,
@@ -535,6 +641,15 @@ class ParamikoRemoteBackend:
                 machine=machine,
                 cwd=cwd,
                 terminal_id=terminal_id,
+            )
+        if self._uses_openssh_pty(machine):
+            return self._create_local_tmux_openssh_terminal(
+                machine=machine,
+                terminal_id=terminal_id,
+                terminal_name=terminal_name,
+                width=width,
+                height=height,
+                history_limit=history_limit,
             )
 
         if machine.startup_commands:
@@ -578,6 +693,73 @@ class ParamikoRemoteBackend:
         finally:
             client.close()
 
+    def _create_local_tmux_openssh_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_id: str,
+        terminal_name: Optional[str],
+        width: int,
+        height: int,
+        history_limit: int,
+    ) -> Dict[str, Any]:
+        if not machine.ssh_alias:
+            raise RuntimeError("openssh-pty machine is missing ssh_alias")
+        tmux_session = self._available_local_tmux_session_name(terminal_id, terminal_name)
+        ssh_command = f"{shlex.quote(self._ssh_binary())} -tt {shlex.quote(machine.ssh_alias)}"
+        self._run_local_tmux(
+            ["new-session", "-d", "-s", tmux_session, ssh_command],
+        )
+        try:
+            self._run_local_tmux(
+                [
+                    "resize-window",
+                    "-t",
+                    tmux_session,
+                    "-x",
+                    str(int(width)),
+                    "-y",
+                    str(int(height)),
+                ],
+            )
+            self._run_local_tmux(
+                ["set-option", "-t", tmux_session, "history-limit", str(int(history_limit))],
+            )
+        except Exception:
+            try:
+                self._run_local_tmux(["kill-session", "-t", tmux_session], check=False)
+            except Exception:
+                pass
+            raise
+        return {
+            "backend": "openssh-pty",
+            "local_tmux_session": tmux_session,
+            "remote_terminal_name": tmux_session,
+            "ssh_alias": machine.ssh_alias,
+            "local_attach_command": f"tmux attach-session -t {tmux_session}",
+            "history_limit": history_limit,
+            "width": width,
+            "height": height,
+        }
+
+    def attach_terminal(
+        self,
+        machine: RemoteMachine,
+        terminal_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not self._uses_openssh_pty(machine):
+            raise RuntimeError(
+                "session attach is currently only supported for openssh-pty machines"
+            )
+        target = self._local_tmux_target(terminal_record)
+        self._run_local_tmux(["has-session", "-t", target])
+        result = subprocess.run(
+            [self._local_tmux_binary(), "attach-session", "-t", target],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"local tmux attach failed with exit code {result.returncode}")
+        return {"attached": True, "local_tmux_session": target}
+
     def start_session_command(
         self,
         machine: RemoteMachine,
@@ -595,9 +777,19 @@ class ParamikoRemoteBackend:
                 command_id=command_id,
                 cwd=cwd if cwd_override else None,
             )
+        if self._uses_openssh_pty(machine):
+            return self._start_local_tmux_session_command(
+                session_record=session_record,
+                command=command,
+                command_id=command_id,
+                cwd=cwd,
+                cwd_override=cwd_override,
+            )
 
         if machine.startup_commands:
-            raise RuntimeError("persistent session commands do not yet support startup_commands machines")
+            raise RuntimeError(
+                "persistent session commands do not yet support startup_commands machines"
+            )
 
         paths = self._session_command_paths(session_record["cwd"], command_id)
         sftp_paths = {key: machine.map_file_path(value) for key, value in paths.items()}
@@ -629,6 +821,52 @@ class ParamikoRemoteBackend:
             **paths,
         }
 
+    def _start_local_tmux_session_command(
+        self,
+        session_record: Dict[str, Any],
+        command: str,
+        command_id: str,
+        cwd: Optional[str] = None,
+        cwd_override: bool = False,
+    ) -> Dict[str, Any]:
+        target = self._local_tmux_target(session_record)
+        begin_marker = f"__REMOTE_RUNNER_CMD_BEGIN_{command_id}__"
+        end_marker = f"__REMOTE_RUNNER_CMD_END_{command_id}__"
+        transcript = self._capture_local_tmux_transcript(session_record)
+        should_cd = cwd_override and cwd is not None
+        script_parts = [
+            f"printf '\\n{begin_marker}\\n'",
+            "__rr_rc=0",
+        ]
+        if should_cd:
+            script_parts.extend(
+                [
+                    f"cd {shlex.quote(cwd)}",
+                    "__rr_rc=$?",
+                ]
+            )
+        script_parts.extend(
+            [
+                (
+                    'if [ "$__rr_rc" -eq 0 ]; then '
+                    f"__rr_command={shlex.quote(command)}; "
+                    'eval "$__rr_command"; '
+                    "__rr_rc=$?; "
+                    "fi"
+                ),
+                f"printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
+            ]
+        )
+        script = "; ".join(script_parts)
+        self._send_local_tmux_input(session_record, script, enter=True)
+        return {
+            "command_backend": "local_tmux",
+            "local_tmux_session": target,
+            "local_begin_marker": begin_marker,
+            "local_end_marker": end_marker,
+            "local_transcript_start_cursor": len(transcript),
+        }
+
     def wait_session_command(
         self,
         machine: RemoteMachine,
@@ -646,10 +884,25 @@ class ParamikoRemoteBackend:
                     stdout_limit=stdout_limit,
                     stderr_limit=stderr_limit,
                 )
+            if result["status"] != "running":
+                return result
+            if time.time() >= deadline:
+                raise TimeoutError("Windows agent command did not finish before timeout")
+            time.sleep(min(0.2, max(0, deadline - time.time())))
+
+        if self._uses_openssh_pty(machine):
+            deadline = time.time() + max(0, timeout)
+            while True:
+                result = self.inspect_session_command(
+                    machine=machine,
+                    command_record=command_record,
+                    stdout_limit=stdout_limit,
+                    stderr_limit=stderr_limit,
+                )
                 if result["status"] != "running":
                     return result
                 if time.time() >= deadline:
-                    raise TimeoutError("Windows agent command did not finish before timeout")
+                    raise TimeoutError("openssh-pty command did not finish before timeout")
                 time.sleep(min(0.2, max(0, deadline - time.time())))
 
         deadline = time.time() + max(0, timeout)
@@ -680,9 +933,17 @@ class ParamikoRemoteBackend:
                 stdout_limit=stdout_limit,
                 stderr_limit=stderr_limit,
             )
+        if self._uses_openssh_pty(machine):
+            return self._inspect_local_tmux_session_command(
+                command_record=command_record,
+                stdout_limit=stdout_limit,
+                stderr_limit=stderr_limit,
+            )
 
         if machine.startup_commands:
-            raise RuntimeError("persistent session commands do not yet support startup_commands machines")
+            raise RuntimeError(
+                "persistent session commands do not yet support startup_commands machines"
+            )
 
         client = self._connect(machine)
         sftp = client.open_sftp()
@@ -739,6 +1000,48 @@ class ParamikoRemoteBackend:
             sftp.close()
             client.close()
 
+    def _inspect_local_tmux_session_command(
+        self,
+        command_record: Dict[str, Any],
+        stdout_limit: int,
+        stderr_limit: int,
+    ) -> Dict[str, Any]:
+        transcript = self._capture_local_tmux_transcript(command_record)
+        start_cursor = int(command_record.get("local_transcript_start_cursor") or 0)
+        command_output = transcript[start_cursor:]
+        end_marker = command_record["local_end_marker"]
+        marker_pattern = re.compile(rf"{re.escape(end_marker)}:(\d+)")
+        matches = marker_pattern.findall(command_output)
+        if not matches:
+            return {
+                "status": "running",
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "started_at": command_record.get("started_at"),
+                "ended_at": None,
+            }
+
+        exit_code = int(matches[-1])
+        stdout = _clean_interactive_output(
+            command_output,
+            exit_marker=end_marker,
+            begin_marker=command_record.get("local_begin_marker"),
+            command=command_record.get("command"),
+        )
+        return {
+            "status": "exited",
+            "exit_code": exit_code,
+            "stdout": stdout[:stdout_limit],
+            "stderr": "",
+            "stdout_truncated": len(stdout) > stdout_limit,
+            "stderr_truncated": False,
+            "started_at": command_record.get("started_at"),
+            "ended_at": get_timestamp(),
+        }
+
     def stop_session_command(
         self,
         machine: RemoteMachine,
@@ -747,9 +1050,15 @@ class ParamikoRemoteBackend:
     ) -> Dict[str, Any]:
         if self._uses_windows_agent(machine):
             raise RuntimeError("Windows agent session command stop is not yet supported")
+        if self._uses_openssh_pty(machine):
+            target = self._local_tmux_target(session_record)
+            self._run_local_tmux(["send-keys", "-t", target, "C-c"])
+            return {"stop_result": "interrupt_sent"}
 
         if machine.startup_commands:
-            raise RuntimeError("persistent session commands do not yet support startup_commands machines")
+            raise RuntimeError(
+                "persistent session commands do not yet support startup_commands machines"
+            )
 
         target = session_record["remote_terminal_name"]
         client = self._connect(machine)
@@ -761,7 +1070,9 @@ class ParamikoRemoteBackend:
                 f"printf '%s\\n' 143 > {shlex.quote(command_record['remote_exit_code_file'])}; "
                 f"date -u +'%Y-%m-%dT%H:%M:%SZ' > {shlex.quote(command_record['remote_ended_at_file'])}"
             )
-            _, stdout_file, stderr_file = client.exec_command(f"bash -lc {shlex.quote(stop_script)}")
+            _, stdout_file, stderr_file = client.exec_command(
+                f"bash -lc {shlex.quote(stop_script)}"
+            )
             stdout = stdout_file.read().decode("utf-8", errors="replace").strip()
             stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
             exit_code = stdout_file.channel.recv_exit_status()
@@ -793,17 +1104,14 @@ class ParamikoRemoteBackend:
                 input_text=input_text,
                 enter=enter,
             )
+        if self._uses_openssh_pty(machine):
+            return self._send_local_tmux_input(terminal_record, input_text, enter=enter)
 
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
 
         target = terminal_record["remote_terminal_name"]
-        commands = [
-            (
-                f"tmux send-keys -t {shlex.quote(target)} "
-                f"-l -- {shlex.quote(input_text)}"
-            )
-        ]
+        commands = [f"tmux send-keys -t {shlex.quote(target)} " f"-l -- {shlex.quote(input_text)}"]
         if enter:
             commands.append(f"tmux send-keys -t {shlex.quote(target)} C-m")
         script = " && ".join(commands)
@@ -819,6 +1127,20 @@ class ParamikoRemoteBackend:
         finally:
             client.close()
 
+    def _send_local_tmux_input(
+        self,
+        terminal_record: Dict[str, Any],
+        input_text: str,
+        enter: bool = True,
+    ) -> Dict[str, Any]:
+        target = self._local_tmux_target(terminal_record)
+        self._run_local_tmux(
+            ["send-keys", "-t", target, "-l", "--", input_text],
+        )
+        if enter:
+            self._run_local_tmux(["send-keys", "-t", target, "C-m"])
+        return {"input_sent": True}
+
     def capture_terminal(
         self,
         machine: RemoteMachine,
@@ -826,6 +1148,9 @@ class ParamikoRemoteBackend:
     ) -> Dict[str, Any]:
         if self._uses_windows_agent(machine):
             return self._capture_windows_agent_terminal(machine, terminal_record)
+        if self._uses_openssh_pty(machine):
+            transcript = self._capture_local_tmux_transcript(terminal_record)
+            return {"status": "active", "transcript": transcript}
 
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
@@ -848,9 +1173,24 @@ class ParamikoRemoteBackend:
         finally:
             client.close()
 
+    def _capture_local_tmux_transcript(self, terminal_record: Dict[str, Any]) -> str:
+        target = self._local_tmux_target(terminal_record)
+        history_limit = int(terminal_record.get("history_limit") or 10000)
+        result = self._run_local_tmux(
+            ["capture-pane", "-t", target, "-p", "-S", f"-{history_limit}"],
+        )
+        return result.stdout
+
     def terminal_exists(self, machine: RemoteMachine, terminal_record: Dict[str, Any]) -> bool:
         if self._uses_windows_agent(machine):
             return self._windows_agent_running(machine, terminal_record)
+        if self._uses_openssh_pty(machine):
+            target = self._local_tmux_target(terminal_record)
+            result = self._run_local_tmux(
+                ["has-session", "-t", target],
+                check=False,
+            )
+            return result.returncode == 0
 
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
@@ -871,6 +1211,15 @@ class ParamikoRemoteBackend:
     ) -> Dict[str, Any]:
         if self._uses_windows_agent(machine):
             return self._destroy_windows_agent_terminal(machine, terminal_record)
+        if self._uses_openssh_pty(machine):
+            target = self._local_tmux_target(terminal_record)
+            result = self._run_local_tmux(
+                ["kill-session", "-t", target],
+                check=False,
+            )
+            if result.returncode == 0:
+                return {"destroy_result": "destroyed"}
+            return {"destroy_result": "not_found"}
 
         if machine.startup_commands:
             raise RuntimeError("terminal sessions do not yet support startup_commands machines")
@@ -898,6 +1247,8 @@ class ParamikoRemoteBackend:
         """Restart the user's remote tmux server through direct SSH."""
         if self._uses_windows_agent(machine):
             raise RuntimeError("tmux server restart is only available for ssh-tmux machines")
+        if self._uses_openssh_pty(machine):
+            raise RuntimeError("tmux server restart is not supported for openssh-pty machines")
 
         if machine.startup_commands:
             raise RuntimeError("tmux server restart does not yet support startup_commands machines")
@@ -907,7 +1258,7 @@ class ParamikoRemoteBackend:
             "printf '%s\\n' missing_tmux; exit 3; "
             "fi; "
             "sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); "
-            "if [ -n \"$sessions\" ]; then "
+            'if [ -n "$sessions" ]; then '
             "printf '%s\\n' has_sessions; printf '%s\\n' \"$sessions\"; exit 2; "
             "fi; "
             "if tmux display-message -p '#{pid}' >/dev/null 2>&1; then "
@@ -948,6 +1299,8 @@ class ParamikoRemoteBackend:
         raise RuntimeError(stderr or stdout.strip() or "tmux server restart failed")
 
     def put(self, machine: RemoteMachine, local_path: str, remote_path: str) -> Dict[str, Any]:
+        if self._uses_openssh_pty(machine):
+            raise RuntimeError("file transfer is not supported for openssh-pty machines")
         remote_path = machine.map_file_path(remote_path)
         client = self._connect(machine)
         sftp = client.open_sftp()
@@ -963,7 +1316,178 @@ class ParamikoRemoteBackend:
             sftp.close()
             client.close()
 
-    def get(self, machine: RemoteMachine, remote_path: str, local_path: str) -> Dict[str, Any]:
+    def _run_openssh_pty_transfer_command(
+        self,
+        session_record: Dict[str, Any],
+        command: str,
+        timeout: int = 300,
+    ) -> str:
+        """Run a bounded transfer command through the logged-in PTY without polluting history."""
+        target = self._local_tmux_target(session_record)
+        token = uuid.uuid4().hex
+        begin_marker = f"__REMOTE_RUNNER_TRANSFER_BEGIN_{token}__"
+        end_marker = f"__REMOTE_RUNNER_TRANSFER_END_{token}__"
+        capture_fd, capture_path = tempfile.mkstemp(prefix="remote-runner-pty-transfer-")
+        os.close(capture_fd)
+        pipe_command = f"cat > {shlex.quote(capture_path)}"
+        wrapper = "; ".join(
+            [
+                f"printf '\\033[?1049h\\033[?25l\\n{begin_marker}\\n'",
+                f"__rr_transfer_command={shlex.quote(command)}",
+                'eval "$__rr_transfer_command"',
+                "__rr_transfer_rc=$?",
+                (f"printf '\\n{end_marker}:%s\\n\\033[?25h\\033[?1049l' " '"$__rr_transfer_rc"'),
+            ]
+        )
+        deadline = time.time() + max(0, timeout)
+        end_pattern = re.compile(rf"{re.escape(end_marker)}:(\d+)")
+
+        try:
+            self._run_local_tmux(["pipe-pane", "-t", target, pipe_command])
+            self._send_local_tmux_input(session_record, wrapper, enter=True)
+            while True:
+                with open(capture_path, "rb") as capture_file:
+                    output = capture_file.read().decode("utf-8", errors="replace")
+                begin_index = output.rfind(begin_marker)
+                end_matches = [
+                    match for match in end_pattern.finditer(output) if match.start() > begin_index
+                ]
+                if begin_index >= 0 and end_matches:
+                    end_match = end_matches[-1]
+                    payload_start = begin_index + len(begin_marker)
+                    payload = _normalize_terminal_output(output[payload_start : end_match.start()])
+                    payload = payload.strip("\n")
+                    exit_code = int(end_match.group(1))
+                    if exit_code != 0:
+                        detail = payload.strip() or "remote transfer command failed"
+                        raise RuntimeError(detail)
+                    return payload
+                if time.time() >= deadline:
+                    raise TimeoutError("openssh-pty file transfer did not finish before timeout")
+                time.sleep(min(0.05, max(0, deadline - time.time())))
+        finally:
+            self._run_local_tmux(["pipe-pane", "-t", target], check=False)
+            try:
+                os.unlink(capture_path)
+            except FileNotFoundError:
+                pass
+
+    def _get_openssh_pty_file(
+        self,
+        session_record: Dict[str, Any],
+        remote_path: str,
+        local_path: str,
+    ) -> Dict[str, Any]:
+        if session_record.get("status") != "active":
+            raise RuntimeError("openssh-pty file get requires an active session")
+        if session_record.get("busy"):
+            raise RuntimeError("openssh-pty file get requires an idle session")
+
+        quoted_remote_path = shlex.quote(remote_path)
+        metadata_command = " ".join(
+            [
+                f"if [ ! -e {quoted_remote_path} ]; then",
+                "printf 'remote path does not exist\\n'; false;",
+                f"elif [ ! -f {quoted_remote_path} ]; then",
+                "printf 'remote path is not a regular file\\n'; false;",
+                "elif ! command -v sha256sum >/dev/null 2>&1; then",
+                "printf 'sha256sum is required on the remote machine\\n'; false;",
+                "else",
+                f"__rr_transfer_size=$(wc -c < {quoted_remote_path});",
+                f"__rr_transfer_sha=$(sha256sum {quoted_remote_path});",
+                "__rr_transfer_sha=${__rr_transfer_sha%% *};",
+                'printf \'%s\\t%s\\n\' "$__rr_transfer_size" "$__rr_transfer_sha";',
+                "fi",
+            ]
+        )
+        metadata = self._run_openssh_pty_transfer_command(
+            session_record,
+            metadata_command,
+        )
+        metadata_match = re.fullmatch(
+            r"\s*(\d+)\t([0-9a-fA-F]{64})\s*",
+            metadata,
+        )
+        if not metadata_match:
+            raise RuntimeError("openssh-pty file metadata response is invalid")
+        remote_size = int(metadata_match.group(1))
+        remote_sha256 = metadata_match.group(2).lower()
+
+        local_path = os.path.abspath(os.path.expanduser(local_path))
+        local_parent = os.path.dirname(local_path) or os.curdir
+        os.makedirs(local_parent, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(local_path)}.",
+            suffix=".partial",
+            dir=local_parent,
+        )
+        digest = hashlib.sha256()
+        written = 0
+        chunk_size = int(self.OPENSSH_PTY_TRANSFER_CHUNK_SIZE)
+
+        try:
+            with os.fdopen(temp_fd, "wb") as output_file:
+                chunk_count = (remote_size + chunk_size - 1) // chunk_size
+                for chunk_index in range(chunk_count):
+                    chunk_command = " ".join(
+                        [
+                            f"if [ -f {quoted_remote_path} ]; then",
+                            (
+                                f"dd if={quoted_remote_path} bs={chunk_size} "
+                                f"skip={chunk_index} count=1 2>/dev/null | base64;"
+                            ),
+                            "else printf 'remote file disappeared during transfer\\n'; false; fi",
+                        ]
+                    )
+                    encoded = self._run_openssh_pty_transfer_command(
+                        session_record,
+                        chunk_command,
+                    )
+                    try:
+                        chunk = base64.b64decode("".join(encoded.split()), validate=True)
+                    except Exception as exc:
+                        raise RuntimeError("openssh-pty file chunk is not valid base64") from exc
+                    expected_size = min(chunk_size, remote_size - written)
+                    if len(chunk) != expected_size:
+                        raise RuntimeError(
+                            "openssh-pty file chunk size mismatch: "
+                            f"expected {expected_size}, got {len(chunk)}"
+                        )
+                    output_file.write(chunk)
+                    digest.update(chunk)
+                    written += len(chunk)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+
+            if written != remote_size:
+                raise RuntimeError(
+                    f"openssh-pty file size mismatch: expected {remote_size}, got {written}"
+                )
+            local_sha256 = digest.hexdigest()
+            if local_sha256 != remote_sha256:
+                raise RuntimeError(
+                    "openssh-pty file SHA-256 mismatch: "
+                    f"expected {remote_sha256}, got {local_sha256}"
+                )
+            os.replace(temp_path, local_path)
+            return {"size_bytes": written, "sha256": local_sha256}
+        finally:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+    def get(
+        self,
+        machine: RemoteMachine,
+        remote_path: str,
+        local_path: str,
+        session_record: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if self._uses_openssh_pty(machine):
+            if session_record is None:
+                raise RuntimeError("openssh-pty file get requires a session record")
+            return self._get_openssh_pty_file(session_record, remote_path, local_path)
         remote_path = machine.map_file_path(remote_path)
         client = self._connect(machine)
         sftp = client.open_sftp()
@@ -981,6 +1505,8 @@ class ParamikoRemoteBackend:
             client.close()
 
     def list(self, machine: RemoteMachine, remote_path: str) -> Dict[str, Any]:
+        if self._uses_openssh_pty(machine):
+            raise RuntimeError("file listing is not supported for openssh-pty machines")
         sftp_path = machine.map_file_path(remote_path)
         client = self._connect(machine)
         sftp = client.open_sftp()
@@ -1094,22 +1620,22 @@ class ParamikoRemoteBackend:
                 "trap mark_stopped TERM INT HUP",
                 'cd "$CWD"',
                 "cd_rc=$?",
-                "if [ \"$cd_rc\" -ne 0 ]; then",
+                'if [ "$cd_rc" -ne 0 ]; then',
                 "  rc=$cd_rc",
-                "  printf '%s\\n' \"$rc\" > \"$EXIT_CODE_FILE\"",
+                '  printf \'%s\\n\' "$rc" > "$EXIT_CODE_FILE"',
                 "  date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$ENDED_AT_FILE\"",
                 "  printf '%s\\n' failed > \"$STATUS_FILE\"",
-                "  exit \"$rc\"",
+                '  exit "$rc"',
                 "fi",
                 'eval "$USER_COMMAND"',
                 "rc=$?",
-                "printf '%s\\n' \"$rc\" > \"$EXIT_CODE_FILE\"",
+                'printf \'%s\\n\' "$rc" > "$EXIT_CODE_FILE"',
                 "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$ENDED_AT_FILE\"",
-                "current_status=$(cat \"$STATUS_FILE\" 2>/dev/null || true)",
-                "if [ \"$current_status\" != stopped ]; then",
+                'current_status=$(cat "$STATUS_FILE" 2>/dev/null || true)',
+                'if [ "$current_status" != stopped ]; then',
                 "  printf '%s\\n' exited > \"$STATUS_FILE\"",
                 "fi",
-                "exit \"$rc\"",
+                'exit "$rc"',
                 "",
             ]
         )
@@ -1143,7 +1669,7 @@ class ParamikoRemoteBackend:
                 '  nohup bash "$WORKER" >> "$STDOUT_FILE" 2>> "$STDERR_FILE" < /dev/null &',
                 "fi",
                 "pid=$!",
-                "printf '%s\\n' \"$pid\" > \"$PID_FILE\"",
+                'printf \'%s\\n\' "$pid" > "$PID_FILE"',
                 "printf 'pid=%s\\n' \"$pid\"",
                 'printf "state_dir=%s\\n" "$RR_DIR"',
                 "",
@@ -1632,43 +2158,43 @@ class ParamikoRemoteBackend:
             f"__rr_command={shlex.quote(command)}",
             f"__rr_cwd={shlex.quote(cwd or '')}",
             f"__rr_cwd_override={'1' if cwd_override else '0'}",
-            "mkdir -p \"$__rr_dir\"",
-            ": > \"$__rr_stdout\"",
-            ": > \"$__rr_stderr\"",
+            'mkdir -p "$__rr_dir"',
+            ': > "$__rr_stdout"',
+            ': > "$__rr_stderr"',
             "printf '%s\\n' running > \"$__rr_status\"",
             "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_started_at\"",
             f"printf '\\n{begin_marker}\\n'",
             "__rr_stopped=0",
             "trap '__rr_stopped=1' INT TERM",
-            "if [ \"$__rr_cwd_override\" = 1 ]; then",
-            "  cd \"$__rr_cwd\"",
+            'if [ "$__rr_cwd_override" = 1 ]; then',
+            '  cd "$__rr_cwd"',
             "  __rr_cd_rc=$?",
-            "  if [ \"$__rr_cd_rc\" -ne 0 ]; then",
-            "    printf 'cd failed: %s\\n' \"$__rr_cwd\" | tee -a \"$__rr_stderr\" >&2",
+            '  if [ "$__rr_cd_rc" -ne 0 ]; then',
+            '    printf \'cd failed: %s\\n\' "$__rr_cwd" | tee -a "$__rr_stderr" >&2',
             "    __rr_rc=$__rr_cd_rc",
-            "    printf '%s\\n' \"$__rr_rc\" > \"$__rr_exit_code\"",
+            '    printf \'%s\\n\' "$__rr_rc" > "$__rr_exit_code"',
             "    date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_ended_at\"",
             "    printf '%s\\n' failed > \"$__rr_status\"",
             f"    printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
             "    trap - INT TERM",
-            "    return \"$__rr_rc\" 2>/dev/null || exit \"$__rr_rc\"",
+            '    return "$__rr_rc"',
             "  fi",
             "fi",
-            "{ eval \"$__rr_command\"; } > >(tee -a \"$__rr_stdout\") 2> >(tee -a \"$__rr_stderr\" >&2)",
+            '{ eval "$__rr_command"; } > >(tee -a "$__rr_stdout") 2> >(tee -a "$__rr_stderr" >&2)',
             "__rr_rc=$?",
-            "__rr_existing_status=$(cat \"$__rr_status\" 2>/dev/null || true)",
-            "if [ \"$__rr_existing_status\" = stopped ] || [ \"$__rr_stopped\" = 1 ] || [ \"$__rr_rc\" -eq 130 ] || [ \"$__rr_rc\" -eq 143 ]; then",
+            '__rr_existing_status=$(cat "$__rr_status" 2>/dev/null || true)',
+            'if [ "$__rr_existing_status" = stopped ] || [ "$__rr_stopped" = 1 ] || [ "$__rr_rc" -eq 130 ] || [ "$__rr_rc" -eq 143 ]; then',
             "  __rr_status_value=stopped",
             "  __rr_rc=143",
             "else",
             "  __rr_status_value=exited",
             "fi",
             f"printf '\\n{end_marker}:%s\\n' \"$__rr_rc\"",
-            "printf '%s\\n' \"$__rr_rc\" > \"$__rr_exit_code\"",
+            'printf \'%s\\n\' "$__rr_rc" > "$__rr_exit_code"',
             "date -u +'%Y-%m-%dT%H:%M:%SZ' > \"$__rr_ended_at\"",
-            "printf '%s\\n' \"$__rr_status_value\" > \"$__rr_status\"",
+            'printf \'%s\\n\' "$__rr_status_value" > "$__rr_status"',
             "trap - INT TERM",
-            "return \"$__rr_rc\" 2>/dev/null || exit \"$__rr_rc\"",
+            'return "$__rr_rc"',
             "",
         ]
         return "\n".join(lines)

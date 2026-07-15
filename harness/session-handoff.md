@@ -1,68 +1,71 @@
-<!--
-职责：提供最新的紧凑交接信息，让新 agent 能无歧义恢复当前任务。
-边界：只保留当前可恢复状态；历史放 progress.md，稳定事实放 docs 或代码。
--->
+<!-- 当前可恢复状态；历史过程见 harness/progress.md。 -->
 
 # 会话交接
 
 ## 仓库状态
 
-- 分支：`dev-windows-agent-pwsh-backend`。
-- 最近计划：`plans/archive/2026-06-24-readable-session-names.md`。
-- 当前功能项：`F-024 Remote Runner readable session names` passing；`F-023`、`F-022`、`F-021`、`F-020` passing；`F-005` profile/report 层未开始。
-- 当前目标状态：Remote Runner 已支持 Linux/SSH + tmux 和 direct Windows OpenSSH + windows-agent；本轮已处理本地 `docs/issues/` 中确认真实的可读 session name 缺口。
+- 分支：`main`，工作区未提交；不要覆盖现有 F-025 及更早修改。
+- 当前功能：`F-026 OpenSSH PTY session 文件回收` passing；任务合同已归档到 `plans/archive/2026-07-10-openssh-pty-file-get.md`。
+- 91_A100 当前 recovery session：`91_A100-recovery-20260710` / `sess_20260710_070047_290193_8b06dcf6`，保留给后续实验。
+- 真实 shell 已验证：用户 `lujingyu`，目录 `/home/lujingyu/project/ljm`，shell 已进入 zsh。
+- 清洁状态：无 active task plan；工作区仍有 F-025 以来的未提交代码、文档和计划文件，本轮没有替用户提交或清理。
 
 ## 本轮完成
 
-- 已实现 `session create --name`，session state/public response 保存并返回 `name`。
-- 新增 `RemoteSessionManager.resolve_session_id`，按精确 `session_id` 优先，其次解析唯一 readable name；歧义时报错。
-- `session show/exec/command list/show/wait/stop/send/read/logs/destroy` 和 `file put/get/list` 均支持 `session_id` 或唯一 name。
-- 新增 name 校验：非空、只允许字母/数字/`.`/`_`/`-`、不得以 `sess_` 开头；同机未销毁 session 重名拒绝，destroyed 后可复用。
-- 旧 session state 没有 `name` 时仍可按 `session_id` 使用。
-- 同步 README、REQUIREMENTS、Remote Runner API、getting-started、SKILL、feature list、progress 和 handoff。
-- 已删除已解决的本地 `docs/issues/` 暂存文件。
+- 复现了同一 `openssh-pty` session 中 `session exec` 成功、`file get` 固定拒绝的问题。
+- 根因：文件管理器只把 machine 路由给 SFTP backend；PTY backend 已有登录态 session，却没有 session-aware 文件通道。
+- 为 `openssh-pty` 实现普通文件 `file get`：
+  - 复用已登录且空闲的 session，不创建第二条 SSH/SFTP 连接；
+  - 本地 tmux `pipe-pane` 捕获传输输出；
+  - 1 MiB 分块 base64；
+  - 远端先读取 size/SHA-256；
+  - 本地写同目录 partial 文件，全部校验后 `os.replace`；
+  - 失败不覆盖已有目标文件，并保留 failed transfer record。
+- `file put`、目录下载、`file list`、`run once`、PTY background command 仍明确不支持。
+- 同步 README、REQUIREMENTS、API、getting-started、platform-support、MVP spec、feature list 和 progress。
 
 ## 验证证据
 
-- `python3 -m py_compile remote_runner/remote_backend.py remote_runner/remote_session.py tests/test_remote_runner_mvp.py` 通过。
-- `python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 `45 passed`。
-- `python3 -m remote_runner.cli session create --help` 显示 `--name`。
-- `python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 `2 passed, 1 skipped`。
-- `python3 -m pytest tests/test_remote_runner_real_integration.py -q` 默认通过 `2 skipped`。
-- `python3 -m pytest -q` 通过 `68 passed, 4 skipped`。
-- `./scripts/harness-check.sh` 通过 `0 warnings`。
-- `git diff --check` 通过。
-- configured Linux/tmux machine 新鲜压力自测通过：大量 stdout 截断、12 秒静默 wait、同步 timeout 后恢复、后台命令轮询/wait/stop、file put/list/get、run once、外部 kill tmux 后 lost/exec reject/destroy、最终 exec、cleanup 和 destroy。
-- 另一台 Linux/tmux machine 深度自测通过：持久 shell 状态、同步 timeout 后恢复、后台 wait、file put/get、run once、外部 kill tmux 后 lost/destroy、cleanup 和 destroy。
-- `REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<linux_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_real_integration.py -q` 通过 `1 passed, 1 skipped`。
-- `REMOTE_RUNNER_RUN_REAL_TESTS=1 REMOTE_RUNNER_REAL_MACHINE=<linux_machine_id> REMOTE_RUNNER_REAL_TEST_CWD=<remote_cwd> python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 `3 passed`。
-- `python3 -m pytest -q` 通过 `64 passed, 4 skipped`。
-- `./scripts/harness-check.sh` 通过 `0 warnings`。
-- `git diff --check` 通过。
-- configured Linux/tmux machine 历史 stale command 已由 `running` 收敛为 `failed`，error 为远端 tmux session 已不存在。
-- configured Linux/tmux machine 历史 stale busy session 已由 `active`/`busy` 收敛为 `lost`/`failed`。
+- `91_A100-recovery-20260710` 成功回收 26 个研究产物，包括最大约 5.8 MB 的 stereo WAV；每个成功 response 均包含远端 size/SHA-256。
+- F-Actor eval3 三条主 WAV 本地 `file` 验证为 22.05 kHz、16-bit stereo，拆分声道为 mono。
+- 聚焦回归：`3 passed`。
+- MVP：`56 passed`。
+- 全仓：`79 passed, 4 skipped`。
+- Black check、`git diff --check`、`./scripts/harness-check.sh`、`./init.sh` 全部通过。
+
+## 研究交付
+
+唯一入口：
+
+```text
+/Users/ely/workspace/research/audio/DuplexOmni/competitor_audit_20260708/deliverables/README.md
+```
+
+该目录包含最终中文报告、项目查重索引、评估方案、试听指南、当前 listening manifest，以及从远端回收的 F-Actor/dGSLM/Behavior-SD/BayLing 等关键音频。远端只保留仓库、模型和运行环境，不再承担交付完整性。
 
 ## 仍未完成
 
-- 尚未批量收敛所有历史 session；当前逻辑是在 `session show`、`session command show/wait`、`session exec`、`session destroy` 触达时惰性恢复。
-- 可以后续新增显式 `session recover` 或 `session list --refresh`，批量标记历史 stale session。
-- Windows backend 仍不支持 background command/stop。
-- `docs/issues/` 暂存目录已清空；其中 readable session name 问题已由 F-024 处理。
+- PTY 传输会短暂使用 terminal alternate screen；真实回归未污染持久 transcript，但若进程被 `SIGKILL`，终端显示恢复仍缺专门回归。
+- PTY 普通文件下载当前要求远端有 `sha256sum`、`dd` 和 `base64`。
+- `remote-runner` console script 在 `seedrunner` 环境的 editable install 仍可能缺失模块；本轮可靠入口是仓库根目录执行 `conda run -n seedrunner python -m remote_runner.cli ...`。
+- 当前工作区包含此前未提交的 F-025 与文档改动；本轮未提交、未清理这些修改。
 
 ## 安全与隐私边界
 
-- 不把密码、密钥、真实 host、真实账号或私人路径写入仓库、handoff 或提交信息。
-- configured Linux/tmux machine 真实验证只读取 Remote Runner 状态和运行轻量探针；没有启动训练、没有杀未知业务进程、没有删除历史日志。
-- 本轮只收敛本地 Remote Runner 状态；远端历史 `.remote-runner` command 目录保留。
+- 没有把密码、真实 gateway host、密钥或 `.env.machines` 内容写入代码、日志、研究报告或 handoff。
+- 真实文件操作只读取 `/home/lujingyu/project/ljm` 下既有研究产物；没有删除远端文件、修改模型权重或操作他人 GPU 进程。
+- 本地研究目录只新增/迁移审计交付物，没有复制远端模型权重或 conda 环境。
 
 ## 下一步最佳动作
 
-1. 提交 F-024 readable session names 修复。
-2. 后续可单独设计批量 recover/list refresh 和更明确的 timeout UX。
+优先继续双工模型研究和试听。Remote Runner 只有在真实工作流再次遇到边界时，才扩展 `file put`、目录传输、`file list` 或 `run once`；不要为对称性提前堆功能。
 
 ## 常用命令
 
-- Harness 检查：`./scripts/harness-check.sh`
-- 聚焦测试：`python3 -m pytest tests/test_remote_runner_mvp.py -q`
-- 默认真实测试入口：`python3 -m pytest tests/test_remote_runner_real_integration.py -q`
-- 完整验证：`python3 -m pytest -q`
+```bash
+conda run -n seedrunner python -m remote_runner.cli session show --session 91_A100-recovery-20260710 --json
+conda run -n seedrunner python -m pytest tests/test_remote_runner_mvp.py -q
+conda run -n seedrunner python -m pytest -q
+./scripts/harness-check.sh
+git diff --check
+```

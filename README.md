@@ -23,10 +23,12 @@ The project direction is now broader:
 - SSH, tmux, sshfs, rsync, SFTP, Slurm, Docker, and Kubernetes are backend details, not product
   identity.
 
-Current MVP support has two persistent session backends:
+Current MVP support has three persistent session backends:
 
 - Linux machines reachable over SSH/SFTP with `tmux` installed.
 - Direct Windows OpenSSH machines with SFTP, Python 3, and PowerShell 7 available.
+- Interactive OpenSSH aliases that need a human-driven `ssh -tt <alias>` login, with local `tmux`
+  installed (`backend=openssh-pty`).
 
 Windows OpenSSH + WSL compatibility remains available as historical `startup_commands` and path
 mapping input, but it is not the direct Windows support path. See
@@ -93,6 +95,13 @@ duration, local log path, and `command_id`; shell-local state such as `cd`, expo
 aliases carries across later `session exec` calls. Long-running jobs should use `--mode background`;
 later `session command show/wait/stop` calls recover state by `command_id`. `session send/read`
 provide raw input and transcript access for UI-style shell panels.
+
+`session exec` is shell-native command entry, not an isolated batch runner: it should feel like
+typing one command into the persistent shell while Remote Runner captures structured evidence.
+Backend wrappers may add markers and logs, but normal execution must return to the same shell.
+Use `session destroy` for teardown and `run once` for upload-run-download workflows or scripts that
+end with process-level `exit` semantics.
+
 `session create --name` is optional but recommended for non-temporary work; later `--session`
 arguments accept either the generated `session_id` or a unique readable name.
 
@@ -103,9 +112,13 @@ recommended way to enter real credentials because shell history can leak it.
 
 Machines include explicit `platform`, `backend`, and `shell` fields. Linux defaults to
 `backend=ssh-tmux` and `shell=bash`; direct Windows defaults to `backend=windows-agent` and
-`shell=pwsh`. Ordered startup commands and path mappings remain available for compatibility
-backends, such as Windows OpenSSH hosts that first enter WSL, but direct Windows support does not
-depend on WSL.
+`shell=pwsh`. `openssh-pty` machines store an OpenSSH alias and use `auth_type=manual`; users attach
+to a local tmux session to complete password, OTP, or gateway prompts, then detach while the
+interactive shell remains available to Remote Runner. An active idle PTY session can also download
+ordinary files with `file get`; size and SHA-256 are checked before atomic local replacement.
+Ordered startup commands and path mappings
+remain available for compatibility backends, such as Windows OpenSSH hosts that first enter WSL, but
+direct Windows support does not depend on WSL.
 
 `run once` is the first generic closed-loop layer above machine/session/file: it can upload inputs,
 execute one command, download artifacts, save a run manifest, and destroy the temporary session
@@ -180,7 +193,7 @@ implementation detail, not the desired long-term public API.
 - [Requirements](REQUIREMENTS.md) - MVP requirements and acceptance criteria
 - [Remote Runner API Contract](docs/reference/REMOTE_RUNNER_API.md) - target agent-facing CLI
 - [Getting Started](docs/getting-started.md) - install and basic usage guide
-- [Platform Support](docs/platform-support.md) - current Linux and direct Windows support boundary
+- [Platform Support](docs/platform-support.md) - current backend support boundaries
 - [Launch Acceptance Suite](docs/testing/remote-runner-launch-acceptance.md) - reusable pre-release validation
 - [Legacy seed-runner API](docs/reference/SEED_RUNNER_API.md) - legacy prototype CLI reference
 

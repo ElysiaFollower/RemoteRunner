@@ -1,9 +1,13 @@
 """Tests for the mount-free Remote Runner MVP core."""
 
+import base64
+import hashlib
 import io
 import json
 import os
+import re
 import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -141,7 +145,16 @@ class FakeBackend:
         record["stderr"] = stderr
         record["ended_at"] = "2026-05-08T00:00:04Z"
 
-    def create_terminal(self, machine, cwd, terminal_id, width=120, height=40, history_limit=10000):
+    def create_terminal(
+        self,
+        machine,
+        cwd,
+        terminal_id,
+        terminal_name=None,
+        width=120,
+        height=40,
+        history_limit=10000,
+    ):
         self.terminals[terminal_id] = {
             "machine_id": machine.machine_id,
             "cwd": cwd,
@@ -231,7 +244,9 @@ class FakeBackend:
             self.block_started.set()
             assert self.block_release.wait(timeout=2)
 
-        stdout, stderr, exit_code = self._execute_terminal_command(terminal, command, cwd, cwd_override)
+        stdout, stderr, exit_code = self._execute_terminal_command(
+            terminal, command, cwd, cwd_override
+        )
         status = "running" if command in {"sleep 30", "tail -f app.log"} else "exited"
         if command in {"sleep 30", "tail -f app.log"}:
             stdout = "started\n"
@@ -263,8 +278,12 @@ class FakeBackend:
             "remote_wrapper_file": f"{remote_state_dir}/run.sh",
         }
 
-    def wait_session_command(self, machine, command_record, timeout=300, stdout_limit=8192, stderr_limit=8192):
+    def wait_session_command(
+        self, machine, command_record, timeout=300, stdout_limit=8192, stderr_limit=8192
+    ):
         self.commands[-1]["timeout"] = timeout
+        if command_record["command"] == "local-interrupt":
+            raise KeyboardInterrupt()
         return self.inspect_session_command(
             machine,
             command_record,
@@ -272,7 +291,9 @@ class FakeBackend:
             stderr_limit=stderr_limit,
         )
 
-    def inspect_session_command(self, machine, command_record, stdout_limit=8192, stderr_limit=8192):
+    def inspect_session_command(
+        self, machine, command_record, stdout_limit=8192, stderr_limit=8192
+    ):
         record = self.background_commands[command_record["command_id"]]
         stdout = record["stdout"]
         stderr = record["stderr"]
@@ -377,6 +398,17 @@ def _add_key_machine(machine_manager: RemoteMachineManager, tmp_path: Path):
     )
 
 
+def _add_openssh_pty_machine(machine_manager: RemoteMachineManager):
+    return machine_manager.add(
+        machine_id="manual-a100",
+        auth_type="manual",
+        backend="openssh-pty",
+        ssh_alias="91_A100",
+        platform="linux",
+        default_cwd="/root",
+    )
+
+
 def test_seed_runner_remote_cli_wrapper_points_to_remote_runner_entrypoint():
     from seed_runner.remote_cli import main as legacy_main
 
@@ -478,6 +510,64 @@ def test_machine_registry_redacts_credentials_and_recovers(remote_state_dir, tmp
     assert removed == {"machine_id": "ops-01", "removed": True}
     assert reloaded_manager.list()["summary"] == {"machine_count": 1}
     assert oct(os.stat(get_machines_file()).st_mode & 0o777) == "0o600"
+
+
+def test_openssh_pty_machine_uses_alias_without_credentials(remote_state_dir):
+    machine_manager = RemoteMachineManager()
+
+    created = _add_openssh_pty_machine(machine_manager)
+    record = load_machines_state()["machines"]["manual-a100"]
+
+    assert created["backend"] == "openssh-pty"
+    assert created["auth_type"] == "manual"
+    assert created["ssh_alias"] == "91_A100"
+    assert created["default_cwd"] == "/root"
+    assert "password" not in created
+    assert "key_path" not in created
+    assert record["ssh_alias"] == "91_A100"
+    assert record["user"] == ""
+
+
+def test_remote_runner_cli_adds_openssh_pty_machine_without_secret_fields(
+    remote_state_dir,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "remote-runner",
+            "machine",
+            "add",
+            "--machine-id",
+            "manual-a100",
+            "--backend",
+            "openssh-pty",
+            "--ssh-alias",
+            "91_A100",
+            "--platform",
+            "linux",
+            "--default-cwd",
+            "/root",
+            "--json",
+        ],
+    )
+
+    remote_cli_main()
+    payload = json.loads(capsys.readouterr().out)
+    record = load_machines_state()["machines"]["manual-a100"]
+
+    assert payload["backend"] == "openssh-pty"
+    assert payload["auth_type"] == "manual"
+    assert payload["ssh_alias"] == "91_A100"
+    assert payload["host"] == "localhost"
+    assert payload["port"] == 0
+    assert payload["user"] == ""
+    assert "password" not in payload
+    assert "key_path" not in payload
+    assert record["auth_type"] == "manual"
+    assert record["ssh_alias"] == "91_A100"
 
 
 def test_machine_restart_tmux_server_rejects_active_tmux_sessions(remote_state_dir, tmp_path):
@@ -589,6 +679,24 @@ def test_session_exec_records_backend_errors_and_clears_busy(remote_state_dir, t
     assert Path(session["commands"][0]["log_file_local"]).read_text().find("ssh failed") >= 0
 
 
+def test_session_exec_records_keyboard_interrupt_and_clears_busy(remote_state_dir, tmp_path):
+    machine_manager = RemoteMachineManager()
+    _add_key_machine(machine_manager, tmp_path)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_id = session_manager.create("lab-gpu-01")["session_id"]
+
+    with pytest.raises(KeyboardInterrupt):
+        session_manager.exec(session_id, "local-interrupt")
+
+    session = session_manager.show(session_id)
+    assert session["busy"] is False
+    assert session["command_count"] == 1
+    assert session["commands"][0]["status"] == "failed"
+    assert session["commands"][0]["error"] == "KeyboardInterrupt"
+    assert session["commands"][0]["command"] == "local-interrupt"
+
+
 def test_session_exec_rejects_concurrent_commands(remote_state_dir, tmp_path):
     machine_manager = RemoteMachineManager()
     _add_key_machine(machine_manager, tmp_path)
@@ -631,7 +739,9 @@ def test_session_background_command_can_be_polled_waited_and_stopped(remote_stat
     assert started["mode"] == "background"
     assert started["exit_code"] is None
     assert started["remote_state_dir"].endswith(f"/.remote-runner/commands/{command_id}")
-    assert started["remote_stdout_file"].endswith(f"/.remote-runner/commands/{command_id}/stdout.log")
+    assert started["remote_stdout_file"].endswith(
+        f"/.remote-runner/commands/{command_id}/stdout.log"
+    )
     assert started["remote_status_file"].endswith(f"/.remote-runner/commands/{command_id}/status")
     assert session_manager.show(session_id)["busy"] is False
     assert session_manager.show(session_id)["command_count"] == 1
@@ -707,9 +817,7 @@ def test_session_background_command_marks_stale_when_tmux_session_is_missing(
     backend = FakeBackend()
     session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
     session_id = session_manager.create("lab-gpu-01")["session_id"]
-    command_id = session_manager.exec(session_id, "sleep 30", mode="background")[
-        "command_id"
-    ]
+    command_id = session_manager.exec(session_id, "sleep 30", mode="background")["command_id"]
 
     backend.terminals[session_id]["status"] = "destroyed"
 
@@ -759,7 +867,9 @@ def test_session_show_recovers_stale_active_command_when_tmux_session_is_missing
         session_manager.exec(session_id, "echo should-not-run")
 
 
-def test_remote_runner_cli_background_command_outputs_json(remote_state_dir, tmp_path, monkeypatch, capsys):
+def test_remote_runner_cli_background_command_outputs_json(
+    remote_state_dir, tmp_path, monkeypatch, capsys
+):
     machine_manager = RemoteMachineManager()
     _add_key_machine(machine_manager, tmp_path)
     backend = FakeBackend()
@@ -866,6 +976,301 @@ def test_session_preserves_shell_state_and_incremental_transcript(
         reloaded.send(session_id, "pwd")
 
 
+def test_session_command_wrapper_returns_without_exiting_persistent_shell():
+    backend = ParamikoRemoteBackend()
+    script = backend._session_command_wrapper_script(
+        paths={
+            "remote_state_dir": "/home/ely/project/.remote-runner/commands/cmd_test",
+            "remote_stdout_file": "/home/ely/project/.remote-runner/commands/cmd_test/stdout.log",
+            "remote_stderr_file": "/home/ely/project/.remote-runner/commands/cmd_test/stderr.log",
+            "remote_status_file": "/home/ely/project/.remote-runner/commands/cmd_test/status",
+            "remote_exit_code_file": "/home/ely/project/.remote-runner/commands/cmd_test/exit_code",
+            "remote_started_at_file": "/home/ely/project/.remote-runner/commands/cmd_test/started_at",
+            "remote_ended_at_file": "/home/ely/project/.remote-runner/commands/cmd_test/ended_at",
+        },
+        command="pytest -q",
+        command_id="cmd_test",
+        cwd="/home/ely/project",
+        cwd_override=True,
+    )
+
+    assert "Must be sourced in bash" in script
+    assert 'return "$__rr_rc"' in script
+    assert 'exit "$__rr_rc"' not in script
+
+
+class FakeLocalTmux:
+    def __init__(self):
+        self.sessions = {}
+        self.commands = []
+
+    def run(self, args, check=True, capture_output=True):
+        self.commands.append(list(args))
+        action = args[0]
+        if action == "new-session":
+            name = args[args.index("-s") + 1]
+            command = args[-1]
+            self.sessions[name] = {
+                "transcript": f"$ {command}\nauth prompt:\nuser@interactive-host:~$ ",
+                "command": command,
+            }
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if action in {"resize-window", "set-option"}:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if action == "has-session":
+            target = args[args.index("-t") + 1]
+            returncode = 0 if target in self.sessions else 1
+            return subprocess.CompletedProcess(args, returncode, "", "")
+        if action == "send-keys":
+            target = args[args.index("-t") + 1]
+            if "-l" in args:
+                text = args[-1]
+                self.sessions[target]["transcript"] += text + "\n"
+                if "__REMOTE_RUNNER_CMD_BEGIN_" in text:
+                    begin = re.search(
+                        r"__REMOTE_RUNNER_CMD_BEGIN_[A-Za-z0-9_]+__",
+                        text,
+                    ).group(0)
+                    end = re.search(
+                        r"__REMOTE_RUNNER_CMD_END_[A-Za-z0-9_]+__",
+                        text,
+                    ).group(0)
+                    if "__rr_command=pwd" in text:
+                        output = "/tmp/temp\n"
+                        exit_code = 0
+                    elif "__rr_command=exit-seven" in text:
+                        output = "failed\n"
+                        exit_code = 7
+                    else:
+                        output = "ok\n"
+                        exit_code = 0
+                    self.sessions[target]["transcript"] += f"{begin}\n{output}{end}:{exit_code}\n"
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if action == "capture-pane":
+            target = args[args.index("-t") + 1]
+            transcript = self.sessions[target]["transcript"]
+            return subprocess.CompletedProcess(args, 0, transcript, "")
+        if action == "kill-session":
+            target = args[args.index("-t") + 1]
+            existed = target in self.sessions
+            self.sessions.pop(target, None)
+            return subprocess.CompletedProcess(args, 0 if existed else 1, "", "")
+        raise AssertionError(f"unexpected tmux args: {args}")
+
+
+def test_openssh_pty_backend_uses_local_tmux_for_interactive_session(
+    remote_state_dir,
+):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = ParamikoRemoteBackend()
+    fake_tmux = FakeLocalTmux()
+    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
+    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
+    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    created = session_manager.create("manual-a100", name="a100-pty")
+    session_id = created["session_id"]
+    tmux_session = created["remote_backend_name"]
+
+    assert created["backend"] == "openssh-pty"
+    assert tmux_session == "rr_a100-pty"
+    assert created["local_attach_command"] == f"tmux attach-session -t {tmux_session}"
+    assert fake_tmux.sessions[tmux_session]["command"] == "/usr/bin/ssh -tt 91_A100"
+
+    pwd = session_manager.exec("a100-pty", "pwd", timeout=1)
+    failed = session_manager.exec("a100-pty", "exit-seven", timeout=1)
+    session_manager.send("a100-pty", "echo manual")
+    transcript = session_manager.read("a100-pty")
+    destroyed = session_manager.destroy("a100-pty")
+    literal_inputs = [
+        command[-1]
+        for command in fake_tmux.commands
+        if command[:1] == ["send-keys"] and "-l" in command
+    ]
+    rr_exec_inputs = [text for text in literal_inputs if "__REMOTE_RUNNER_CMD_BEGIN_" in text]
+
+    assert pwd["stdout"] == "/tmp/temp\n"
+    assert pwd["exit_code"] == 0
+    assert pwd["command_backend"] == "local_tmux"
+    assert pwd["cwd"] == "/root"
+    assert pwd["cwd_applied"] is False
+    assert "cd /root" not in transcript["transcript"]
+    assert failed["exit_code"] == 7
+    assert "echo manual" in transcript["transcript"]
+    assert len(rr_exec_inputs) == 2
+    assert all('eval "$__rr_command"' in text for text in rr_exec_inputs)
+    assert all("bash -lc" not in text for text in rr_exec_inputs)
+    assert all("|| exit" not in text for text in rr_exec_inputs)
+    assert destroyed["destroy_result"] == "destroyed"
+    assert tmux_session not in fake_tmux.sessions
+
+
+def test_openssh_pty_local_tmux_name_falls_back_when_readable_name_is_busy(
+    remote_state_dir,
+):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = ParamikoRemoteBackend()
+    fake_tmux = FakeLocalTmux()
+    fake_tmux.sessions["rr_work"] = {"transcript": "", "command": "existing"}
+    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
+    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
+    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+
+    created = session_manager.create("manual-a100", name="work")
+    tmux_session = created["remote_backend_name"]
+
+    assert tmux_session.startswith("rr_work_")
+    assert created["local_attach_command"] == f"tmux attach-session -t {tmux_session}"
+    assert fake_tmux.sessions[tmux_session]["command"] == "/usr/bin/ssh -tt 91_A100"
+
+
+def test_openssh_pty_rejects_background_commands(remote_state_dir):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = ParamikoRemoteBackend()
+    fake_tmux = FakeLocalTmux()
+    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
+    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
+    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_manager.create("manual-a100", name="a100-pty")
+
+    with pytest.raises(RuntimeError, match="background commands are not supported"):
+        session_manager.exec("a100-pty", "sleep 10", mode="background")
+
+    assert session_manager.command_list("a100-pty")["summary"]["command_count"] == 0
+
+
+def test_openssh_pty_file_get_uses_session_transport_and_verifies_content(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = ParamikoRemoteBackend()
+    fake_tmux = FakeLocalTmux()
+    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
+    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
+    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session = session_manager.create("manual-a100", name="artifact-pull")
+    file_manager = RemoteFileManager(
+        machine_manager=machine_manager,
+        session_manager=session_manager,
+        backend=backend,
+    )
+    content = b"first-block\x00" + b"second-block"
+    remote_sha256 = hashlib.sha256(content).hexdigest()
+    chunks = [content[:12], content[12:]]
+    responses = [
+        f"{len(content)}\t{remote_sha256}\n",
+        *(base64.b64encode(chunk).decode("ascii") + "\n" for chunk in chunks),
+    ]
+    calls = []
+
+    def fake_transfer_command(session_record, command, timeout=300):
+        calls.append((session_record, command, timeout))
+        return responses.pop(0)
+
+    monkeypatch.setattr(backend, "_run_openssh_pty_transfer_command", fake_transfer_command)
+    monkeypatch.setattr(backend, "OPENSSH_PTY_TRANSFER_CHUNK_SIZE", 12)
+    local_path = tmp_path / "artifact.bin"
+
+    transfer = file_manager.get(
+        "artifact-pull",
+        "/remote/artifact.bin",
+        str(local_path),
+    )
+
+    assert local_path.read_bytes() == content
+    assert transfer["size_bytes"] == len(content)
+    assert transfer["sha256"] == remote_sha256
+    assert calls[0][0]["session_id"] == session["session_id"]
+    assert len(calls) == 3
+    assert not responses
+
+
+def test_openssh_pty_file_get_keeps_existing_target_on_hash_mismatch(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = ParamikoRemoteBackend()
+    fake_tmux = FakeLocalTmux()
+    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
+    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
+    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_manager.create("manual-a100", name="artifact-pull")
+    file_manager = RemoteFileManager(
+        machine_manager=machine_manager,
+        session_manager=session_manager,
+        backend=backend,
+    )
+    content = b"corrupt-on-arrival"
+    responses = [
+        f"{len(content)}\t{'0' * 64}\n",
+        base64.b64encode(content).decode("ascii") + "\n",
+    ]
+
+    monkeypatch.setattr(
+        backend,
+        "_run_openssh_pty_transfer_command",
+        lambda *args, **kwargs: responses.pop(0),
+    )
+    local_path = tmp_path / "artifact.bin"
+    local_path.write_bytes(b"keep-me")
+
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        file_manager.get("artifact-pull", "/remote/artifact.bin", str(local_path))
+
+    assert local_path.read_bytes() == b"keep-me"
+    records = load_transfer_records(session_manager.show("artifact-pull")["session_id"])
+    assert records[-1]["status"] == "failed"
+    assert "SHA-256 mismatch" in records[-1]["error"]
+
+
+def test_openssh_pty_file_get_rejects_non_regular_remote_path(
+    remote_state_dir,
+    tmp_path,
+    monkeypatch,
+):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = ParamikoRemoteBackend()
+    fake_tmux = FakeLocalTmux()
+    backend._run_local_tmux = fake_tmux.run  # type: ignore[method-assign]
+    backend._ssh_binary = lambda: "/usr/bin/ssh"  # type: ignore[method-assign]
+    backend._local_tmux_binary = lambda: "tmux"  # type: ignore[method-assign]
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    session_manager.create("manual-a100", name="artifact-pull")
+    file_manager = RemoteFileManager(
+        machine_manager=machine_manager,
+        session_manager=session_manager,
+        backend=backend,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_run_openssh_pty_transfer_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("remote path is not a regular file")
+        ),
+    )
+    local_path = tmp_path / "artifact.bin"
+
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        file_manager.get("artifact-pull", "/remote/directory", str(local_path))
+
+    assert not local_path.exists()
+
+
 def test_session_read_appends_rotated_remote_transcript(
     remote_state_dir,
     tmp_path,
@@ -923,9 +1328,10 @@ def test_session_readable_name_resolves_session_and_file_commands(
     command_id = background["command_id"]
     assert session_manager.command_list("train.eval-01")["summary"]["command_count"] == 2
     assert session_manager.command_show("train.eval-01", command_id)["status"] == "running"
-    assert session_manager.command_wait("train.eval-01", command_id, timeout=0)[
-        "wait_timed_out"
-    ] is True
+    assert (
+        session_manager.command_wait("train.eval-01", command_id, timeout=0)["wait_timed_out"]
+        is True
+    )
     assert session_manager.command_stop("train.eval-01", command_id)["status"] == "stopped"
 
     session_manager.send("train.eval-01", "pwd")
@@ -1263,6 +1669,29 @@ def test_run_once_marks_nonzero_exit_failed_and_destroys_session(remote_state_di
     assert run["command_result"]["stderr"] == "failed\n"
     assert run["destroy_session_result"]["status"] == "destroyed"
     assert load_session_state(run["session_id"])["status"] == "destroyed"
+
+
+def test_run_once_rejects_openssh_pty_without_creating_session(remote_state_dir):
+    machine_manager = RemoteMachineManager()
+    _add_openssh_pty_machine(machine_manager)
+    backend = FakeBackend()
+    session_manager = RemoteSessionManager(machine_manager=machine_manager, backend=backend)
+    run_manager = RemoteRunManager(
+        session_manager=session_manager,
+        file_manager=RemoteFileManager(
+            machine_manager=machine_manager,
+            session_manager=session_manager,
+            backend=backend,
+        ),
+    )
+
+    run = run_manager.once(machine_id="manual-a100", command="echo unsupported")
+
+    assert run["status"] == "failed"
+    assert run["session_id"] is None
+    assert run["destroy_session_result"] is None
+    assert "run once is not supported for openssh-pty machines" in run["error"]
+    assert session_manager.list()["summary"]["session_count"] == 0
 
 
 def test_remote_runner_cli_machine_json_redacts_password(remote_state_dir, monkeypatch, capsys):

@@ -271,6 +271,28 @@
       "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest tests/test_remote_runner_launch_suite.py -q && python3 -m pytest tests/test_remote_runner_real_integration.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
       "evidence": "2026-06-24: 已实现 optional session name、统一 session resolver、session/file 命令按 session_id 或唯一 name 解析、name 校验、同机未销毁 session 重名拒绝、跨机同名歧义报错、destroyed 后同名复用、旧无 name session 兼容；CLI 新增 session create --name。验证：tests/test_remote_runner_mvp.py 45 passed；session create --help 显示 --name；tests/test_remote_runner_launch_suite.py 2 passed, 1 skipped；tests/test_remote_runner_real_integration.py 2 skipped；完整 pytest 68 passed, 4 skipped；harness-check 0 warnings；git diff --check 通过；本地 docs/issues/ 暂存问题已删除。",
       "notes": "任务合同已归档至 plans/archive/2026-06-24-readable-session-names.md；session_id 仍是主键，name 只作为可读引用入口。"
+    },
+    {
+      "id": "F-025",
+      "priority": "P0",
+      "area": "openssh-pty",
+      "title": "Remote Runner OpenSSH PTY backend",
+      "behavior": "用户能登记只适合 `ssh -tt <alias>` 交互登录的机器；session create 启动本地 tmux 托管的持久 OpenSSH PTY，session attach 让用户手动登录，登录后 session send/read/exec/destroy 可作用于同一个交互 shell。",
+      "status": "passing",
+      "verification": "tmux -V && python3 -m py_compile remote_runner/remote_machine.py remote_runner/remote_backend.py remote_runner/remote_session.py remote_runner/cli.py tests/test_remote_runner_mvp.py && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && git diff --check && 91_A100 手动 attach smoke && ./scripts/harness-check.sh",
+      "evidence": "2026-07-07: 已实现 `backend=openssh-pty`、`auth_type=manual`、`ssh_alias` machine schema；`session create` 启动本机 tmux 托管 `/usr/bin/ssh -tt <alias>`，`session attach` 支持用户手动完成登录并 detach，登录后 `session send/read/exec/destroy` 作用于同一交互 PTY。`session exec` wait-mode 能解析 marker、返回 stdout/exit_code/timestamps/log；无显式 `--cwd` 时保留人工 shell 当前目录并返回 `cwd_applied=false`，避免覆盖用户手动切到的安全目录；有可读 session name 时，本地 tmux session 名优先使用 `rr_<name>`，占用时再追加短后缀。已明确拒绝 file transfer、background command、run once、tmux server restart。2026-07-08 修正 `session exec` 契约和中断恢复：`session exec` 被明确为向同一持久 shell 输入命令并捕获结构化证据，不是隔离 batch runner；Linux/tmux wrapper 正常完成只 `return` 回持久 shell，不再保留 `exit` 兜底；本地 KeyboardInterrupt/Ctrl-C 会记录 failed command 并清除 busy。验证：本机 `tmux 3.7b`；`tests/test_remote_runner_mvp.py` 53 passed；聚焦 wrapper/openssh-pty/KeyboardInterrupt 测试 3 passed；`./scripts/harness-check.sh` 0 warnings；`./init.sh` 通过；2026-07-07 完整 `python3 -m pytest -q` 74 passed, 4 skipped；真实 alias/name/usability smoke 已通过。",
+      "notes": "任务合同归档至 plans/archive/2026-07-07-openssh-pty-backend.md。第一切片依赖本机 tmux；不做 SFTP、background command、run once、端口转发、ControlMaster 管理、远端 tmux 自动接管或无人值守认证；不记录真实 host/user/password。已知限制：PTY backend 无独立 stderr 管道，stderr 会合入 stdout；长 transcript 下 `session read --since` 增量可能重新返回旧 transcript 片段；大输出 JSON 会截断，当前本地 command log 也未保留完整 9000 字符输出；硬杀 CLI 进程、系统崩溃等非 Python KeyboardInterrupt 场景仍建议后续做真实 PTY 回归。第一切片不支持 artifact/file get，91_A100 研究任务产物需保留远端路径或另行传输。"
+    },
+    {
+      "id": "F-026",
+      "priority": "P0",
+      "area": "openssh-pty",
+      "title": "OpenSSH PTY session 文件回收",
+      "behavior": "已完成交互登录的 openssh-pty session 能通过 `file get` 分块下载普通文件，校验远端大小与 SHA-256，并在成功后原子落盘。",
+      "status": "passing",
+      "verification": "python3 -m pytest tests/test_remote_runner_mvp.py -q -k openssh_pty_file_get && python3 -m pytest tests/test_remote_runner_mvp.py -q && ./scripts/harness-check.sh && git diff --check && 91_A100 real file-get smoke",
+      "evidence": "2026-07-10: 真实 91_A100 session 先复现 `session exec` 成功而 `file get` 明确拒绝 openssh-pty；随后实现 session-aware PTY 分块下载、远端 size/SHA-256 校验、本地临时文件与原子替换。真实 session `91_A100-recovery-20260710` 成功回收 26 个研究产物，包括 5.8MB stereo WAV；每个 transfer record 均记录 size/hash。验证：聚焦 3 passed；MVP 56 passed；完整 pytest 79 passed, 4 skipped；Black check、git diff --check、harness-check 和 init 通过。",
+      "notes": "任务合同归档至 plans/archive/2026-07-10-openssh-pty-file-get.md。本切片只做普通文件 get；put、目录、list、run once 继续明确拒绝。"
     }
   ]
 }

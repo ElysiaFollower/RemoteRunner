@@ -34,7 +34,7 @@ class RemoteFileManager:
             direction="put",
             source=local_path,
             destination=remote_path,
-            action=lambda machine: self.backend.put(machine, local_path, remote_path),
+            action=lambda machine, session: self.backend.put(machine, local_path, remote_path),
         )
 
     def get(self, session_id: str, remote_path: str, local_path: str) -> Dict[str, Any]:
@@ -43,8 +43,29 @@ class RemoteFileManager:
             direction="get",
             source=remote_path,
             destination=local_path,
-            action=lambda machine: self.backend.get(machine, remote_path, local_path),
+            action=lambda machine, session: self._get(
+                machine,
+                session,
+                remote_path,
+                local_path,
+            ),
         )
+
+    def _get(
+        self,
+        machine: Any,
+        session: Dict[str, Any],
+        remote_path: str,
+        local_path: str,
+    ) -> Dict[str, Any]:
+        if machine.backend == "openssh-pty":
+            return self.backend.get(
+                machine,
+                remote_path,
+                local_path,
+                session_record=session,
+            )
+        return self.backend.get(machine, remote_path, local_path)
 
     def list(self, session_id: str, remote_path: str) -> Dict[str, Any]:
         session_id = self.session_manager.resolve_session_id(session_id)
@@ -101,7 +122,7 @@ class RemoteFileManager:
         transfer_id = generate_id("xfer")
         started_at = get_timestamp()
         try:
-            result = action(machine)
+            result = action(machine, session)
             status = "completed"
             error = None
         except Exception as exc:

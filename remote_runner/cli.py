@@ -95,6 +95,14 @@ def _prompt_startup_commands(existing: Optional[List[str]] = None) -> List[str]:
 
 
 def _has_interactive_missing_fields(args: argparse.Namespace) -> bool:
+    if args.backend == "openssh-pty" or getattr(args, "ssh_alias", None):
+        return any(
+            value in {None, ""}
+            for value in (
+                args.machine_id,
+                getattr(args, "ssh_alias", None),
+            )
+        )
     return any(
         value in {None, ""}
         for value in (
@@ -117,18 +125,60 @@ def _machine_exists(machine_id: str) -> bool:
 def _collect_machine_add_args(args: argparse.Namespace) -> Dict[str, Any]:
     interactive = _has_interactive_missing_fields(args)
     machine_id = args.machine_id or _prompt_required("Machine ID")
+    backend = args.backend
+    default_cwd = args.default_cwd
+    ssh_alias = args.ssh_alias
+
+    if backend is None and ssh_alias:
+        backend = "openssh-pty"
+    if backend == "openssh-pty":
+        platform = args.platform or (_prompt_platform() if interactive else "linux")
+        shell = args.shell or "bash"
+        ssh_alias = ssh_alias or _prompt_required("SSH alias")
+        host = args.host or "localhost"
+        port = args.port if args.port is not None else 0
+        user = args.user or ""
+        auth_type = args.auth_type or "manual"
+        password = None
+        key_path = None
+        startup_commands = args.startup_command or []
+        if default_cwd in {None, ""}:
+            default_cwd = _prompt("Default cwd after login", "~") if interactive else "~"
+        confirm_replace = args.confirm_replace
+        if args.replace and not confirm_replace and interactive and _machine_exists(machine_id):
+            print(
+                f"Machine '{machine_id}' already exists and will be replaced.",
+                file=sys.stderr,
+            )
+            confirm_replace = _prompt_required(
+                f"Type machine ID '{machine_id}' to confirm replacement"
+            )
+        return {
+            "machine_id": machine_id,
+            "host": host,
+            "port": port,
+            "user": user,
+            "auth_type": auth_type,
+            "password": password,
+            "key_path": key_path,
+            "ssh_alias": ssh_alias,
+            "default_cwd": default_cwd,
+            "startup_commands": startup_commands,
+            "platform": platform,
+            "backend": backend,
+            "shell": shell,
+            "replace": args.replace,
+            "confirm_replace": confirm_replace,
+        }
+
     host = args.host or _prompt_required("Host/IP")
     port = args.port if args.port is not None else (_prompt_port() if interactive else 22)
     user = args.user or _prompt_required("SSH user")
     auth_type = args.auth_type or _prompt_auth_type()
     platform = args.platform or (_prompt_platform() if interactive else "linux")
-    backend = args.backend
-    shell = args.shell
     if backend is None:
         backend = "windows-agent" if platform == "windows" else "ssh-tmux"
-    if shell is None:
-        shell = "pwsh" if backend == "windows-agent" else "bash"
-    default_cwd = args.default_cwd
+    shell = args.shell or ("pwsh" if backend == "windows-agent" else "bash")
 
     password = args.password
     key_path = args.key_path
@@ -161,6 +211,7 @@ def _collect_machine_add_args(args: argparse.Namespace) -> Dict[str, Any]:
         "auth_type": auth_type,
         "password": password,
         "key_path": key_path,
+        "ssh_alias": ssh_alias,
         "default_cwd": default_cwd,
         "startup_commands": startup_commands,
         "platform": platform,
@@ -327,6 +378,12 @@ def cmd_session_send(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_session_attach(args: argparse.Namespace) -> None:
+    result = get_remote_session_manager().attach(args.session)
+    if args.json:
+        _print(result)
+
+
 def cmd_session_read(args: argparse.Namespace) -> None:
     _print(
         get_remote_session_manager().read(
@@ -401,12 +458,13 @@ def build_parser() -> argparse.ArgumentParser:
     machine_add.add_argument("--host")
     machine_add.add_argument("--port", type=int)
     machine_add.add_argument("--user")
-    machine_add.add_argument("--auth-type", choices=["key", "password"])
+    machine_add.add_argument("--auth-type", choices=["key", "password", "manual"])
     machine_add.add_argument("--platform", choices=["linux", "windows", "mac"])
-    machine_add.add_argument("--backend", choices=["ssh-tmux", "windows-agent"])
+    machine_add.add_argument("--backend", choices=["ssh-tmux", "windows-agent", "openssh-pty"])
     machine_add.add_argument("--shell")
     machine_add.add_argument("--password", help="Password auth value; prefer interactive input")
     machine_add.add_argument("--key-path")
+    machine_add.add_argument("--ssh-alias", help="OpenSSH Host alias for openssh-pty backend")
     machine_add.add_argument("--default-cwd")
     machine_add.add_argument(
         "--startup-command",
@@ -480,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     machine_platform.add_argument("machine_id")
     machine_platform.add_argument("--platform", required=True, choices=["linux", "windows", "mac"])
-    machine_platform.add_argument("--backend", choices=["ssh-tmux", "windows-agent"])
+    machine_platform.add_argument("--backend", choices=["ssh-tmux", "windows-agent", "openssh-pty"])
     machine_platform.add_argument("--shell")
     add_json_flag(machine_platform)
     machine_platform.set_defaults(func=cmd_machine_configure_platform)
@@ -504,7 +562,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_json_flag(session_show)
     session_show.set_defaults(func=cmd_session_show)
 
-    session_exec = session_sub.add_parser("exec", help="Execute a remote command")
+    session_exec = session_sub.add_parser(
+        "exec",
+        help="Run a command in the session shell",
+    )
     session_exec.add_argument("--session", required=True)
     session_exec.add_argument("--cmd", required=True)
     session_exec.add_argument("--cwd")
@@ -570,6 +631,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_json_flag(session_send)
     session_send.set_defaults(func=cmd_session_send)
+
+    session_attach = session_sub.add_parser(
+        "attach",
+        help="Attach to a session's interactive local terminal",
+    )
+    session_attach.add_argument("--session", required=True)
+    add_json_flag(session_attach)
+    session_attach.set_defaults(func=cmd_session_attach)
 
     session_read = session_sub.add_parser("read", help="Read session shell transcript")
     session_read.add_argument("--session", required=True)

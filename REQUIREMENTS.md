@@ -52,11 +52,13 @@ MVP 可以接受本地明文配置，但必须满足底线：
 
 ### 2.5 当前平台边界
 
-当前 MVP 支持两条持久 session backend：通过 SSH/SFTP 访问的 Linux 机器使用 `ssh-tmux` backend，direct Windows OpenSSH 机器使用 `windows-agent` backend 和 PowerShell 7。
+当前 MVP 支持三条持久 session backend：通过 SSH/SFTP 访问的 Linux 机器使用 `ssh-tmux` backend，direct Windows OpenSSH 机器使用 `windows-agent` backend 和 PowerShell 7；只能通过本机 OpenSSH alias 交互登录的机器可使用 `openssh-pty` backend，由本机 `tmux` 托管 `ssh -tt <alias>`。
 
 Windows backend 要求远端可通过 OpenSSH/SFTP 访问、可启动 `python` 和 `pwsh`，并能创建用户级 Windows Scheduled Task。P0 支持 `session create/exec/send/read/destroy`、文件传输和 `run once`；暂不支持 `session exec --mode background`、后台命令 stop 或 `cmd.exe` 一等 shell。
 
 Windows OpenSSH + WSL 不是 direct Windows 主路径。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
+
+`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session exec/send/read/destroy` 作用于同一个交互 shell。该 backend 支持从已登录且空闲的 session 分块下载普通文件，校验 size/SHA-256 后原子落盘；暂不支持 `file put`、目录下载、`file list`、`run once`、后台命令或无人值守认证。
 
 详细平台边界见 `docs/platform-support.md`。
 
@@ -98,6 +100,7 @@ remote-runner machine remove
 - `user`
 - `auth_type`
 - `password` 或 `key_path`
+- `ssh_alias`（仅 `openssh-pty`）
 - `platform`
 - `backend`
 - `shell`
@@ -105,9 +108,10 @@ remote-runner machine remove
 - `default_cwd`
 - `path_mappings`
 
-MVP 至少支持两种配置路径：
+MVP 至少支持三种配置路径：
 
 - 交互式添加：用户按提示输入机器名、host/IP、端口、user、认证方式、platform、password 或 key path、SSH 登录后的预置指令序列，以及预置指令执行后的默认远程目录。Windows 默认选择 `backend=windows-agent` 和 `shell=pwsh`；Linux/mac 默认选择 `backend=ssh-tmux` 和 `shell=bash`。
+- OpenSSH alias 添加：用户通过 `--backend openssh-pty --ssh-alias <alias> --auth-type manual` 登记本机 OpenSSH 交互入口，不输入 host/user/password。
 - 手动编辑：用户可以直接打开本地配置文件修改机器信息。
 
 密码认证的推荐路径是隐藏交互式输入；`--password` 命令行参数只作为兼容和测试入口，不推荐用于真实凭据，因为 shell history 容易泄漏。交互式 prompt 必须写到 stderr，`--json` 的 stdout 必须保持为单个 JSON 对象。同名机器覆盖必须显式确认，不得静默覆盖已有配置，也不得删除既有 session、日志、传输记录或产物索引。
@@ -177,6 +181,10 @@ remote-runner session exec \
 - `log_file_local`
 
 命令失败时仍应返回结构化信息。非零退出码是任务失败，不应自动销毁会话。
+
+`session exec` 的产品语义是“向这个持久 session shell 输入一条命令，并结构化捕获输出和退出码”。它不是隔离的 batch/job runner，也不应该让使用者把它当成 `ssh host command` 或 CI step。连续 `session exec` 必须共享同一个 shell 上下文：`cd`、`export`、alias、shell function 等 shell-local state 在同一 session 内延续。backend 可以为边界标记、日志和退出码注入包装，但包装必须回到原持久 shell，不能把正常命令执行包装成会关闭 shell 的流程。
+
+因此，`exit`、`logout` 等关闭 shell 的输入属于 session 生命周期操作，不是普通自动化收尾；需要关闭会话时使用 `session destroy`。需要上传输入、运行多步脚本、用 `exit "$rc"` 表达 batch 退出码、下载产物并销毁临时上下文时，应使用 `run once` 或后续 job/batch 能力，而不是把 batch 脚本直接塞进 `session exec`。
 
 ### 3.4 文件传输
 

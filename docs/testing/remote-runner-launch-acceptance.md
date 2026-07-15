@@ -49,7 +49,7 @@ python3 -m pytest tests/test_remote_runner_real_integration.py -q
 
 安全边界：
 
-- 当前上线主路径包括 Linux/SSH + tmux 和 direct Windows OpenSSH + windows-agent/pwsh。
+- 当前上线主路径包括 Linux/SSH + tmux、direct Windows OpenSSH + windows-agent/pwsh，以及本机 tmux + OpenSSH PTY。
 - Linux 真实机器要求远端可用 `tmux`；direct Windows 真实机器要求远端可用 SFTP、Python 3 和
   PowerShell 7。
 - `REMOTE_RUNNER_REAL_TEST_CWD` 必须是明确允许写入的远程测试目录。

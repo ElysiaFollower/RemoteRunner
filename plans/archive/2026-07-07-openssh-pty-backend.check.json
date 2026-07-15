@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "plan": "plans/active/2026-07-07-openssh-pty-backend.md",
+  "feature_id": "F-025",
+  "anchors": [
+    {
+      "id": "local-tmux-adapter",
+      "severity": "fail",
+      "reason": "本任务需要用本机 tmux 托管 /usr/bin/ssh -tt alias，并通过 tmux send/capture 控制同一 PTY。",
+      "check": "glob_contains",
+      "glob": "remote_runner/remote_backend.py",
+      "pattern": "local_tmux",
+      "suggest": "回看 active plan 的关键锚点、验收标准和完成定义；确认是遗漏、实现变更，还是需要更新任务合同。"
+    },
+    {
+      "id": "machine-schema-openssh-pty",
+      "severity": "warn",
+      "reason": "machine schema 必须能表达 openssh-pty 和 ssh_alias，避免要求 host/user/password。",
+      "check": "glob_contains",
+      "glob": "remote_runner/remote_machine.py",
+      "pattern": "openssh-pty",
+      "suggest": "回看 active plan 中对应锚点，确认关键接口、类、结果或证据是否已经落地。"
+    },
+    {
+      "id": "session-attach-cli",
+      "severity": "warn",
+      "reason": "用户手动登录入口必须是稳定 CLI 合同，而不是调试脚本。",
+      "check": "glob_contains",
+      "glob": "remote_runner/cli.py",
+      "pattern": "attach",
+      "suggest": "回看 active plan 中对应锚点，确认 session attach 是否已经落地。"
+    },
+    {
+      "id": "openssh-pty-tests",
+      "severity": "warn",
+      "reason": "新增 backend 至少要有聚焦契约测试，保护现有 CLI 和 state 行为。",
+      "check": "glob_contains",
+      "glob": "tests/test_remote_runner_mvp.py",
+      "pattern": "openssh-pty",
+      "suggest": "回看 active plan 中对应锚点，确认测试是否覆盖新增 backend。"
+    },
+    {
+      "id": "feature-evidence",
+      "severity": "warn",
+      "reason": "完成时必须把验证证据写回 feature list。",
+      "check": "evidence_contains",
+      "feature_id": "F-025",
+      "pattern": "openssh-pty",
+      "suggest": "把已运行的验证命令、关键输出摘要或 artifact 路径写入 harness/feature_list.json 的 evidence。"
+    }
+  ]
+}

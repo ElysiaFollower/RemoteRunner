@@ -59,9 +59,7 @@ class RemoteSessionManager:
         if not matches:
             raise KeyError(f"Session '{session_ref}' not found")
         if len(matches) > 1:
-            raise RuntimeError(
-                f"Session name '{session_ref}' is ambiguous: " + ", ".join(matches)
-            )
+            raise RuntimeError(f"Session name '{session_ref}' is ambiguous: " + ", ".join(matches))
         return matches[0].split(" ", 1)[0]
 
     @staticmethod
@@ -125,6 +123,7 @@ class RemoteSessionManager:
             machine=machine,
             cwd=remote_cwd,
             terminal_id=session_id,
+            terminal_name=session_name,
         )
         session = {
             "session_id": session_id,
@@ -197,6 +196,8 @@ class RemoteSessionManager:
             machine = self.machine_manager.get(session["machine_id"])
             if machine.backend == "windows-agent":
                 raise RuntimeError("windows-agent backend does not yet support background mode")
+            if machine.backend == "openssh-pty":
+                raise RuntimeError("background commands are not supported for openssh-pty machines")
             return self.start_background(session_id, command, cwd=cwd, timeout=timeout)
         if mode != "wait":
             raise ValueError("mode must be 'wait' or 'background'")
@@ -204,6 +205,7 @@ class RemoteSessionManager:
         reservation = self._reserve_command(session_id, command, cwd)
         machine = self.machine_manager.get(reservation["machine_id"])
         remote_cwd = reservation["cwd"]
+        cwd_applied = not (machine.backend == "openssh-pty" and not reservation["cwd_override"])
         command_index = reservation["index"]
         command_id = reservation["command_id"]
         log_filename = f"cmd_{command_index:03d}.log"
@@ -225,6 +227,7 @@ class RemoteSessionManager:
                 "command_id": command_id,
                 "command": command,
                 "cwd": remote_cwd,
+                "cwd_applied": cwd_applied,
                 "mode": "wait",
                 "exit_code": None,
                 "stdout": "",
@@ -251,6 +254,7 @@ class RemoteSessionManager:
                 "command_id": command_id,
                 "command": command,
                 "cwd": remote_cwd,
+                "cwd_applied": cwd_applied,
                 "mode": "wait",
                 "exit_code": result.get("exit_code"),
                 "stdout": result.get("stdout", ""),
@@ -265,36 +269,38 @@ class RemoteSessionManager:
                 **backend_record,
             }
             self._write_command_log(record)
-        except Exception as exc:
+        except BaseException as exc:
             now = get_timestamp()
             record = {
                 "index": command_index,
                 "command_id": command_id,
                 "command": command,
                 "cwd": remote_cwd,
+                "cwd_applied": cwd_applied,
                 "mode": "wait",
                 "exit_code": None,
                 "stdout": "",
                 "stderr": "",
                 "stdout_truncated": False,
                 "stderr_truncated": False,
-                "started_at": now,
+                "started_at": started_at,
                 "ended_at": now,
-                "duration_ms": 0,
+                "duration_ms": self._duration_ms(started_at, now),
                 "log_file_local": log_file,
                 "status": "failed",
-                "error": str(exc),
+                "error": str(exc) or exc.__class__.__name__,
             }
             self._write_command_log(record)
             self._persist_command(session_id, record)
             raise
 
         self._persist_command(session_id, record)
-        return {
+        response = {
             "session_id": session_id,
             "command_id": command_id,
             "machine_id": reservation["machine_id"],
             "cwd": remote_cwd,
+            "cwd_applied": record["cwd_applied"],
             "command": command,
             "status": record["status"],
             "exit_code": record["exit_code"],
@@ -307,6 +313,9 @@ class RemoteSessionManager:
             "duration_ms": record["duration_ms"],
             "log_file_local": log_file,
         }
+        if record.get("command_backend"):
+            response["command_backend"] = record["command_backend"]
+        return response
 
     def start_background(
         self,
@@ -316,9 +325,13 @@ class RemoteSessionManager:
         timeout: int = 15,
     ) -> Dict[str, Any]:
         session_id = self.resolve_session_id(session_id)
+        session = load_session_state(session_id)
+        machine = self.machine_manager.get(session["machine_id"])
+        if machine.backend == "openssh-pty":
+            raise RuntimeError("background commands are not supported for openssh-pty machines")
         reservation = self._reserve_command(session_id, command, cwd)
-        machine = self.machine_manager.get(reservation["machine_id"])
         remote_cwd = reservation["cwd"]
+        cwd_applied = True
         command_index = reservation["index"]
         command_id = reservation["command_id"]
         log_filename = f"cmd_{command_index:03d}.log"
@@ -340,6 +353,7 @@ class RemoteSessionManager:
                 "command_id": command_id,
                 "command": command,
                 "cwd": remote_cwd,
+                "cwd_applied": cwd_applied,
                 "mode": "background",
                 "status": "running",
                 "exit_code": None,
@@ -361,6 +375,7 @@ class RemoteSessionManager:
                 "command_id": command_id,
                 "command": command,
                 "cwd": remote_cwd,
+                "cwd_applied": cwd_applied,
                 "mode": "background",
                 "status": "failed",
                 "exit_code": None,
@@ -384,7 +399,9 @@ class RemoteSessionManager:
     def command_list(self, session_id: str) -> Dict[str, Any]:
         session_id = self.resolve_session_id(session_id)
         session = load_session_state(session_id)
-        commands = [self._public_command_summary(command) for command in session.get("commands", [])]
+        commands = [
+            self._public_command_summary(command) for command in session.get("commands", [])
+        ]
         return {
             "session_id": session_id,
             "commands": commands,
@@ -409,7 +426,7 @@ class RemoteSessionManager:
 
         machine = self.machine_manager.get(self._session_machine_id(session_id))
         try:
-            if record.get("command_backend") == "tmux":
+            if record.get("command_backend") in {"tmux", "local_tmux"}:
                 update = self.backend.inspect_session_command(
                     machine=machine,
                     command_record=record,
@@ -492,7 +509,7 @@ class RemoteSessionManager:
             return result
 
         machine = self.machine_manager.get(machine_id)
-        if record.get("command_backend") == "tmux":
+        if record.get("command_backend") in {"tmux", "local_tmux"}:
             session = load_session_state(session_id)
             stop_result = self.backend.stop_session_command(machine, session, record)
         else:
@@ -521,6 +538,21 @@ class RemoteSessionManager:
         result = self._public_session(session)
         result.update(send_result)
         result["enter"] = enter
+        return result
+
+    def attach(self, session_id: str) -> Dict[str, Any]:
+        session_id = self.resolve_session_id(session_id)
+        self._refresh_session_liveness(session_id)
+        session = load_session_state(session_id)
+        if session.get("status") != "active":
+            raise RuntimeError(f"Session '{session_id}' is not active")
+        machine = self.machine_manager.get(session["machine_id"])
+        attach_result = self.backend.attach_terminal(machine=machine, terminal_record=session)
+        session["updated_at"] = get_timestamp()
+        with remote_state_lock():
+            save_session_state(session)
+        result = self._public_session(session)
+        result.update(attach_result)
         return result
 
     def read(
@@ -671,9 +703,7 @@ class RemoteSessionManager:
         if name.startswith("sess_"):
             raise ValueError("session name must not start with 'sess_'")
         if not self.SESSION_NAME_PATTERN.fullmatch(name):
-            raise ValueError(
-                "session name may only contain letters, digits, '.', '_', and '-'"
-            )
+            raise ValueError("session name may only contain letters, digits, '.', '_', and '-'")
         return name
 
     def _assert_session_name_available(
@@ -699,11 +729,7 @@ class RemoteSessionManager:
     def _recover_stale_active_command(self, session_id: str) -> None:
         session = load_session_state(session_id)
         active_command = session.get("active_command")
-        if (
-            session.get("status") != "active"
-            or not session.get("busy")
-            or not active_command
-        ):
+        if session.get("status") != "active" or not session.get("busy") or not active_command:
             return
 
         machine = self.machine_manager.get(session["machine_id"])
@@ -785,8 +811,7 @@ class RemoteSessionManager:
             ]
             if running_commands:
                 raise RuntimeError(
-                    f"Session '{session_id}' has running commands: "
-                    + ", ".join(running_commands)
+                    f"Session '{session_id}' has running commands: " + ", ".join(running_commands)
                 )
             remote_cwd = cwd or session["cwd"]
             command_index = int(session.get("command_count", 0)) + 1
@@ -879,7 +904,9 @@ class RemoteSessionManager:
         if not ended_at:
             return None
         try:
-            return int((parse_timestamp(ended_at) - parse_timestamp(started_at)).total_seconds() * 1000)
+            return int(
+                (parse_timestamp(ended_at) - parse_timestamp(started_at)).total_seconds() * 1000
+            )
         except Exception:
             return None
 
@@ -899,6 +926,8 @@ class RemoteSessionManager:
         }
         if record.get("error"):
             result["error"] = record["error"]
+        if "cwd_applied" in record:
+            result["cwd_applied"] = record["cwd_applied"]
         return result
 
     def _public_command_result(
@@ -929,6 +958,8 @@ class RemoteSessionManager:
         }
         if record.get("error"):
             result["error"] = record["error"]
+        if "cwd_applied" in record:
+            result["cwd_applied"] = record["cwd_applied"]
         for key in (
             "remote_stdout_file",
             "remote_stderr_file",
@@ -966,6 +997,7 @@ class RemoteSessionManager:
             "transcript_cursor": session.get("transcript_cursor", 0),
             "transcript_file_local": session.get("transcript_file_local"),
             "remote_backend_name": session.get("remote_terminal_name"),
+            "local_attach_command": session.get("local_attach_command"),
         }
 
 
