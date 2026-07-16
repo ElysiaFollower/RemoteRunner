@@ -72,7 +72,8 @@ remote-runner session command show --session project-tests --command-id cmd_abc1
 remote-runner session command wait --session project-tests --command-id cmd_abc123 --timeout 30 --json
 remote-runner session command stop --session project-tests --command-id cmd_abc123 --json
 remote-runner session send --session project-tests --input "cd src" --json
-remote-runner session read --session project-tests --json
+remote-runner session tail --session project-tests --bytes 8192 --plain
+remote-runner session read --session project-tests --since 1200 --max-bytes 65536 --json
 remote-runner session interrupt --session project-tests --json
 remote-runner session logs --session project-tests --json
 remote-runner session destroy --session project-tests --json
@@ -91,11 +92,19 @@ remote-runner run once \
 ```
 
 `session create` opens a persistent terminal context. Its base contract is deliberately small:
-`session send` types the exact input and `session read --since <cursor>` reads the append-only
-terminal stream. Tmux-backed sessions also provide `session interrupt`, which sends `Ctrl-C`
-without replacing the shell; the current Windows agent rejects interrupt because its piped
-PowerShell transport has no reliable console-control channel. Shell-local state such as `cd`,
-exported variables, and aliases persists because terminal operations target the same shell.
+`session send` types the exact input, `session read --since <cursor>` losslessly reads an explicit
+range, and `session tail --bytes <n>` explicitly views a bounded window at the end of the same
+append-only stream. `send`, `read`, and `tail` return compact operation metadata; `read/tail
+--plain` emit only terminal text. They never infer busy state, prompt state, command completion, or
+exit code. Tmux-backed sessions also provide `session interrupt`, which sends `Ctrl-C` without
+replacing the shell; the current Windows agent rejects interrupt because its piped PowerShell
+transport has no reliable console-control channel. Shell-local state such as `cd`, exported
+variables, and aliases persists because terminal operations target the same shell.
+
+Treat a persistent session as a single-operator terminal. Before sending a new shell command, view
+the tail and confirm that the previous command has finished and the shell prompt has returned.
+Responses requested by an interactive foreground program are not new shell commands. Parallel
+agents should use independent sessions instead of sharing one terminal.
 
 `session exec --json` remains a structured compatibility interface on `ssh-tmux` and
 `windows-agent`; it returns stdout, stderr, exit code, timestamps, logs, and `command_id`. On
@@ -103,9 +112,9 @@ exported variables, and aliases persists because terminal operations target the 
 live terminal. On `windows-agent`, the agent's explicit request/result channel owns the structured
 operation.
 `openssh-pty` rejects `session exec` before pane input: a human-visible PTY is not an in-band RPC
-channel. Use `send/read/interrupt` there, and use `run once` for structured batch work.
+channel. Use `send/read/tail/interrupt` there, and use `run once` for structured batch work.
 
-Only `session send/read/interrupt` operate the persistent terminal stream. Use `send` when a command
+Only `session send/read/tail/interrupt` operate the persistent terminal stream. Use `send` when a command
 must observe or change shell-local state, `session destroy` for teardown, and `run once` for
 upload-run-download workflows or scripts with process-level exit semantics.
 

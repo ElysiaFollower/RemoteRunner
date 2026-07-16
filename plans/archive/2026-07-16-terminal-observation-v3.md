@@ -100,4 +100,3 @@ git diff --check
 - 正确 tail/range 读取必须全量载入 transcript，且没有可维护的 byte cursor 实现路径。
 - 目标行为只能通过 prompt 检测、命令 wrapper 或 shell integration 获得。
 - 继续开发必须触碰 stable runtime、global skill、真实 state 或现有业务 tmux session。
-

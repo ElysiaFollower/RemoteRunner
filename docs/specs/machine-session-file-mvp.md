@@ -183,7 +183,7 @@ runtime limit.
 
 `session exec` is a structured compatibility API, not the persistent terminal's input primitive.
 `ssh-tmux` exec/background commands must not write wrappers, markers, or protocol traffic into the
-live pane. Shell-local continuity belongs to `session send/read`; upload-run-download batch
+live pane. Shell-local continuity belongs to `session send/read/tail`; upload-run-download batch
 workflows belong to `run once`.
 
 Minimum response fields:
@@ -300,13 +300,23 @@ agent's explicit request/result protocol provides the documented persistent Powe
 ### `remote-runner session send --session <session_id> --input <text> [--no-enter] --json`
 
 Sends one literal line into the selected session shell. This is the normal operation whenever the
-caller expects human-terminal semantics or shell-local continuity.
+caller expects human-terminal semantics or shell-local continuity. The response is a compact
+acknowledgement with input/output timestamps and transcript cursors; full session metadata belongs
+to `session show`.
 
-### `remote-runner session read --session <session_id> [--since <cursor>] [--max-chars <n>] --json`
+### `remote-runner session read --session <session_id> [--since <cursor>] [--max-bytes <n>] [--json|--plain]`
 
-Captures the session transcript. The response includes `transcript`, `cursor`, `since`,
-`transcript_truncated`, and the local transcript path. A new CLI process must be able to recover and
-read the transcript from local state plus the remote backend.
+Losslessly reads the append-only transcript from an explicit UTF-8 byte cursor. Compact JSON
+includes `transcript`, `start_cursor`, `next_cursor`, `last_cursor`, timestamps, idle duration, and
+the compatibility aliases `since`/`cursor`. If bounded, `next_cursor` stops after the returned
+bytes; it never jumps to `last_cursor`. `--plain` emits only terminal text. A new CLI process must be
+able to recover and read the transcript from local state plus the remote backend.
+
+### `remote-runner session tail --session <session_id> [--bytes <n>] [--json|--plain]`
+
+Explicitly reads a bounded newest window from the preserved transcript. It reports the actual
+start and end cursors plus whether older history exists. Tail never deletes, summarizes, compresses,
+or silently substitutes for lossless read.
 
 ## File Transfer Commands
 

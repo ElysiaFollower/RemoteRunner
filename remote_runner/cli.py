@@ -17,6 +17,14 @@ def _print(payload: Dict[str, Any]) -> None:
     print(json_response(payload))
 
 
+def _print_terminal(payload: Dict[str, Any], plain: bool) -> None:
+    if plain:
+        sys.stdout.write(str(payload.get("transcript", "")))
+        sys.stdout.flush()
+        return
+    _print(payload)
+
+
 def _handle_error(error: Exception) -> None:
     _print({"error": str(error)})
     sys.exit(1)
@@ -389,12 +397,24 @@ def cmd_session_attach(args: argparse.Namespace) -> None:
 
 
 def cmd_session_read(args: argparse.Namespace) -> None:
-    _print(
+    _print_terminal(
         get_remote_session_manager().read(
             session_id=args.session,
             since=args.since,
             max_chars=args.max_chars,
-        )
+            max_bytes=args.max_bytes,
+        ),
+        plain=args.plain,
+    )
+
+
+def cmd_session_tail(args: argparse.Namespace) -> None:
+    _print_terminal(
+        get_remote_session_manager().tail(
+            session_id=args.session,
+            tail_bytes=args.bytes,
+        ),
+        plain=args.plain,
     )
 
 
@@ -654,10 +674,46 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_read = session_sub.add_parser("read", help="Read session shell transcript")
     session_read.add_argument("--session", required=True)
-    session_read.add_argument("--since", type=int)
-    session_read.add_argument("--max-chars", type=int)
-    add_json_flag(session_read)
+    session_read.add_argument("--since", type=int, help="UTF-8 byte cursor to read from")
+    read_limit = session_read.add_mutually_exclusive_group()
+    read_limit.add_argument(
+        "--max-chars",
+        type=int,
+        help="Compatibility character limit; prefer --max-bytes",
+    )
+    read_limit.add_argument(
+        "--max-bytes",
+        type=int,
+        help="Maximum transcript bytes to return without skipping the remainder",
+    )
+    read_output = session_read.add_mutually_exclusive_group()
+    read_output.add_argument("--json", action="store_true", help="Emit JSON output")
+    read_output.add_argument(
+        "--plain",
+        action="store_true",
+        help="Emit only terminal transcript text",
+    )
     session_read.set_defaults(func=cmd_session_read)
+
+    session_tail = session_sub.add_parser(
+        "tail",
+        help="Read an explicit bounded window from the end of the terminal transcript",
+    )
+    session_tail.add_argument("--session", required=True)
+    session_tail.add_argument(
+        "--bytes",
+        type=int,
+        default=8192,
+        help="Maximum newest transcript bytes to return (default: 8192)",
+    )
+    tail_output = session_tail.add_mutually_exclusive_group()
+    tail_output.add_argument("--json", action="store_true", help="Emit JSON output")
+    tail_output.add_argument(
+        "--plain",
+        action="store_true",
+        help="Emit only terminal transcript text",
+    )
+    session_tail.set_defaults(func=cmd_session_tail)
 
     session_logs = session_sub.add_parser("logs", help="List session logs")
     session_logs.add_argument("--session", required=True)

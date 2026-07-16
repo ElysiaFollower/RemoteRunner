@@ -14,12 +14,37 @@ Use this skill when work must happen on a remote machine through the `remote-run
 Use `remote-runner` as the stable interface:
 
 - machine registry and diagnostics: `machine list/show/doctor`
-- persistent terminal: `session create/attach/send/read/interrupt/logs/destroy`
+- persistent terminal: `session create/attach/send/read/tail/interrupt/logs/destroy`
 - structured compatibility commands: `session exec`, `session command list/show/wait/stop`
 - explicit file movement: `file put/get/list`
 - one-shot closed loop: `run once`
 
 Do not use raw `ssh`, `scp`, `rsync`, `tmux`, `sshfs`, or mount workflows unless the user explicitly asks you to debug the platform itself. Remote Runner no longer uses mounted folders as its core abstraction.
+
+## Single-operator Terminal Discipline
+
+Treat each persistent session as a **single-operator terminal**. One agent owns one session at a
+time. When work must run in parallel, create **one independent session per agent** instead of
+sharing terminal input between concurrent agents.
+
+Before sending a new shell command, inspect the current terminal tail and confirm that the previous
+command has finished and the **shell prompt** has returned:
+
+```bash
+remote-runner session tail \
+  --session <session-ref> \
+  --bytes 8192 \
+  --plain
+```
+
+If the prompt has not returned, keep observing the tail or use `session interrupt` when the
+foreground process should be stopped. Do not send a second shell command into an active foreground
+process: the process may consume it, or the terminal may queue it for the shell later.
+
+Input requested by an **interactive foreground program** is not a new shell command. Password
+prompts, confirmation questions, debuggers, and REPLs may require a deliberate response before the
+shell prompt returns. Read the visible terminal context and respond to that program one line at a
+time.
 
 ## Platform Boundary
 
@@ -31,7 +56,7 @@ match the target OS:
 - Direct Windows work: Windows OpenSSH/SFTP machine with `backend=windows-agent`, `shell=pwsh`,
   Python 3, and PowerShell 7 available.
 - Interactive gateway work: `backend=openssh-pty`, where local tmux owns `ssh -tt <alias>` and the
-  live-terminal operations are `attach/send/read/interrupt/destroy`.
+  live-terminal operations are `attach/send/read/tail/interrupt/destroy`.
 
 Windows OpenSSH + WSL records that depend on `startup_commands` and `path_mappings` are
 compatibility inputs, not the primary direct Windows path.
@@ -99,7 +124,7 @@ remote-runner session exec \
 
 Inspect `exit_code`, `stdout`, `stderr`, and `log_file_local` after every command. On `ssh-tmux`,
 this is an independent direct-SSH batch command associated with the session: it does not enter the
-pane and does not share shell-local state. Use `session send/read` when cwd, exports, aliases, or
+pane and does not share shell-local state. Use `session send/read/tail` when cwd, exports, aliases, or
 functions from the live shell matter. `windows-agent` structured commands use its explicit agent
 request/result channel and retain that backend's documented PowerShell state.
 
@@ -131,35 +156,44 @@ remote-runner session command wait \
 
 Use `session command stop` when a running background command should be terminated. A session with
 running background commands cannot be destroyed until those commands finish or are stopped. The
-direct Windows backend currently supports persistent wait-mode execution and raw send/read, but
+direct Windows backend currently supports persistent wait-mode execution and raw send/read/tail, but
 rejects background commands with a clear error.
 
 For `openssh-pty`, never call `session exec`: that backend rejects it before pane input because a
 human-visible terminal must not become an in-band RPC channel. Attach if login is incomplete, then
-use the literal terminal loop:
+use the literal terminal loop. First inspect the tail; only send a new shell command after the
+prompt is visible:
 
 ```bash
+remote-runner session tail \
+  --session <session-ref> \
+  --bytes 8192 \
+  --plain
+
 remote-runner session send \
   --session <session-ref> \
   --input '<one shell command line>' \
   --json
 
-remote-runner session read \
+remote-runner session tail \
   --session <session-ref> \
-  --since <last-cursor> \
-  --json
+  --bytes 8192 \
+  --plain
 ```
 
 Send one deliberate command line at a time. The accepted input and resulting shell output are both
-visible in the same tmux pane and append-only transcript. Keep the returned cursor and poll with
-`read --since`; do not infer completion from a fixed sleep. If the foreground command hangs:
+visible in the same tmux pane and append-only transcript. Use `tail` for bounded human-style
+observation; use `read --since <next-cursor>` when every byte in a specific range matters. Tail is
+an explicit choice to skip older display, never an automatic replacement for lossless read. Do not
+infer completion from a fixed sleep. If the foreground command hangs:
 
 ```bash
 remote-runner session interrupt --session <session-ref> --json
 ```
 
-Then read again until output confirms the same shell is responsive. Do not paste hidden markers,
-`eval` wrappers, exit-code probes, heredoc batches, or cleanup `exit` commands into this terminal.
+Then inspect the tail again until the visible prompt confirms the same shell is responsive. Do not
+paste hidden markers, `eval` wrappers, exit-code probes, heredoc batches, or cleanup `exit` commands
+into this terminal.
 Use `run once` for structured batch work.
 
 6. Clean up when finished:
@@ -170,7 +204,7 @@ remote-runner session destroy --session <session-ref> --json
 
 ## Persistent Session Transcript
 
-`session send/read` are the base session contract, not a UI-only escape hatch. Tmux-backed sessions
+`session send/read/tail` are the base session contract, not a UI-only escape hatch. Tmux-backed sessions
 also support `interrupt`; the current `windows-agent` does not. Do not create a separate top-level
 terminal resource.
 
@@ -180,14 +214,19 @@ remote-runner session send \
   --input 'cd src' \
   --json
 
-remote-runner session read \
+remote-runner session tail \
   --session <session-ref> \
-  --json
+  --bytes 8192 \
+  --plain
 ```
 
-`session read` returns append-only transcript text and a cursor for incremental reads. The agent sees
-the same input/output stream a human sees while attached. `session destroy` stops the backend shell
-and preserves local command logs and transcript state.
+`session read --since <next-cursor>` returns an exact append-only range when lossless consumption is
+required. The agent sees the same input/output stream a human sees while attached. `session tail`
+returns a caller-selected
+bounded window from the same preserved file. Compact JSON includes the returned range cursors,
+last input/output times, and output idle duration; `--plain` emits only terminal text. None of these
+fields claim that a command is busy or complete. `session destroy` stops the backend shell and
+preserves local command logs and transcript state.
 
 ## File Transfer
 
@@ -312,7 +351,9 @@ user explicitly asks to test that compatibility boundary.
 - Always surface the exact JSON error.
 - Do not continue after failed `doctor` unless the user asks to debug configuration.
 - Non-zero command exit codes are task evidence, not necessarily platform failure. Read logs before retrying.
-- A busy session means another command is active; inspect logs/state before retrying.
+- A `busy` error is authoritative only for the backend's structured request state machine. It is not
+  tmux detecting whether a raw terminal command has finished; inspect terminal tail before new shell
+  input and inspect command state before retrying structured work.
 - If a session was created during a failed task, destroy it unless the user asks to keep it.
 - If credentials are stale, update the machine record; do not work around it with raw SSH.
 

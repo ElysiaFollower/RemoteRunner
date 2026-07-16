@@ -33,7 +33,7 @@ The `openssh-pty` backend is for machines where `ssh -tt <alias>` is the stable 
 point but standard SSH exec/SFTP is unavailable or unreliable. It starts a local tmux session running
 `ssh -tt <alias>`, lets the user attach and complete password, OTP, jump-host, or gateway prompts,
 then controls the same interactive shell through local tmux. It supports `session create/attach`,
-`session send/read/interrupt`, and `session destroy`. It rejects `file put/get/list`, `run once`,
+`session send/read/tail/interrupt`, and `session destroy`. It rejects `file put/get/list`, `run once`,
 `session exec`, background commands, and unattended authentication. Remote Runner will not tunnel
 file or command protocols through the human-visible terminal.
 
@@ -319,7 +319,7 @@ remote-runner session attach --session gateway-shell
 ```
 
 Detach from the local tmux session with `Ctrl-b d` after the target shell is ready. The OpenSSH PTY
-stays alive in local tmux, and later `session send/read/interrupt/destroy` commands act on that same
+stays alive in local tmux, and later `session send/read/tail/interrupt/destroy` commands act on that same
 interactive shell. For this backend, the recorded `cwd` is metadata only: the live shell remains in
 whatever directory the user left it. Use a visible `session send --input 'cd ...'` to change it.
 
@@ -343,7 +343,7 @@ ambiguity error instead of guessing. Destroyed sessions preserve their historica
 block reuse on the same machine.
 
 Current Linux/tmux implementation note: `session create` opens a remote tmux-backed shell through
-SSH, and later `session exec/send/read/destroy` calls use fresh SSH operations to control that
+SSH, and later `session exec/send/read/tail/interrupt/destroy` calls use fresh SSH operations to control that
 backend shell. It does not persistently log in a user account in Remote Runner itself, but the
 remote shell inherits the Unix identity, supplementary groups, environment, and tmux server context
 available to the process that ultimately spawns it. `tmux new-session` creates a new tmux session,
@@ -356,7 +356,7 @@ continues serving new tmux sessions.
 Current Windows agent implementation note: `session create` uploads an embedded Python agent under
 the remote cwd and starts it with a user-level Windows Scheduled Task. The agent owns a persistent
 PowerShell 7 (`pwsh`) child process and records transcript output under the remote session state
-directory. `session exec --mode wait`, `session send/read/destroy`, file transfer, and `run once`
+directory. `session exec --mode wait`, `session send/read/tail/destroy`, file transfer, and `run once`
 are supported. `session exec --mode background` is not yet supported on this backend.
 
 ### List Sessions
@@ -401,7 +401,7 @@ semantics.
 This structured compatibility API is currently available on `ssh-tmux` and `windows-agent`.
 `openssh-pty` rejects it before writing anything to the pane. A human-visible PTY must not be used
 as an in-band RPC channel by injecting hidden `eval`, marker, or exit-code wrappers; use
-`session send/read/interrupt` for that backend and `run once` for structured batch work.
+`session send/read/tail/interrupt` for that backend and `run once` for structured batch work.
 
 Optional cwd override. On `ssh-tmux`, this selects the independent batch process cwd and does not
 change the persistent terminal's directory:
@@ -451,7 +451,7 @@ Behavior requirements:
   mode, while `openssh-pty` rejects `session exec` entirely.
 - `ssh-tmux session exec` uses isolated direct SSH execution. It must never source wrappers, inject
   markers, or write command/file protocols into the live tmux pane.
-- Persistent shell state is controlled only through `session send/read/interrupt`; lifecycle
+- Persistent shell state is controlled only through `session send/read/tail/interrupt`; lifecycle
   teardown goes through `session destroy`.
 - `cwd_applied=false` means the `cwd` field is only the recorded session cwd, not a directory that
   Remote Runner injected before the command.
@@ -505,9 +505,65 @@ remote-runner session send \
   --json
 
 remote-runner session read --session sess_abc123 --json
-remote-runner session read --session sess_abc123 --since 1200 --json
+remote-runner session read --session sess_abc123 --since 1200 --max-bytes 65536 --json
+remote-runner session read --session sess_abc123 --since 1200 --plain
+remote-runner session tail --session sess_abc123 --bytes 8192 --json
+remote-runner session tail --session sess_abc123 --bytes 8192 --plain
 remote-runner session interrupt --session sess_abc123 --json
 ```
+
+`session send` returns a compact acknowledgement and does not wait for the foreground process:
+
+```json
+{
+  "session_id": "sess_abc123",
+  "status": "active",
+  "input_sent": true,
+  "input": "python train.py",
+  "enter": true,
+  "last_input_at": "2026-07-16T10:00:00Z",
+  "last_output_at": "2026-07-16T09:59:58Z",
+  "output_idle_ms": 2100,
+  "start_cursor": 1200,
+  "last_cursor": 1200
+}
+```
+
+`session read --since 1200 --max-bytes 65536 --json` returns an explicit lossless range:
+
+```json
+{
+  "session_id": "sess_abc123",
+  "status": "active",
+  "transcript": "python train.py\r\nepoch=1 loss=2.1\r\n",
+  "last_input_at": "2026-07-16T10:00:00Z",
+  "last_output_at": "2026-07-16T10:00:03Z",
+  "output_idle_ms": 400,
+  "start_cursor": 1200,
+  "next_cursor": 1235,
+  "last_cursor": 1235,
+  "since": 1200,
+  "cursor": 1235,
+  "transcript_truncated": false
+}
+```
+
+All transcript cursors are UTF-8 byte offsets. `start_cursor` is the first returned byte,
+`next_cursor` is the byte immediately after the returned text, and `last_cursor` is the observed end
+of the complete preserved transcript. `cursor` is a compatibility alias for `next_cursor`; `since`
+is an alias for `start_cursor`. When a bounded read cannot return the whole requested suffix,
+`next_cursor < last_cursor` and `transcript_truncated=true`. The next lossless read must use
+`next_cursor`; it is never advanced across bytes that were not returned.
+
+`session tail` is an explicit request to view only the newest bounded window. Its JSON has the same
+range fields plus `history_before`; earlier transcript bytes remain in the append-only file. Neither
+read nor tail summarizes, compresses, or interprets terminal output. `--plain` writes only the
+`transcript` value and no JSON metadata.
+
+`last_input_at` is the time Remote Runner last accepted input through `session send`; input typed by
+a human while attached cannot be timestamped by this field. `last_output_at` is the modification
+time observed for the append-only transcript, and `output_idle_ms` is derived from it. These are
+observation facts, not evidence that a command is busy, complete, successful, or back at a prompt.
 
 ### Attach Session
 
@@ -524,19 +580,32 @@ session should end.
 and presses Enter by default; use `--no-enter` for partial input. Embedded CR/LF is rejected rather
 than treating a pasted batch as one terminal action. The response echoes the accepted `input`, so
 callers can audit what was typed. Independent `ssh-tmux` batch work does not block terminal input;
-the `windows-agent` request/result state machine rejects send while it is busy.
+the `windows-agent` request/result state machine rejects send while it is busy. Routine terminal
+responses deliberately omit machine, cwd, log path, command counts, and other full session fields;
+call `session show` when those fields are needed.
 
 For tmux-backed sessions the transcript is an append-only stream recorded from pane output; it is
 not reconstructed by repeatedly merging `capture-pane` snapshots. Thus commands visible to a human
-in tmux are visible to the agent through the same transcript. `session read` returns transcript
-text, a `cursor`, and the requested `since` offset.
-Callers can store the cursor and later request only the new transcript region. The local transcript
-file is preserved in Remote Runner state for recovery.
+in tmux are visible to the agent through the same transcript. A caller may use lossless
+`read --since <next_cursor>` for exact ranges or explicitly use `tail` for a bounded newest view. The
+local transcript file is preserved in Remote Runner state for recovery; callers are not required to
+consume every byte during routine monitoring.
+
+Treat one session as one current operator's terminal. Before sending a new shell command, an Agent
+should inspect tail and confirm that the previous command has finished and the shell prompt has
+returned. Input requested by an interactive foreground program is not a new shell command. Parallel
+Agents use independent sessions rather than sharing one terminal.
 
 On tmux-backed sessions, `session interrupt` sends `Ctrl-C` to the current foreground process and
 keeps the terminal alive. It is the recovery operation for a hung foreground command; it does not
 create a command record or replace the shell. `windows-agent` does not currently expose a reliable
 console interrupt through its piped PowerShell transport and therefore rejects this operation.
+
+Compatibility note for the V3 observation contract: terminal cursors changed from decoded-character
+counts to UTF-8 byte offsets, and compact `send/read/interrupt` responses no longer contain the full
+session object. ASCII cursors retain the same numeric value. Consumers holding a cursor across an
+upgrade after non-ASCII output should obtain a fresh `tail` or `read` response before continuing;
+consumers needing `transcript_file_local`, machine, cwd, or log paths must use `session show`.
 
 ### Logs
 

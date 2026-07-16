@@ -13,9 +13,9 @@ Linux 路径要求远端具备：
 - SSH/SFTP，用于命令通道和显式文件传输
 - 一个用户明确授权的可写工作目录
 
-Linux backend 当前支持 `session create/exec/send/read/interrupt/destroy`、`session exec --mode
+Linux backend 当前支持 `session create/exec/send/read/tail/interrupt/destroy`、`session exec --mode
 background`、`session command show/wait/stop`、`file put/get/list` 和 `run once`。其中 live
-tmux terminal 只承载 `send/read/interrupt`；结构化 exec/background/run once 通过独立 SSH
+tmux terminal 只承载 `send/read/tail/interrupt`；结构化 exec/background/run once 通过独立 SSH
 batch transport 执行，不进入 pane，也不共享 terminal shell-local state。
 
 ## Direct Windows OpenSSH / PowerShell
@@ -54,7 +54,7 @@ Windows backend 会通过 SSH/SFTP 把内嵌 Python agent 放到远端工作目�
 当前 Windows P0 支持：
 
 - `machine doctor`
-- `session create/exec/send/read/destroy`
+- `session create/exec/send/read/tail/destroy`
 - 同一 session 内 PowerShell cwd、环境变量等 shell-local state 持久化
 - `file put/get/list`
 - `run once`
@@ -96,7 +96,7 @@ ssh -tt <SSH_ALIAS>
 当前 `openssh-pty` 支持：
 
 - `machine add/list/show/doctor`
-- `session create/attach/send/read/interrupt/destroy`
+- `session create/attach/send/read/tail/interrupt/destroy`
 - 同一交互 shell 内 cwd、环境变量等 shell-local state 持久化
 - pane 输出的 append-only transcript；agent 和 attach 中的人类观察同一输入输出流
 

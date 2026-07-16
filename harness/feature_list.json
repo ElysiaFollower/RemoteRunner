@@ -311,10 +311,10 @@
       "area": "terminal-session",
       "title": "Terminal Observation V3 精简观测接口",
       "behavior": "session send 快速返回精简确认；read 按显式 cursor 无损读取；tail 显式查看有界最新终端流；响应只包含操作结果、cursor 和必要输入输出时间元信息。Skill 要求一个 session 一个当前操作者，新 shell 命令发送前先确认 tail 中 prompt 已返回，并行任务使用独立 session。",
-      "status": "active",
+      "status": "passing",
       "verification": "python3 -m pytest tests/test_terminal_observation_v3.py -q && python3 -m pytest tests/test_terminal_session_v2.py tests/test_terminal_debt_audit.py -q && python3 -m pytest tests/test_remote_runner_mvp.py -q && python3 -m pytest -q && ./scripts/harness-check.sh && git diff --check",
-      "evidence": "",
-      "notes": "任务合同：plans/active/2026-07-16-terminal-observation-v3.md。只在隔离 worktree/分支开发；不更新 stable runtime、global skill 或真实 session state。"
+      "evidence": "2026-07-16: 在隔离 worktree/分支完成 compact send/read/tail/interrupt 合同、显式 UTF-8 byte cursor、不会跨过未返回 bytes 的 bounded read、单快照 range/tail 文件读取、plain transcript 输出、last_input_at/last_output_at/output_idle_ms 观测元信息和旧 character cursor 自动迁移。openssh-pty append-only transcript 不再由 backend 全量读取；ssh-tmux 和 windows-agent 只同步远端新增 bytes，并保留跨块 UTF-8 tail 与并发 reader 去重。canonical skill 明确要求单 session 单操作者、发新 shell command 前先看 tail 确认 prompt、交互前台输入例外、并行 Agent 使用独立 session，且不加入自动跳过/压缩或 busy/completion 推断。回归覆盖 5.5 MiB tail、Unicode/invalid UTF-8/CRLF、空/zero tail、非法 cursor、lost/destroyed history、CLI JSON/plain、Windows delta、真实本地 bash/zsh tmux 输入/输出/prompt 与 20 轮失败命令；terminal/debt 聚焦 49 passed，完整 pytest 126 passed, 4 skipped；legacy subprocess 测试改为显式 pytest 临时配置，clean worktree 验证不再依赖 ignored .env.machines；Black、flake8 非格式规则、py_compile、git diff --check、skill quick_validate 和 harness-check 通过，harness 0 warnings；无测试 tmux/shim 残留。",
+      "notes": "任务合同：plans/archive/2026-07-16-terminal-observation-v3.md。实现仅在 codex/rr-terminal-observation-v3 隔离分支；未合入 main、未重装 editable runtime、未更新 global skill、未读取真实 state 或操作既有业务 tmux。真实 SSH/Windows 主机 opt-in smoke 未运行；远端 backend 为保留完整本地镜像，会在观察时同步尚未见过的 remote delta，但不会重复读取既有完整历史。"
     }
   ]
 }

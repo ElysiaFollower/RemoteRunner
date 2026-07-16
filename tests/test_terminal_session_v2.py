@@ -13,6 +13,12 @@ from remote_runner.remote_machine import RemoteMachine, RemoteMachineManager
 from remote_runner.remote_session import RemoteSessionManager
 from remote_runner.remote_state import load_session_state, remote_state_lock, save_session_state
 
+ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _ends_with_visible_prompt(transcript: str, prompt: str) -> bool:
+    return ANSI_CSI.sub("", transcript).endswith(prompt)
+
 
 def _wait_for_transcript(
     manager: RemoteSessionManager,
@@ -142,6 +148,53 @@ def test_long_output_remains_append_only_across_repeated_reads(local_terminal):
         since=long_read["cursor"],
     )
     assert "RR_LONG_0000" not in tail["transcript"]
+
+
+def test_explicit_tail_contains_visible_terminal_input_and_output(local_terminal):
+    manager, created = local_terminal
+    session_id = created["session_id"]
+    command = "printf 'RR_TAIL_VISIBLE_%s\\n' yes"
+
+    manager.send(session_id, command)
+    _wait_for_transcript(manager, session_id, "RR_TAIL_VISIBLE_yes")
+    observed = manager.tail(session_id, tail_bytes=512)
+
+    assert command in observed["transcript"]
+    assert "RR_TAIL_VISIBLE_yes" in observed["transcript"]
+    assert observed["next_cursor"] == observed["last_cursor"]
+
+
+def test_raw_terminal_records_prompt_before_next_shell_command(local_terminal):
+    manager, created = local_terminal
+    session_id = created["session_id"]
+    prompt = "RR_PROMPT_V3> "
+
+    manager.send(session_id, f"PS1='{prompt}'")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        observed = manager.tail(session_id, tail_bytes=1024)
+        if _ends_with_visible_prompt(observed["transcript"], prompt):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"prompt did not become visible; last tail: {observed!r}")
+
+    command = "printf 'RR_PROMPT_OUTPUT\\n'"
+    sent = manager.send(session_id, command)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        observed = manager.tail(session_id, tail_bytes=1024)
+        if (
+            "RR_PROMPT_OUTPUT" in observed["transcript"]
+            and _ends_with_visible_prompt(observed["transcript"], prompt)
+            and observed["last_cursor"] > sent["start_cursor"]
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"command output and returned prompt not visible; last tail: {observed!r}")
+
+    assert command in observed["transcript"]
 
 
 def test_repeated_failures_keep_input_visible_and_cursor_monotonic(local_terminal):

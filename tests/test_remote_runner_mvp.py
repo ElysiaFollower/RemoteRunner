@@ -839,7 +839,7 @@ def test_session_preserves_shell_state_and_incremental_transcript(
     assert "/home/ely/project/subdir" in transcript["transcript"]
     assert "terminal-ok" in transcript["transcript"]
     assert load_session_state(session_id)["transcript_cursor"] == cursor
-    assert Path(transcript["transcript_file_local"]).read_text().find("terminal-ok") >= 0
+    assert Path(created["transcript_file_local"]).read_text().find("terminal-ok") >= 0
 
     reloaded.send(session_id, "echo after-cursor")
     incremental = reloaded.read(session_id, since=cursor)

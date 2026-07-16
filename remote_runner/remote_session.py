@@ -1,9 +1,11 @@
 """Session and command management for the mount-free Remote Runner core."""
 
+import codecs
 import os
 import re
 import time
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 from remote_runner.remote_backend import DEFAULT_BACKGROUND_OUTPUT_LIMIT, ParamikoRemoteBackend
 from remote_runner.remote_machine import RemoteMachineManager, get_remote_machine_manager
@@ -15,12 +17,10 @@ from remote_runner.remote_state import (
     save_session_state,
 )
 from remote_runner.utils import (
-    append_file,
     ensure_dir,
     generate_id,
     get_timestamp,
     parse_timestamp,
-    read_file,
     write_file,
 )
 
@@ -143,12 +143,15 @@ class RemoteSessionManager:
             "destroyed_at": None,
             "last_command": None,
             "last_input": None,
+            "last_input_at": None,
+            "last_output_at": None,
             "last_exit_code": None,
             "command_count": 0,
             "transfer_count": 0,
             "log_dir_local": log_dir,
             "transcript_file_local": transcript_file,
             "transcript_cursor": 0,
+            "transcript_cursor_unit": "utf8-bytes-v1",
             "commands": [],
             **backend_record,
         }
@@ -580,21 +583,37 @@ class RemoteSessionManager:
             raise RuntimeError(
                 f"Session '{session_id}' is busy; use session read or session interrupt"
             )
+        transcript_file = session["transcript_file_local"]
+        start_cursor = self._transcript_size(transcript_file)
         send_result = self.backend.send_terminal_input(
             machine=machine,
             terminal_record=session,
             input_text=input_text,
             enter=enter,
         )
+        last_input_at = get_timestamp()
         session["last_input"] = input_text
-        session["updated_at"] = get_timestamp()
+        session["last_input_at"] = last_input_at
+        session["updated_at"] = last_input_at
         with remote_state_lock():
+            session = load_session_state(session_id)
+            session["last_input"] = input_text
+            session["last_input_at"] = last_input_at
+            session["updated_at"] = last_input_at
+            self._update_transcript_metadata(session)
             save_session_state(session)
-        result = self._public_session(session)
-        result.update(send_result)
-        result["input"] = input_text
-        result["enter"] = enter
-        return result
+        return {
+            "session_id": session_id,
+            "status": session["status"],
+            **send_result,
+            "input": input_text,
+            "enter": enter,
+            "last_input_at": last_input_at,
+            "last_output_at": session.get("last_output_at"),
+            "output_idle_ms": self._output_idle_ms(session.get("last_output_at")),
+            "start_cursor": start_cursor,
+            "last_cursor": self._transcript_size(transcript_file),
+        }
 
     def interrupt(self, session_id: str) -> Dict[str, Any]:
         """Send Ctrl-C to the foreground process without replacing the terminal."""
@@ -604,16 +623,28 @@ class RemoteSessionManager:
         if session.get("status") != "active":
             raise RuntimeError(f"Session '{session_id}' is not active")
         machine = self.machine_manager.get(session["machine_id"])
+        transcript_file = session["transcript_file_local"]
+        start_cursor = self._transcript_size(transcript_file)
         interrupt_result = self.backend.interrupt_terminal(
             machine=machine,
             terminal_record=session,
         )
-        session["updated_at"] = get_timestamp()
+        updated_at = get_timestamp()
         with remote_state_lock():
+            session = load_session_state(session_id)
+            session["updated_at"] = updated_at
+            self._update_transcript_metadata(session)
             save_session_state(session)
-        result = self._public_session(session)
-        result.update(interrupt_result)
-        return result
+        return {
+            "session_id": session_id,
+            "status": session["status"],
+            **interrupt_result,
+            "last_input_at": session.get("last_input_at"),
+            "last_output_at": session.get("last_output_at"),
+            "output_idle_ms": self._output_idle_ms(session.get("last_output_at")),
+            "start_cursor": start_cursor,
+            "last_cursor": self._transcript_size(transcript_file),
+        }
 
     def attach(self, session_id: str) -> Dict[str, Any]:
         session_id = self.resolve_session_id(session_id)
@@ -635,10 +666,58 @@ class RemoteSessionManager:
         session_id: str,
         since: Optional[int] = None,
         max_chars: Optional[int] = None,
+        max_bytes: Optional[int] = None,
     ) -> Dict[str, Any]:
+        if max_chars is not None and max_bytes is not None:
+            raise ValueError("max_chars and max_bytes are mutually exclusive")
         session_id = self.resolve_session_id(session_id)
-        session = load_session_state(session_id)
+        session = self._sync_transcript(session_id)
+        start = 0 if since is None else since
         transcript_file = session["transcript_file_local"]
+        if max_chars is not None:
+            transcript, next_cursor, last_cursor = self._read_transcript_chars(
+                transcript_file,
+                start_cursor=start,
+                max_chars=max_chars,
+            )
+        else:
+            transcript, next_cursor, last_cursor = self._read_transcript_bytes(
+                transcript_file,
+                start_cursor=start,
+                max_bytes=max_bytes,
+            )
+        return self._terminal_read_result(
+            session=session,
+            transcript=transcript,
+            start_cursor=start,
+            next_cursor=next_cursor,
+            last_cursor=last_cursor,
+        )
+
+    def tail(self, session_id: str, tail_bytes: int = 8192) -> Dict[str, Any]:
+        """Return an explicit bounded view of the newest terminal bytes."""
+        if tail_bytes < 0:
+            raise ValueError("tail_bytes must be non-negative")
+        session_id = self.resolve_session_id(session_id)
+        session = self._sync_transcript(session_id)
+        transcript_file = session["transcript_file_local"]
+        transcript, start, next_cursor, last_cursor = self._read_transcript_tail_bytes(
+            transcript_file,
+            tail_bytes=tail_bytes,
+        )
+        result = self._terminal_read_result(
+            session=session,
+            transcript=transcript,
+            start_cursor=start,
+            next_cursor=next_cursor,
+            last_cursor=last_cursor,
+        )
+        result["history_before"] = start > 0
+        return result
+
+    def _sync_transcript(self, session_id: str) -> Dict[str, Any]:
+        """Synchronize backend output into the local append-only transcript."""
+        session = load_session_state(session_id)
         captured_transcript: Optional[str] = None
         captured_delta: Optional[str] = None
         capture_state: Dict[str, Any] = {}
@@ -654,7 +733,7 @@ class RemoteSessionManager:
                 ):
                     if key in capture:
                         capture_state[key] = capture[key]
-            else:
+            elif "transcript" in capture:
                 captured_transcript = capture.get("transcript", "")
             status = capture.get("status") or session.get("status", "active")
         else:
@@ -670,59 +749,212 @@ class RemoteSessionManager:
                 # Discard the stale delta; the next read starts from the committed byte offset.
                 captured_delta = None
                 capture_state = {}
+            transcript_file = session["transcript_file_local"]
             transcript_file_exists = os.path.exists(transcript_file)
-            if transcript_file_exists:
-                existing_transcript = read_file(transcript_file)
-            else:
-                existing_transcript = ""
-            if captured_delta is not None:
-                transcript = existing_transcript + captured_delta
-            elif captured_transcript is None:
-                transcript = existing_transcript
-            else:
+            transcript_changed = False
+            if captured_delta:
+                self._append_transcript_text(transcript_file, captured_delta)
+                transcript_changed = True
+            elif captured_transcript is not None:
+                existing_transcript = (
+                    self._read_transcript_text(transcript_file) if transcript_file_exists else ""
+                )
                 transcript = self._merge_transcript_capture(
                     existing_transcript,
                     captured_transcript,
                 )
-            cursor = len(transcript)
+                if transcript != existing_transcript:
+                    self._write_transcript_text(transcript_file, transcript)
+                    transcript_changed = True
+            if not transcript_file_exists and os.path.exists(transcript_file):
+                os.chmod(transcript_file, 0o600)
+            previous_cursor = session.get("transcript_cursor", 0)
+            previous_last_output_at = session.get("last_output_at")
+            self._update_transcript_metadata(session)
             state_changed = (
-                transcript != existing_transcript
+                transcript_changed
                 or status != session.get("status")
-                or cursor != session.get("transcript_cursor", 0)
+                or previous_cursor != session.get("transcript_cursor")
+                or previous_last_output_at != session.get("last_output_at")
                 or any(session.get(key) != value for key, value in capture_state.items())
             )
-            if transcript != existing_transcript:
-                if captured_delta is not None:
-                    append_file(transcript_file, captured_delta)
-                else:
-                    write_file(transcript_file, transcript)
-                if not transcript_file_exists:
-                    os.chmod(transcript_file, 0o600)
             if state_changed:
                 session["status"] = status
-                session["transcript_cursor"] = cursor
                 session.update(capture_state)
                 session["updated_at"] = get_timestamp()
                 save_session_state(session)
+        return session
 
-        cursor = len(transcript)
-        start = max(0, since or 0)
-        chunk = transcript[start:]
-        truncated = False
-        if max_chars is not None and max_chars >= 0 and len(chunk) > max_chars:
-            chunk = chunk[:max_chars]
-            truncated = True
+    @staticmethod
+    def _transcript_size(transcript_file: str) -> int:
+        try:
+            return os.path.getsize(transcript_file)
+        except OSError:
+            return 0
 
-        result = self._public_session(session)
-        result.update(
-            {
-                "transcript": chunk,
-                "cursor": cursor,
-                "since": start,
-                "transcript_truncated": truncated,
-            }
+    @staticmethod
+    def _read_transcript_text(transcript_file: str) -> str:
+        with open(
+            transcript_file,
+            "r",
+            encoding="utf-8",
+            errors="replace",
+            newline="",
+        ) as handle:
+            return handle.read()
+
+    @staticmethod
+    def _append_transcript_text(transcript_file: str, transcript: str) -> None:
+        ensure_dir(os.path.dirname(transcript_file))
+        with open(transcript_file, "ab") as handle:
+            handle.write(transcript.encode("utf-8"))
+
+    @staticmethod
+    def _write_transcript_text(transcript_file: str, transcript: str) -> None:
+        ensure_dir(os.path.dirname(transcript_file))
+        with open(transcript_file, "wb") as handle:
+            handle.write(transcript.encode("utf-8"))
+
+    @staticmethod
+    def _timestamp_from_epoch(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _update_transcript_metadata(self, session: Dict[str, Any]) -> None:
+        transcript_file = session["transcript_file_local"]
+        cursor = self._transcript_size(transcript_file)
+        session["transcript_cursor"] = cursor
+        session["transcript_cursor_unit"] = "utf8-bytes-v1"
+        if cursor > 0:
+            try:
+                session["last_output_at"] = self._timestamp_from_epoch(
+                    os.path.getmtime(transcript_file)
+                )
+            except OSError:
+                pass
+
+    @staticmethod
+    def _output_idle_ms(last_output_at: Optional[str]) -> Optional[int]:
+        if not last_output_at:
+            return None
+        idle = datetime.now(timezone.utc) - parse_timestamp(last_output_at)
+        return max(0, int(idle.total_seconds() * 1000))
+
+    @staticmethod
+    def _decode_transcript_bytes(
+        raw: bytes,
+        start_cursor: int,
+        last_cursor: int,
+    ) -> Tuple[str, int, int]:
+        if raw and raw[0] & 0xC0 == 0x80:
+            raise ValueError("transcript cursor does not align to a UTF-8 character boundary")
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        transcript = decoder.decode(raw, final=False)
+        pending, _ = decoder.getstate()
+        consumed = len(raw) - len(pending)
+        return transcript, start_cursor + consumed, last_cursor
+
+    @classmethod
+    def _read_transcript_bytes(
+        cls,
+        transcript_file: str,
+        start_cursor: int,
+        max_bytes: Optional[int] = None,
+    ) -> Tuple[str, int, int]:
+        if start_cursor < 0:
+            raise ValueError("transcript cursor must be non-negative")
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        with open(transcript_file, "rb") as handle:
+            last_cursor = os.fstat(handle.fileno()).st_size
+            if start_cursor > last_cursor:
+                raise ValueError(
+                    f"transcript cursor {start_cursor} is beyond transcript tail {last_cursor}"
+                )
+            available = last_cursor - start_cursor
+            read_size = available if max_bytes is None else min(max_bytes, available)
+            handle.seek(start_cursor)
+            raw = handle.read(read_size)
+        return cls._decode_transcript_bytes(raw, start_cursor, last_cursor)
+
+    @classmethod
+    def _read_transcript_tail_bytes(
+        cls,
+        transcript_file: str,
+        tail_bytes: int,
+    ) -> Tuple[str, int, int, int]:
+        """Read one coherent tail snapshot while a pipe may still be appending."""
+        with open(transcript_file, "rb") as handle:
+            last_cursor = os.fstat(handle.fileno()).st_size
+            start_cursor = max(0, last_cursor - tail_bytes)
+            if 0 < start_cursor < last_cursor:
+                handle.seek(start_cursor)
+                prefix = handle.read(min(4, last_cursor - start_cursor))
+                offset = 0
+                while offset < len(prefix) and prefix[offset] & 0xC0 == 0x80:
+                    offset += 1
+                start_cursor += offset
+            handle.seek(start_cursor)
+            raw = handle.read(last_cursor - start_cursor)
+        transcript, next_cursor, _ = cls._decode_transcript_bytes(
+            raw,
+            start_cursor,
+            last_cursor,
         )
-        return result
+        return transcript, start_cursor, next_cursor, last_cursor
+
+    @classmethod
+    def _read_transcript_chars(
+        cls,
+        transcript_file: str,
+        start_cursor: int,
+        max_chars: int,
+    ) -> Tuple[str, int, int]:
+        if start_cursor < 0:
+            raise ValueError("transcript cursor must be non-negative")
+        if max_chars < 0:
+            raise ValueError("max_chars must be non-negative")
+        with open(transcript_file, "rb") as handle:
+            last_cursor = os.fstat(handle.fileno()).st_size
+            if start_cursor > last_cursor:
+                raise ValueError(
+                    f"transcript cursor {start_cursor} is beyond transcript tail {last_cursor}"
+                )
+            handle.seek(start_cursor)
+            raw = handle.read(min(max_chars * 4 + 4, last_cursor - start_cursor))
+        if raw and raw[0] & 0xC0 == 0x80:
+            raise ValueError("transcript cursor does not align to a UTF-8 character boundary")
+
+        # surrogateescape keeps a reversible mapping from decoded characters to source bytes.
+        # That matters for the legacy character limit when a raw terminal emits invalid UTF-8.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogateescape")
+        decoded = decoder.decode(raw, final=False)
+        transcript_bytes = decoded[:max_chars].encode("utf-8", errors="surrogateescape")
+        transcript = transcript_bytes.decode("utf-8", errors="replace")
+        next_cursor = start_cursor + len(transcript_bytes)
+        return transcript, next_cursor, last_cursor
+
+    def _terminal_read_result(
+        self,
+        session: Dict[str, Any],
+        transcript: str,
+        start_cursor: int,
+        next_cursor: int,
+        last_cursor: int,
+    ) -> Dict[str, Any]:
+        return {
+            "session_id": session["session_id"],
+            "status": session["status"],
+            "transcript": transcript,
+            "last_input_at": session.get("last_input_at"),
+            "last_output_at": session.get("last_output_at"),
+            "output_idle_ms": self._output_idle_ms(session.get("last_output_at")),
+            "start_cursor": start_cursor,
+            "next_cursor": next_cursor,
+            "last_cursor": last_cursor,
+            "since": start_cursor,
+            "cursor": next_cursor,
+            "transcript_truncated": next_cursor < last_cursor,
+        }
 
     def logs(self, session_id: str) -> Dict[str, Any]:
         session_id = self.resolve_session_id(session_id)
@@ -1093,11 +1325,15 @@ class RemoteSessionManager:
             "destroyed_at": session.get("destroyed_at"),
             "last_command": session.get("last_command"),
             "last_input": session.get("last_input"),
+            "last_input_at": session.get("last_input_at"),
+            "last_output_at": session.get("last_output_at"),
+            "output_idle_ms": self._output_idle_ms(session.get("last_output_at")),
             "last_exit_code": session.get("last_exit_code"),
             "command_count": session.get("command_count", 0),
             "transfer_count": session.get("transfer_count", 0),
             "log_dir_local": session["log_dir_local"],
             "transcript_cursor": session.get("transcript_cursor", 0),
+            "transcript_cursor_unit": session.get("transcript_cursor_unit", "legacy-characters"),
             "transcript_file_local": session.get("transcript_file_local"),
             "transcript_mode": session.get("transcript_mode"),
             "remote_backend_name": session.get("remote_terminal_name"),

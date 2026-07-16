@@ -496,11 +496,14 @@ def test_session_status_persists_timeout(temp_dir, monkeypatch):
     assert state["sessions"]["sess_test"]["status"] == "timeout"
 
 
-def test_cli_global_status_lists_mounts_and_sessions(temp_dir):
+def test_cli_global_status_lists_mounts_and_sessions(temp_dir, env_file):
     """Top-level CLI status should list all persisted mounts and sessions without requiring IDs."""
     state_dir = os.path.join(temp_dir, "state")
     env = os.environ.copy()
     env["SEED_RUNNER_STATE_DIR"] = state_dir
+    env["PYTHONPATH"] = os.pathsep.join(
+        path for path in (_repo_root(), env.get("PYTHONPATH")) if path
+    )
     previous_state_dir = os.environ.get("SEED_RUNNER_STATE_DIR")
     os.environ["SEED_RUNNER_STATE_DIR"] = state_dir
 
@@ -534,7 +537,7 @@ def test_cli_global_status_lists_mounts_and_sessions(temp_dir):
 
         result = subprocess.run(
             [sys.executable, "-m", "seed_runner.cli", "status"],
-            cwd=_repo_root(),
+            cwd=os.path.dirname(env_file),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -685,4 +688,7 @@ def test_remote_log_helpers_use_posix_paths_and_distinguish_sync_from_workdir():
     assert _remote_sync_session_logs_dir(sync_dir, "exp-web-01") == (
         "/home/seed/.seed-runner/mounts/mnt_test/sync/artifacts/logs/exp-web-01"
     )
-    assert _remote_work_logs_dir(work_dir, "exp-web-01") == "/home/seed/seed-experiment/logs/exp-web-01"
+    assert (
+        _remote_work_logs_dir(work_dir, "exp-web-01")
+        == "/home/seed/seed-experiment/logs/exp-web-01"
+    )

@@ -1127,10 +1127,10 @@ class ParamikoRemoteBackend:
                 transcript_file = terminal_record.get("local_transcript_file")
                 if not transcript_file:
                     raise RuntimeError("append-only terminal is missing local transcript path")
-                with open(transcript_file, "r", encoding="utf-8", errors="replace") as handle:
-                    transcript = handle.read()
                 status = "active" if self.terminal_exists(machine, terminal_record) else "lost"
-                return {"status": status, "transcript": transcript}
+                # pipe-pane writes this file directly. The manager reads only the requested
+                # local byte range; returning the full transcript here would defeat tail.
+                return {"status": status}
             transcript = self._capture_local_tmux_transcript(terminal_record)
             return {"status": "active", "transcript": transcript}
 
@@ -1606,6 +1606,8 @@ class ParamikoRemoteBackend:
                 "windows_agent_file": agent_file,
                 "windows_agent_ready_file": ready_file,
                 "windows_agent_transcript_file": transcript_file,
+                "remote_transcript_cursor_bytes": 0,
+                "remote_transcript_utf8_tail_b64": "",
                 "shell": machine.shell,
                 "history_limit": None,
                 "width": None,
@@ -1728,11 +1730,11 @@ class ParamikoRemoteBackend:
         client = self._connect(machine)
         sftp = client.open_sftp()
         try:
-            transcript = self._read_remote_text(
-                sftp,
-                machine,
-                terminal_record["windows_agent_transcript_file"],
-                missing_ok=True,
+            delta = self._read_remote_transcript_delta(
+                sftp=sftp,
+                machine=machine,
+                terminal_record=terminal_record,
+                remote_path=terminal_record["windows_agent_transcript_file"],
             )
             status_payload = self._read_remote_json(
                 sftp,
@@ -1745,7 +1747,7 @@ class ParamikoRemoteBackend:
         status = "active"
         if status_payload and status_payload.get("status") == "stopped":
             status = "destroyed"
-        return {"status": status, "transcript": transcript}
+        return {"status": status, **delta}
 
     def _destroy_windows_agent_terminal(
         self,
@@ -1936,9 +1938,10 @@ class ParamikoRemoteBackend:
         sftp: paramiko.SFTPClient,
         machine: RemoteMachine,
         terminal_record: Dict[str, Any],
+        remote_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Read only newly appended terminal bytes while preserving UTF-8 boundaries."""
-        remote_path = terminal_record["remote_transcript_file"]
+        remote_path = remote_path or terminal_record["remote_transcript_file"]
         sftp_path = machine.map_file_path(remote_path)
         cursor = int(terminal_record.get("remote_transcript_cursor_bytes") or 0)
         encoded_tail = terminal_record.get("remote_transcript_utf8_tail_b64") or ""

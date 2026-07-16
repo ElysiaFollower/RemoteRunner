@@ -54,11 +54,11 @@ MVP 可以接受本地明文配置，但必须满足底线：
 
 当前 MVP 支持三条持久 session backend：通过 SSH/SFTP 访问的 Linux 机器使用 `ssh-tmux` backend，direct Windows OpenSSH 机器使用 `windows-agent` backend 和 PowerShell 7；只能通过本机 OpenSSH alias 交互登录的机器可使用 `openssh-pty` backend，由本机 `tmux` 托管 `ssh -tt <alias>`。
 
-Windows backend 要求远端可通过 OpenSSH/SFTP 访问、可启动 `python` 和 `pwsh`，并能创建用户级 Windows Scheduled Task。P0 支持 `session create/exec/send/read/destroy`、文件传输和 `run once`；暂不支持 `session exec --mode background`、后台命令 stop 或 `cmd.exe` 一等 shell。
+Windows backend 要求远端可通过 OpenSSH/SFTP 访问、可启动 `python` 和 `pwsh`，并能创建用户级 Windows Scheduled Task。P0 支持 `session create/exec/send/read/tail/destroy`、文件传输和 `run once`；暂不支持 `session exec --mode background`、后台命令 stop 或 `cmd.exe` 一等 shell。
 
 Windows OpenSSH + WSL 不是 direct Windows 主路径。仓库历史上验证过 `startup_commands` 和 `path_mappings`，可以表达“登录 Windows OpenSSH 后先运行 `wsl`，并把命令侧 `/mnt/c/...` 路径映射到 SFTP 侧 `C:/...` 路径”。这些能力保留为兼容/未来 backend 输入，但当前持久 session backend 不承诺支持依赖 `startup_commands` 的机器。
 
-`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，先接入 append-only transcript recorder，再在 pane 中可见地启动 `ssh -tt <alias>`。`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session send/read/interrupt/destroy` 操作同一个交互 shell。该 backend 没有独立文件通道，因此明确拒绝 `session exec`、`file put/get/list`、`run once`、后台命令和无人值守认证；不得借 live terminal 传输隐藏文件协议。
+`openssh-pty` 是本地交互式 gateway 适配层，不保存密码或网关细节。机器配置保存 `ssh_alias`、`auth_type=manual`、`backend=openssh-pty` 和默认目录；`session create` 启动本地 tmux session，先接入 append-only transcript recorder，再在 pane 中可见地启动 `ssh -tt <alias>`。`session attach` 让用户手动完成登录并用 `Ctrl-b d` 脱离，之后 `session send/read/tail/interrupt/destroy` 操作同一个交互 shell。该 backend 没有独立文件通道，因此明确拒绝 `session exec`、`file put/get/list`、`run once`、后台命令和无人值守认证；不得借 live terminal 传输隐藏文件协议。
 
 详细平台边界见 `docs/platform-support.md`。
 
@@ -133,6 +133,7 @@ remote-runner session show
 remote-runner session exec
 remote-runner session send
 remote-runner session read
+remote-runner session tail
 remote-runner session interrupt
 remote-runner session logs
 remote-runner session destroy
@@ -185,7 +186,11 @@ remote-runner session exec \
 
 命令失败时仍应返回结构化信息。非零退出码是任务失败，不应自动销毁会话。
 
-session 的基础契约是持久终端流，而不是 RPC：`session send` 把调用者提供的文本原样写入终端并按需发送 Enter；终端中的输入和输出都进入 append-only transcript；`session read --since <cursor>` 读取增量；支持真实 terminal control 的 tmux-backed backend 用 `session interrupt` 向当前前台进程发送 `Ctrl-C`。同一个 session 必须保留 `cwd`、环境变量、alias、shell function 等 shell-local state。backend 不得为了识别命令边界而向终端注入隐藏的 `eval`、marker、退出码 wrapper 或批处理脚本。`windows-agent` 的 piped PowerShell transport 当前无法可靠发送 console interrupt，必须明确拒绝而不是伪装成功。
+session 的基础契约是持久终端流，而不是 RPC：`session send` 把调用者提供的文本原样写入终端并按需发送 Enter；终端中的输入和输出都进入 append-only transcript；`session read --since <cursor>` 按显式 UTF-8 byte cursor 无损读取；`session tail --bytes <n>` 只在调用者明确要求时查看有界尾部；支持真实 terminal control 的 tmux-backed backend 用 `session interrupt` 向当前前台进程发送 `Ctrl-C`。同一个 session 必须保留 `cwd`、环境变量、alias、shell function 等 shell-local state。backend 不得自动跳过、压缩或解释输出，也不得为了识别命令边界而向终端注入隐藏的 `eval`、marker、退出码 wrapper、prompt detector、shell hook 或批处理脚本。`last_input_at`、`last_output_at`、`output_idle_ms` 和 cursor 是观测元信息，不代表 busy 或命令完成。`windows-agent` 的 piped PowerShell transport 当前无法可靠发送 console interrupt，必须明确拒绝而不是伪装成功。
+
+`send/read/tail/interrupt` 的常规返回必须保持精简，不重复 machine、cwd、日志路径和命令计数等完整 session metadata；需要完整状态时使用 `session show`。bounded read 的 next cursor 只能移动到实际返回内容末尾，不能跳过未返回区域。plain 模式只输出 terminal 文本。
+
+一个 session 默认只有一个当前操作者。新 shell 命令发送前，Agent 应先查看 tail 并确认上一条命令结束且 prompt 已返回；交互前台程序请求的输入是例外。并行 Agent 必须使用独立 session，Remote Runner 不在一个 terminal 内提供多 Agent 调度。
 
 `session exec` 是现有 `ssh-tmux` 和 `windows-agent` backend 的结构化兼容接口，不是 session 的基础语义。`ssh-tmux` 通过独立 direct-SSH batch transport 执行，不进入 live pane，也不读取或改变 terminal 的 cwd、环境变量、alias、function 等 shell-local state；`windows-agent` 使用其显式 request/result 通道。`openssh-pty` 在 pane 输入前拒绝。需要上传—执行—下载闭环时应使用 `run once`，它在 `ssh-tmux` 上同样直接走 batch transport，不委托给 terminal exec。
 

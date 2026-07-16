@@ -50,7 +50,7 @@ MVP 不优先做：
 - Remote Runner：目标产品和架构边界；工作名可后续再改。
 - `seed-runner`：当前可运行原型 CLI，SEED-focused，仍使用 mount/session 兼容接口。
 - Machine：用户在本地登记的远程机器配置，包含 host、port、user、auth type、credential reference/default cwd、platform、backend 和 shell。
-- Session：使用者面向的持久终端上下文，包含 session id、machine id、cwd、状态、append-only transcript 和日志位置；不等同于 tmux session。基础契约是原样 `send` 和增量 `read`；具备真实 terminal control 的 backend 还提供 `interrupt`/`Ctrl-C` 恢复。结构化 `session exec` 是部分 backend 的兼容接口，不得反向定义 session 为 in-band RPC 或 batch runner。
+- Session：使用者面向的单操作者持久终端上下文，包含 session id、machine id、cwd、状态、append-only transcript 和日志位置；不等同于 tmux session。基础契约是原样 `send`、显式 cursor `read` 和调用者主动选择的有界 `tail`；具备真实 terminal control 的 backend 还提供 `interrupt`/`Ctrl-C` 恢复。会话层不推断 busy、prompt 或命令完成；结构化 `session exec` 是部分 backend 的兼容接口，不得反向定义 session 为 in-band RPC 或 batch runner。
 - Command result：一次远程命令的结构化记录，至少包含命令、cwd、stdout、stderr、exit code、开始/结束时间、耗时和日志路径。
 - Transfer：一次显式文件上传、下载或远程列表操作，必须写入本地状态。
 - Artifact：远程运行产生并被本地记录或回收的文件、目录、manifest 或证据。
@@ -64,10 +64,10 @@ MVP 不优先做：
 - `seed_runner.remote_*` 仅作为 legacy compatibility wrapper，继续 re-export `remote_runner.*` 公开对象。
 - legacy 原型命令仍是 `seed-runner`。
 - 当前主实现不依赖 mount；持久 session backend 包含 Linux/SSH + tmux、Windows OpenSSH + windows-agent/pwsh，以及本机 tmux + OpenSSH PTY。
-- 当前 `session create` 通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session；后续 `send/read/interrupt/destroy` 控制该 tmux session，结构化 `exec/background` 则走独立 SSH batch transport。Remote Runner 不持久化登录某个 user account；但如果远端该用户已有 tmux server 进程，新的 tmux session 可能由这个既有 tmux server fork 出 shell，而不是直接由本次 SSH 登录进程 fork。服务器侧组成员或登录策略变化后，公开重启路径是 `session destroy` 后重新 `session create`，但只要既有 tmux server 仍带着旧进程凭据存活，该路径不保证刷新 Unix 补充组。
+- 当前 `session create` 通过 SSH 执行 `tmux new-session`，创建新的 Remote Runner session 和新的 tmux session；后续 `send/read/tail/interrupt/destroy` 控制该 tmux session，结构化 `exec/background` 则走独立 SSH batch transport。Remote Runner 不持久化登录某个 user account；但如果远端该用户已有 tmux server 进程，新的 tmux session 可能由这个既有 tmux server fork 出 shell，而不是直接由本次 SSH 登录进程 fork。服务器侧组成员或登录策略变化后，公开重启路径是 `session destroy` 后重新 `session create`，但只要既有 tmux server 仍带着旧进程凭据存活，该路径不保证刷新 Unix 补充组。
 - 当前提供 `machine restart-tmux-server` 作为 Linux/tmux backend 维护接口：它通过 direct SSH 检查 active Remote Runner tmux session 和远端 tmux session 列表，只有确认没有 session 依赖该 server 后才执行 `tmux kill-server`，用于刷新后续 tmux-backed shell 的进程授权上下文。
-- 当前 Windows backend 使用用户级 Scheduled Task 启动远端 Python agent，由 agent 维护持久 PowerShell 7 (`pwsh`) 子进程；P0 支持 wait-mode session exec、send/read/destroy、file 和 run once，不支持 background mode。
-- 当前 tmux-backed session 用 `pipe-pane` 形成 append-only transcript；远端 transcript 按 byte cursor 增量读取并保留跨块 UTF-8 尾字节。live pane 只承载 `send/read/interrupt`，不承载隐藏 exec 或 file-transfer protocol。`openssh-pty` 拒绝结构化 exec 和所有 file 操作；`ssh-tmux session exec/background` 与 `run once` 走独立 SSH batch transport。
+- 当前 Windows backend 使用用户级 Scheduled Task 启动远端 Python agent，由 agent 维护持久 PowerShell 7 (`pwsh`) 子进程；P0 支持 wait-mode session exec、send/read/tail/destroy、file 和 run once，不支持 background mode。
+- 当前 tmux-backed session 用 `pipe-pane` 形成 append-only transcript；远端 transcript 按 byte cursor 增量读取并保留跨块 UTF-8 尾字节。live pane 只承载 `send/read/tail/interrupt`，不承载隐藏 exec 或 file-transfer protocol。`openssh-pty` 拒绝结构化 exec 和所有 file 操作；`ssh-tmux session exec/background` 与 `run once` 走独立 SSH batch transport。
 - legacy `seed-runner` 原型依赖 `.env.machines`、SSH key、tmux、sshfs 和 mount/session 流程。
 - 旧 API 记录在 `docs/reference/SEED_RUNNER_API.md`。
 
@@ -92,7 +92,7 @@ MVP 不优先做：
 
 1. 统一灯塔、需求、术语和 harness 状态。
 2. 实现机器配置和 `machine list/show/doctor/remove`。
-3. 重建 session create/list/show/exec/logs/destroy 合同。
+3. 重建 session create/list/show/exec/send/read/tail/interrupt/logs/destroy 合同。
 4. 加入显式 file put/get/list，不把 mount/sshfs 作为核心机制。
 5. 加入凭据脱敏、稳定错误码、超时、恢复和 artifact manifest。
 6. 在通用远程交互层之上添加 operations、SEED、research 等 profile。

@@ -117,14 +117,14 @@ remote-runner file get \
 
 ## 5. 持久 Session Transcript
 
-`session` 本身就是持久终端。它的基础操作是 `session send/read/interrupt`：原样键入、按
-cursor 读取 append-only transcript、向前台进程发送 `Ctrl-C`。同一个 shell 会保留 `cd`、
-`export` 等 shell-local state。
+`session` 本身就是单操作者持久终端。它的基础操作是 `session send/read/tail/interrupt`：
+原样键入、按 UTF-8 byte cursor 无损读取 append-only transcript、按调用者明确选择查看有界
+tail、向前台进程发送 `Ctrl-C`。同一个 shell 会保留 `cd`、`export` 等 shell-local state。
 Linux 持久 session 后端要求 Linux/SSH 机器上有 `tmux`。Windows 持久 session 后端见下方 direct Windows 章节。
 
 `session exec` 目前是 `ssh-tmux` 和 `windows-agent` 的结构化兼容接口，不是 session 的
 基础语义。`ssh-tmux` 的 exec 走独立 direct-SSH batch channel，不进入 terminal，也不继承
-terminal 中的 `cd/export/alias/function`。需要操作持久 shell state 时用 `session send/read`；
+terminal 中的 `cd/export/alias/function`。需要操作持久 shell state 时用 `session send/read/tail`；
 需要多步脚本、产物回收和进程级退出语义时用 `run once`。
 
 ```bash
@@ -134,31 +134,46 @@ remote-runner session create \
   --name demo-shell \
   --json
 
+remote-runner session tail --session demo-shell --bytes 8192 --plain
+
 remote-runner session send \
   --session demo-shell \
   --input 'cd /home/ely/tmp' \
   --json
+
+remote-runner session tail --session demo-shell --bytes 8192 --plain
 
 remote-runner session send \
   --session demo-shell \
   --input 'export RR_DEMO=ok' \
   --json
 
+remote-runner session tail --session demo-shell --bytes 8192 --plain
+
 remote-runner session send \
   --session demo-shell \
   --input 'pwd && printf "$RR_DEMO\n"' \
   --json
 
-remote-runner session read \
+remote-runner session tail \
   --session demo-shell \
-  --json
+  --bytes 8192 \
+  --plain
 
 remote-runner session destroy \
   --session demo-shell \
   --json
 ```
 
-`session read` 会返回 transcript 和 cursor；下次可以用 `--since <cursor>` 读取增量输出。
+`session send` 快速返回精简确认，不等待前台命令结束。`session tail` 适合像人一样查看最近
+输出；`session read --since <next_cursor>` 用于不能跳过任何内容的范围读取。tail 必须显式
+调用，不会自动替换 read；完整 transcript 始终保留。发送一条新的 shell 命令前，先看 tail
+确认上一条命令已经结束且 prompt 已返回。密码、确认问题或 REPL 等交互前台程序请求的输入
+不属于新 shell 命令。并行 Agent 使用不同 session，不共享同一终端。
+
+JSON 只包含操作结果、`start_cursor/next_cursor/last_cursor`、`last_input_at`、
+`last_output_at` 和 `output_idle_ms` 等必要观测元信息；完整 machine/cwd/log 状态用
+`session show` 查询。时间和 idle 字段不表示 busy 或命令完成。
 
 ## 6. 一次性闭环
 
@@ -278,18 +293,20 @@ remote-runner session attach --session interactive-shell
 `cd`。之后可以运行：
 
 ```bash
+remote-runner session tail --session interactive-shell --bytes 8192 --plain
 remote-runner session send --session interactive-shell --input 'pwd && whoami' --json
+remote-runner session tail --session interactive-shell --bytes 8192 --plain
 remote-runner session send --session interactive-shell --input 'echo hello' --json
-remote-runner session read --session interactive-shell --json
+remote-runner session tail --session interactive-shell --bytes 8192 --plain
 remote-runner session interrupt --session interactive-shell --json
 remote-runner session destroy --session interactive-shell --json
 ```
 
 人类 attach 着观察时，会在同一个 tmux panel 中看到 agent 输入的原文和 shell 输出；
-`session read` 读取的也是这条 append-only 流。`openssh-pty` 会在向 pane 写入任何东西前
+`session read/tail` 读取的也是这条 append-only 流。`openssh-pty` 会在向 pane 写入任何东西前
 拒绝 `session exec`，避免隐藏 `eval`、marker 或退出码 wrapper 污染 live shell。
 
-边界：`openssh-pty` 只支持 `session create/attach/send/read/interrupt/destroy`。它没有独立
+边界：`openssh-pty` 只支持 `session create/attach/send/read/tail/interrupt/destroy`。它没有独立
 SFTP/file transport，因此 `file put/get/list` 全部明确拒绝，不会借 live PTY 注入 base64、
 marker 或传输脚本。它也不支持 `run once`、任何 `session exec` 或无人值守认证；密码不写入
 Remote Runner 配置。
@@ -320,5 +337,5 @@ python3 -m pytest tests/test_remote_runner_real_integration.py -q
 - `--json` 的 stdout 应该能被 `json.loads()` 直接解析。
 - 密码不会写到日志、handoff 或测试输出里。
 - 所有真实测试都必须只写入你明确指定的安全目录。
-- `session` 是连续终端流；`send/read/interrupt` 是基础契约，结构化命令属于兼容或 job 层。
+- `session` 是单操作者连续终端流；`send/read/tail/interrupt` 是基础契约，结构化命令属于兼容或 job 层。
 - 如果 shell 找不到 `remote-runner`，先确认你在 `seedrunner` 环境里，或者直接用 `conda run -n seedrunner ...`。

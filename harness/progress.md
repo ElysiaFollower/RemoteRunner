@@ -7,12 +7,13 @@
 
 ## 当前状态
 
-- 当前功能项：`F-029 Terminal Observation V3 精简观测接口` active；F-027/F-028 passing。
-- 当前任务计划：`plans/active/2026-07-16-terminal-observation-v3.md`。
-- 当前开发隔离：`codex/rr-terminal-observation-v3` / `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v3`；stable editable runtime 和 global live skill 不变。
-- 当前部署：`main` 位于 `06c47cf`；editable runtime 从主 worktree 导入；global live skill 与 canonical `SKILL.md` 字节一致。
-- 上次验证：2026-07-15，debt 10 passed；真实本地 tmux 16 passed；MVP 54 passed；launch 2 passed, 1 skipped；完整 pytest 103 passed, 4 skipped；变更文件 Black、全仓 flake8 非格式规则、git diff check、harness-check 通过。真实 SSH smoke 未运行，按任务合同不阻塞。
-- 下一步最佳动作：不主动创建业务 session；远端工作开始时使用用户明确选择的现有 session，或在用户要求后再创建。使用 V2 `send/read/interrupt` 操作 live terminal。
+- 当前功能项：无 active；`F-029 Terminal Observation V3 精简观测接口` passing，F-027/F-028 passing。
+- 当前任务计划：`plans/archive/2026-07-16-terminal-observation-v3.md`。
+- 当前开发隔离：`codex/rr-terminal-observation-v3` / `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v3`，等待用户审阅后自行同步；stable editable runtime 和 global live skill 不变。
+- 当前部署：`main` 位于 `f65ee33`；editable runtime 从主 worktree 导入；分支 canonical `SKILL.md` 尚未发布到 global live skill。
+- 上次验证：2026-07-16，terminal observation/session/debt 聚焦 49 passed；完整 pytest 126 passed, 4 skipped；变更文件 Black、flake8 非格式规则、py_compile、skill quick_validate、git diff check、harness-check 通过，harness 0 warnings。真实本地 bash/zsh tmux 覆盖输入、输出和 prompt；真实 SSH/Windows opt-in smoke 未运行。
+- 下一步最佳动作：用户审阅隔离分支后决定合并/快进和 global skill 同步；在此之前保持 main、editable runtime、global skill 和既有 session 不变。
+- 2026-07-16：完成 F-029。`send/read/tail/interrupt` 返回收敛为操作结果、UTF-8 byte cursor 和必要输入输出时间；bounded read 不跨过未返回 bytes，tail 是调用者明确选择的有界视图，不做自动跳过、摘要、压缩或完成推断。canonical skill 固化单 session 单操作者、每条新 shell command 前先看 tail 确认 prompt、交互程序输入例外和并行任务独立 session。5.5 MiB local transcript tail 不全量载入，remote tmux/windows transcript 只同步尚未见过的 delta。实现、文档和验证仅在隔离分支，未触碰当前运行工具。
 - 2026-07-16：启动 F-029。目标是精简 send/read 返回、增加显式 tail、必要时间/cursor 元信息和单 session 单操作者 skill 规则；明确禁止自动跳过/压缩、busy/完成推断、prompt 解析和多 Agent session 调度。
 - 2026-07-15：在运行任务停止后的安全窗口，将已验证的 OpenSSH PTY 基线和 Terminal Session V2 提交链快进合入 `main`；editable install 无需重装即加载主 worktree 新实现，global live skill 已同步。缺失 pane 的旧 record 通过 liveness 刷新为 `lost`。部署时误将“验证实现”扩大为创建一个未经用户要求的 V2 replacement session；未发送远端业务命令，发现越界后立即 destroy，pane 已清理。为排除测试误杀，使用独立 sentinel 分别复跑真实 tmux 聚焦测试与完整 pytest，两次 sentinel 均存活。
 - 2026-07-15：完成 `F-028 Terminal Session V2 债务清零审计`。删除 ssh-tmux session wrapper/eval 与 openssh-pty file-get pane protocol；structured exec/background/run once 改走独立 batch；remote append-only transcript 改为 byte cursor 增量 SFTP，并处理 UTF-8 跨块和并发 reader 去重。真实本地 bash/zsh tmux 各完成 20 轮失败命令 stress，shell/recorder 存活且无隐藏输入。审计同时修复 Windows wait 轮询缩进和 destroy 返回缺失。当前文档、skill、feature facts 已统一到 terminal 与 batch/file transport 分离的契约。

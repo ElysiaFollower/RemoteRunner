@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import threading
 from types import SimpleNamespace
 
@@ -282,6 +283,52 @@ def test_remote_transcript_reads_only_delta_and_preserves_split_utf8(monkeypatch
     assert empty["transcript_delta"] == ""
     assert tracker["bytes_read"] == 0
     assert base64.b64decode(empty["remote_transcript_utf8_tail_b64"]) == b""
+
+
+def test_windows_terminal_capture_reads_only_new_transcript_bytes(monkeypatch):
+    agent_dir = "/remote/windows-agent"
+    transcript_path = f"{agent_dir}/transcript.txt"
+    status_path = f"{agent_dir}/status.json"
+    prefix = b"old-history\r\n" * 1000
+    storage = {
+        transcript_path: prefix,
+        status_path: json.dumps({"status": "ready"}).encode("utf-8"),
+    }
+    tracker = {"bytes_read": 0}
+    sftp = _CountingSFTP(storage, tracker)
+    backend = ParamikoRemoteBackend()
+    monkeypatch.setattr(backend, "_connect", lambda machine: _CaptureClient(sftp))
+    machine = RemoteMachine(
+        machine_id="windows",
+        host="example.invalid",
+        port=22,
+        user="test",
+        auth_type="password",
+        password="test-only",
+        default_cwd="C:/Temp",
+        startup_commands=[],
+        path_mappings=[],
+        platform="windows",
+        backend="windows-agent",
+        shell="pwsh",
+    )
+    record = {
+        "windows_agent_dir": agent_dir,
+        "windows_agent_transcript_file": transcript_path,
+        "remote_transcript_cursor_bytes": 0,
+        "remote_transcript_utf8_tail_b64": "",
+    }
+
+    first = backend.capture_terminal(machine, record)
+    assert first["transcript_delta"] == prefix.decode("utf-8")
+    record.update(first)
+
+    storage[transcript_path] += b"new-tail\r\n"
+    tracker["bytes_read"] = 0
+    second = backend.capture_terminal(machine, record)
+
+    assert second["transcript_delta"] == "new-tail\r\n"
+    assert tracker["bytes_read"] < 100
 
 
 class _ManagerDeltaBackend(_BatchSeparationBackend):
