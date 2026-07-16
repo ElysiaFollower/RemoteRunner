@@ -4,6 +4,12 @@
 
 ## 仓库状态
 
+- 当前 active 开发：`F-029 Terminal Observation V3 精简观测接口`；隔离 worktree
+  `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v3`，分支
+  `codex/rr-terminal-observation-v3`，任务合同
+  `plans/active/2026-07-16-terminal-observation-v3.md`。
+- stable worktree、editable runtime、global live skill、真实 state 和现有 tmux session 均不在
+  本任务改动范围。
 - `main` 已快进到 `06c47cf`，包含 OpenSSH PTY runtime 基线、Terminal Session V2 和债务
   清零审计三个提交。
 - 当前 `remote-runner` editable install 从主 worktree 导入；仓库 canonical `SKILL.md` 与
