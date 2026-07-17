@@ -12,8 +12,8 @@
   指向主仓库；本任务没有安装、合并或发布 global Skill。
 - V4 是不兼容重写：生产包只剩 `remote_runner`；旧 remote/Windows/batch/file/run/artifact 和
   `seed_runner` 路径已删除。
-- F-030 已标为 passing，任务合同已归档；实现已整理为隔离分支上的单一 V4 提交，worktree
-  应为 clean。
+- F-030 已标为 passing，任务合同已归档；F-031 是唯一 active WIP，切换合同位于
+  `plans/active/2026-07-17-local-terminal-v4-cutover.md`。
 
 ## 验证证据
 
@@ -34,6 +34,13 @@ git diff --check
 最终隔离 wheel smoke 已完成：构建 `remote-runner 0.4.0` wheel，在临时 venv 中非 editable
 安装，从源码目录外使用独立 tmux socket 完成 create/send/tail/destroy。完整 evidence 在 F-030。
 
+Cutover 准备改动后再次运行同一质量门禁，结果仍为 34 passed、Black 16 files、Flake8、mypy
+9 source files、harness/init/diff 通过；重新构建 wheel 并在全新临时 venv、state 和 tmux 中完成
+create/send/tail/show/destroy/purge。待发布 Skill 通过 quick validation，canonical SHA-256 为
+`c2130e7061e80d63f025432ed2fd4dad0c5c62d1cd62b871f180d153740fff2c`。
+第一次 smoke driver 因使用 zsh 只读变量名而在产品检查通过途中退出，并留下自己的唯一 socket
+tmux server；该 server 已精确 kill，driver 修正后从头通过，最终进程检查无残留。
+
 追加真实 SSH smoke：使用临时 state/独立 tmux socket 登录一台已配置的高延迟 Linux target，
 验证双层 prompt、远端 `cd`/环境变量连续性、Linux 输出、延时前台命令和 `exit` 回本地 prompt。
 远端只执行只读探针；本地测试 Session 已 destroy/purge，tmux server 与临时 state 已删除。
@@ -52,15 +59,24 @@ git diff --check
 - 尚未在 Linux RR host/Python 3.10 上实跑；真实 Linux SSH target 已验证，但两者不能混称。
   host 兼容性当前由 Python 3.10 mypy 配置与无 macOS 专用生产分支支持。
 - 尚未合入或切换主仓库、editable runtime、旧 package metadata 或 global Skill；这是用户
-  审阅后的破坏性 cutover，不属于本隔离开发任务。
+  明确授权后才执行的破坏性 cutover。
+
+## Cutover 准备状态
+
+- stable main `f65ee33` 是 V4 分支祖先，可整分支 `--ff-only`；不得只 cherry-pick 最后提交。
+- 当前系统仍是 `seed-runner 0.1.0` editable，import 与 console script 均指向 stable 主仓库；
+  切换时必须先卸载旧 distribution，再安装 `remote-runner 0.4.0`。
+- `/Users/ely/.remote-runner` 只确认存在，未读取；切换时归档改名，不迁移、不删除。
+- global Skill 与 stable/V4 仓库版本都不同，必须在 skills discovery 目录之外独立备份后，才可
+  用 V4 canonical `SKILL.md` 完整替换。
+- 待发布 Skill 已补充负触发边界：开发/调试 Remote Runner 本身、普通本地 shell 和概念性 SSH
+  问题不触发。正式切换的停止条件、执行顺序、生产 smoke 与失败回退均在 active 合同中。
 
 ## 下一步最佳动作
 
-1. 用户审阅 breaking surface 与验证边界。
-2. 在安全窗口归档旧 `~/.remote-runner` state，并确认没有仍需旧工具的 Agent。
-3. 将本分支变更同步到主仓库；先卸载旧 `seed-runner` editable metadata，再从主仓库安装
-   `remote-runner` V4，随后按需发布仓库内 `SKILL.md` 到 global Skill。
-4. 切换后先创建一个新 V4 Session 做 smoke；不要尝试读取或迁移旧 state。
+1. 等待用户明确下令，期间不得修改 stable runtime、真实 state 或 global Skill。
+2. 下令后按 `plans/active/2026-07-17-local-terminal-v4-cutover.md` 重新预检并执行，不临场改顺序。
+3. production smoke 与回归通过后更新 evidence、归档合同并报告实际备份路径。
 
 ## 常用命令
 

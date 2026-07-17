@@ -2,9 +2,10 @@
 
 # 当前进度
 
-## Local Terminal V4
+## Local Terminal V4 cutover
 
-- 状态：实现与发布验证完成，等待用户审阅并决定是否破坏性切换主仓库。
+- 状态：实现与发布验证完成；切换前基线、顺序和失败回退已审计，等待用户明确授权执行破坏性
+  cutover。
 - 分支：`codex/rr-terminal-observation-v3`。
 - 隔离 worktree：`/Users/ely/workspace/research/agent/RemoteRunner-terminal-v3`。
 - 稳定主仓库、editable runtime、global Skill、真实 RR state 和默认 tmux 均未修改。
@@ -21,4 +22,7 @@
   state 初始化竞态和 wheel 安装 smoke。
 
 最终门禁：34 passed；Black、Flake8、mypy、harness、init、diff 和非 editable wheel smoke
-全部通过。任务合同已归档。后续只剩用户决定 cutover；当前稳定工具未受影响。
+全部通过。实现任务合同已归档；当前唯一 WIP 是
+`plans/active/2026-07-17-local-terminal-v4-cutover.md`。预检确认整个分支可 fast-forward，且旧
+package metadata、真实 state 与独立 global Skill 都有明确的备份和回退边界。当前稳定工具未受
+影响。

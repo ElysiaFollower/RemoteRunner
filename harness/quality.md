@@ -28,3 +28,16 @@ tmux Terminal，旧 backend 与兼容分支已删除。当前不以“旧测试�
   Windows target 未实跑；两者都只是 terminal 中的普通输入，不是 RR backend。
 - 不保证本机重启、tmux 被杀、SSH 断线或远端进程的存活与恢复。
 - transcript 不轮转、不压缩；长任务由使用者按文件系统容量自行管理并在明确需要时 purge。
+
+## Cutover readiness
+
+- 待发布 Skill 通过 `skill-maintainer/scripts/quick_validate.py`；所有示例命令已与 V4 CLI help
+  核对，状态字段与 CLI reference、实现和测试一致，旧 machine/exec/file/run/interrupt/`--since`
+  工作流没有残留。
+- Skill 明确排除开发/调试 Remote Runner 本身、普通本地 shell 和概念性 SSH 问题，避免工具
+  自举和泛触发；canonical 文件 SHA-256 为
+  `c2130e7061e80d63f025432ed2fd4dad0c5c62d1cd62b871f180d153740fff2c`。
+- 准备改动后完整代码门禁再次通过，并重新构建 0.4.0 wheel，在临时 venv 非 editable 安装，
+  用独立 state/tmux 完成 create/send/tail/show/destroy/purge。
+- 生产 cutover 尚未执行；当前 stable main、系统安装、真实 state、默认 tmux 和 global Skill 均
+  保持旧状态。执行与回退合同见 `plans/active/2026-07-17-local-terminal-v4-cutover.md`。

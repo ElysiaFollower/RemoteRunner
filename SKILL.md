@@ -1,6 +1,6 @@
 ---
 name: remote-runner
-description: Use when an agent should work through a persistent local shell managed by Remote Runner, including transparent SSH login, long terminal tasks, transcript inspection, or human tmux collaboration.
+description: Use when an agent should work through a persistent local shell managed by Remote Runner, including transparent SSH login, long terminal tasks, transcript inspection, or human tmux collaboration. Do not use when developing or debugging Remote Runner itself, for ordinary local shell commands, or for conceptual SSH questions.
 metadata:
   short-description: Use a transparent persistent shell
 ---
@@ -10,6 +10,9 @@ metadata:
 Remote Runner provides one real local shell per Session. Treat it exactly like a human terminal.
 The tool does not understand commands, infer busy/completion, create remote tmux automatically, or
 run hidden batch/file protocols.
+
+This skill governs work performed through an installed Remote Runner. It is not the development or
+debugging guide for Remote Runner itself.
 
 ## Start
 
