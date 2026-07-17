@@ -2,13 +2,12 @@
 
 # 当前进度
 
-## Local Terminal V4 cutover
+## Local Terminal V4
 
-- 状态：实现与发布验证完成；切换前基线、顺序和失败回退已审计，等待用户明确授权执行破坏性
-  cutover。
-- 分支：`codex/rr-terminal-observation-v3`。
-- 隔离 worktree：`/Users/ely/workspace/research/agent/RemoteRunner-terminal-v3`。
-- 稳定主仓库、editable runtime、global Skill、真实 RR state 和默认 tmux 均未修改。
+- 状态：已完成实现、主仓库同步、系统安装、global Skill 发布和默认生产环境 smoke。
+- 主仓库：`/Users/ely/workspace/research/agent/RemoteRunner`，`main` 已包含完整 V4 分支。
+- 系统 runtime：`remote-runner 0.4.0` editable 指向主仓库；旧 `seed-runner` metadata 已卸载。
+- global Skill：已与仓库内 canonical `SKILL.md` 同步。
 
 已完成：
 
@@ -21,8 +20,6 @@
 - 新测试覆盖真实隔离 tmux、PTY attach、no-echo、Ctrl-C、lost/reuse/purge、bootstrap、
   state 初始化竞态和 wheel 安装 smoke。
 
-最终门禁：34 passed；Black、Flake8、mypy、harness、init、diff 和非 editable wheel smoke
-全部通过。实现任务合同已归档；当前唯一 WIP 是
-`plans/active/2026-07-17-local-terminal-v4-cutover.md`。预检确认整个分支可 fast-forward，且旧
-package metadata、真实 state 与独立 global Skill 都有明确的备份和回退边界。当前稳定工具未受
-影响。
+最终门禁：34 passed；Black、Flake8、mypy、harness、init、diff、非 editable wheel smoke 和
+默认 state/default tmux production smoke 全部通过。旧 state 与旧 Skill 已独立归档，测试
+Session 已 destroy/purge，新默认 state 当前为空。F-030、F-031 均为 passing，当前无 active WIP。

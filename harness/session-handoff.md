@@ -1,23 +1,32 @@
-<!-- 职责：让下一个 Agent 在三分钟内恢复当前 V4 任务。 -->
+<!-- 职责：让下一个 Agent 在三分钟内恢复当前 V4 状态。 -->
 
 # Session Handoff
 
 ## 仓库状态
 
-- Local Terminal V4 已在隔离 worktree `/Users/ely/workspace/research/agent/RemoteRunner-terminal-v3`
-  完成实现，分支 `codex/rr-terminal-observation-v3`。
-- 该分支从 main 依次保留 V3 设计过程提交 `eee5aa5`、`3afef80`，最终 V4 提交完全取代其
-  运行时设计。Cutover 应合并整个分支，不要只 cherry-pick 最后一个相对提交。
-- 主仓库 `/Users/ely/workspace/research/agent/RemoteRunner` 仍是 `main`，稳定 editable import 仍
-  指向主仓库；本任务没有安装、合并或发布 global Skill。
-- V4 是不兼容重写：生产包只剩 `remote_runner`；旧 remote/Windows/batch/file/run/artifact 和
-  `seed_runner` 路径已删除。
-- F-030 已标为 passing，任务合同已归档；F-031 是唯一 active WIP，切换合同位于
-  `plans/active/2026-07-17-local-terminal-v4-cutover.md`。
+- Local Terminal V4 已完整同步到主仓库 `main`；隔离实现分支
+  `codex/rr-terminal-observation-v3` 的切换基点为 `0799092`。
+- 系统 distribution 是 `remote-runner 0.4.0` editable，import 与 console script 均指向
+  `/Users/ely/workspace/research/agent/RemoteRunner`；旧 `seed-runner` metadata 已卸载。
+- global Skill 已由主仓库 canonical `SKILL.md` 原子替换，SHA-256 为
+  `c2130e7061e80d63f025432ed2fd4dad0c5c62d1cd62b871f180d153740fff2c`。
+- V4 默认 state 已 fresh 初始化；production smoke Session 已 destroy/purge，当前
+  `remote-runner session list` 返回空列表。
+- F-030、F-031 均为 passing，任务合同均已归档，当前无 active WIP。
 
 ## 验证证据
 
-最终门禁已运行：
+- 旧 state 未读取、未迁移、未删除，归档在
+  `/Users/ely/.remote-runner.pre-v4-20260717T113718Z`。
+- 切换前 global Skill 在准备后被外部维护过；实际覆盖前版本 SHA-256 为 `4a6d760...`，已原样
+  备份到 `/Users/ely/.agents/backups/remote-runner/20260717T113718Z/SKILL.md`。审计确认该变化
+  仍只涉及 V4 已删除的旧 machine/backend/run/file 工作流，因此没有混入 canonical V4 Skill。
+- main 从 `f65ee33` 整分支 fast-forward 到 V4；没有 cherry-pick、force 或历史改写。
+- 默认 state/default tmux production smoke 创建唯一 Session，看到初始 zsh prompt；发送
+  `printf` 后 transcript 同时包含真实命令回显、`RR_V4_PRODUCTION_SMOKE=42` 和恢复后的 prompt；
+  `show` 的状态、时间和 cursor 正确。测试 Session 随后 destroy/purge，列表为空。
+
+### 最终门禁
 
 ```bash
 python3 -m pytest -q
@@ -25,64 +34,44 @@ python3 -m black --check remote_runner tests
 python3 -m flake8 remote_runner tests --ignore=E203,W503,E501
 python3 -m mypy remote_runner
 ./scripts/harness-check.sh
+./init.sh
 git diff --check
 ```
 
-结果：34 passed；Black 16 files；Flake8 通过；mypy 9 source files；harness 0 warnings；
-`init.sh` 与 diff check 通过。fresh state 的 128-way 初始化压力用例另连续运行 10 轮。
+结果：34 passed；Black 16 files；Flake8、mypy 9 source files、harness/init/diff 和 global Skill
+quick validation 全部通过。distribution、import、CLI surface、Skill hash、备份和空 state 审计通过。
 
-最终隔离 wheel smoke 已完成：构建 `remote-runner 0.4.0` wheel，在临时 venv 中非 editable
-安装，从源码目录外使用独立 tmux socket 完成 create/send/tail/destroy。完整 evidence 在 F-030。
-
-Cutover 准备改动后再次运行同一质量门禁，结果仍为 34 passed、Black 16 files、Flake8、mypy
-9 source files、harness/init/diff 通过；重新构建 wheel 并在全新临时 venv、state 和 tmux 中完成
-create/send/tail/show/destroy/purge。待发布 Skill 通过 quick validation，canonical SHA-256 为
-`c2130e7061e80d63f025432ed2fd4dad0c5c62d1cd62b871f180d153740fff2c`。
-第一次 smoke driver 因使用 zsh 只读变量名而在产品检查通过途中退出，并留下自己的唯一 socket
-tmux server；该 server 已精确 kill，driver 修正后从头通过，最终进程检查无残留。
-
-追加真实 SSH smoke：使用临时 state/独立 tmux socket 登录一台已配置的高延迟 Linux target，
-验证双层 prompt、远端 `cd`/环境变量连续性、Linux 输出、延时前台命令和 `exit` 回本地 prompt。
-远端只执行只读探针；本地测试 Session 已 destroy/purge，tmux server 与临时 state 已删除。
+切换前另已完成：fresh state 128-way 初始化压力连续 10 轮、非 editable wheel 安装 smoke、真实
+高延迟 Linux SSH target 的登录/状态连续/延时命令/退出回本地 prompt 验证。
 
 ## 安全与隐私边界
 
-- 所有测试使用唯一 `REMOTE_RUNNER_TMUX_SOCKET` 与 pytest 临时 state；fixture finally
-  `kill-server`。没有连接真实机器或读取真实 RR state。
-- 未运行 `pip install -e`；wheel 只安装进临时 venv，并在退出时删除。
-- `send --stdin` 可避免秘密进入 process argv；RR 不保存或返回输入。密码是否出现在 transcript
-  由真实 TTY echo/no-echo 决定。
-- evidence、日志和仓库内没有真实 host、密码、私钥或业务 transcript。
+- 旧 state 只做同文件系统改名归档；没有读取、迁移、合并或删除其中内容。
+- global Skill 覆盖前版本保存在 skills discovery 目录之外；canonical 部署过程不保留临时文件。
+- production smoke 没有连接远端、写入业务目录或使用敏感输入；唯一测试 Session 已彻底 purge。
+- 仓库、handoff 和测试 evidence 不包含 host、密码、私钥或业务 transcript。
 
 ## 仍未完成
 
-- 尚未在 Linux RR host/Python 3.10 上实跑；真实 Linux SSH target 已验证，但两者不能混称。
-  host 兼容性当前由 Python 3.10 mypy 配置与无 macOS 专用生产分支支持。
-- 尚未合入或切换主仓库、editable runtime、旧 package metadata 或 global Skill；这是用户
-  明确授权后才执行的破坏性 cutover。
-
-## Cutover 准备状态
-
-- stable main `f65ee33` 是 V4 分支祖先，可整分支 `--ff-only`；不得只 cherry-pick 最后提交。
-- 当前系统仍是 `seed-runner 0.1.0` editable，import 与 console script 均指向 stable 主仓库；
-  切换时必须先卸载旧 distribution，再安装 `remote-runner 0.4.0`。
-- `/Users/ely/.remote-runner` 只确认存在，未读取；切换时归档改名，不迁移、不删除。
-- global Skill 与 stable/V4 仓库版本都不同，必须在 skills discovery 目录之外独立备份后，才可
-  用 V4 canonical `SKILL.md` 完整替换。
-- 待发布 Skill 已补充负触发边界：开发/调试 Remote Runner 本身、普通本地 shell 和概念性 SSH
-  问题不触发。正式切换的停止条件、执行顺序、生产 smoke 与失败回退均在 active 合同中。
+- 尚未在 Linux RR host/Python 3.10 上单独实跑；当前 RR host 是 macOS、Python 3.13.12、
+  tmux 3.7b。Linux SSH target 验证不能冒充 Linux host 验证。
+- RR 只保证本地 tmux shell；不保证本机重启、tmux 被杀、SSH 断线或远端进程存活。
+- transcript 不自动轮转或压缩；长期大输出需要使用者管理磁盘并显式 purge。
+- 旧 state 与旧 Skill 备份尚未删除；这是有意保留的回退窗口，不是未完成迁移。
 
 ## 下一步最佳动作
 
-1. 等待用户明确下令，期间不得修改 stable runtime、真实 state 或 global Skill。
-2. 下令后按 `plans/active/2026-07-17-local-terminal-v4-cutover.md` 重新预检并执行，不临场改顺序。
-3. production smoke 与回归通过后更新 evidence、归档合同并报告实际备份路径。
+- 正常任务直接使用已发布的 V4 Skill 和 `remote-runner session ...` Interface。
+- 旧 state 与旧 Skill 备份先保留；确认无需回退后再由用户明确决定是否删除。
+- 新功能开发前在 `plans/active/` 建立唯一任务合同，不恢复旧 backend 或兼容路径。
 
 ## 常用命令
 
 ```bash
-cd /Users/ely/workspace/research/agent/RemoteRunner-terminal-v3
+cd /Users/ely/workspace/research/agent/RemoteRunner
 ./init.sh
-git status --short
-python3 -m pytest -q
+remote-runner session list
+remote-runner session create --name <readable-name>
+remote-runner session show --session <readable-name>
+remote-runner session tail --session <readable-name>
 ```

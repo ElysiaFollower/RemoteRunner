@@ -1,6 +1,6 @@
 <!--
 职责：定义 Local Terminal V4 从隔离分支切换到本机生产环境的唯一操作合同。
-状态：已完成只读预检，等待用户明确授权后执行；授权前不得触碰 stable runtime、真实 state 或 global Skill。
+状态：已按合同完成并验证；旧 state 与旧 Skill 备份保留。
 -->
 
 # Local Terminal V4 Cutover
@@ -74,3 +74,20 @@
 - 生产 smoke 完成且测试 Session 已 destroy/purge；没有临时 tmux、测试进程或临时 worktree。
 - 旧 state 与旧 global Skill 备份路径已记录且未删除。
 - feature、progress、quality、handoff 和本合同归档状态与实际部署一致。
+
+## 执行结果
+
+- 用户明确授权后重新运行完整门禁；代码、Skill、worktree 和 fast-forward ancestry 通过。
+- 预检发现 global Skill 在准备后被外部维护，SHA-256 从记录的 `c7cc97f...` 变为
+  `4a6d760...`。切换因此暂停并只读审计；变化仍只服务 V4 已删除的旧 API。实际覆盖前版本已
+  原样备份，没有静默丢失或混入 V4。
+- 同一 UTC 时间戳 `20260717T113718Z` 下，旧 state 归档为
+  `/Users/ely/.remote-runner.pre-v4-20260717T113718Z`，旧 Skill 归档为
+  `/Users/ely/.agents/backups/remote-runner/20260717T113718Z/SKILL.md`。
+- main 从 `f65ee33` 整分支 fast-forward 到 `0799092`；卸载 `seed-runner 0.1.0` 后安装
+  `remote-runner 0.4.0` editable，import 与 console script 指向 stable 主仓库。
+- canonical Skill 以原子部署复制发布，global/source SHA-256 同为 `c2130e7...`。
+- 默认 state/default tmux production smoke 验证初始 prompt、命令回显、真实输出
+  `RR_V4_PRODUCTION_SMOKE=42`、prompt 恢复和 show 元信息；测试 Session 已 destroy/purge。
+- 切换后再次通过 34 tests、Black、Flake8、mypy、harness、init、diff、Skill validation 和
+  distribution/import/CLI/backup/state 一致性审计。
