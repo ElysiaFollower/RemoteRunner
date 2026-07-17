@@ -1,31 +1,30 @@
-<!--
-职责：总结仓库 harness 的健康状态和下一步维护动作。
-边界：不要存放完整审计日志、任务历史或项目架构细节。
--->
+<!-- 职责：记录当前版本的质量判断和仍未覆盖的边界。 -->
 
-# Harness 质量
+# 质量状态
 
-## 快照
+## 当前判断
 
-- 上次审查：2026-05-14
-- 审查者：Codex
-- 总体状态：mvp-local-passing
+Local Terminal V4 已达到当前定义的生产切换门槛：公共 Interface 小而一致，生产实现只有一个
+tmux Terminal，旧 backend 与兼容分支已删除。当前不以“旧测试数量”冒充质量；证据来自新
+合同的边界测试、真实隔离 tmux 和安装后 smoke。
 
-## 健康信号
+## 已验证的高风险边界
 
-- `AGENTS.md` 长度：短路由，低于 150 行。
-- WIP limit：1。
-- 功能清单有效性：`./scripts/harness-check.sh` 通过。
-- 交接新鲜度：2026-05-14 已更新。
-- 验证命令健康度：`./scripts/harness-check.sh` 通过 0 warnings；`python3 -m pytest tests/test_remote_runner_mvp.py -q` 通过 32 passed；`python3 -m pytest tests/test_remote_runner_launch_suite.py -q` 通过 2 passed, 1 skipped；`python3 -m pytest -q` 通过 55 passed, 3 skipped；`git diff --check` 通过；Remote Runner Linux/SSH opt-in 真实集成测试通过 1 passed。
-- 冷启动测试：`./init.sh` 已运行通过，指向事实来源和验证命令。
-- 端到端覆盖：真实 VM opt-in 测试存在但本次未运行。
-- 重复失败是否已执行化：已增加 `tests/test_remote_runner_mvp.py` 覆盖 no-mount machine/session/file 核心行为和 legacy 回归；已增加 `tests/test_remote_runner_launch_suite.py` 作为上线前长期复用验收资产。
+- recorder 先于真实 shell 启动，启动门闩可在中断窗口恢复，不遗漏首字节。
+- active 同时要求 pane 与 `pipe-pane` recorder 存活；缺任一者收敛为 lost。
+- `send` 通过临时 tmux buffer 精确送入一行，buffer 随即删除，输入不进入 RR state/返回。
+- TTY no-echo 下的秘密不进入 transcript；普通 Agent/人工 attach 输入按真实终端回显。
+- transcript range/tail 使用 raw byte cursor 和单次 size snapshot，不隐藏 reader state。
+- bootstrap 全程独占 writer lock；失败/超时保留可接管 Session，worker 结束后才返回。
+- state fresh initialization 经并发压力测试；旧/异版本 state 拒绝且不改动原目录。
+- destroy 保留历史并释放名称；purge 要求 destroyed exact UUID 双重确认。
+- wheel 在临时 venv 中以非 editable 方式安装，并通过隔离 tmux create/send/tail/destroy。
 
-## 维护队列
+## 有意不承诺
 
-- 当前主支持平台已收束为 Linux/SSH + tmux；真实 session、后台命令、SFTP file put/get/list 和 cleanup 已在 Linux/SSH opt-in 测试中验证；默认测试仍不依赖真实机器。
-- 交互式 `remote-runner machine add` 已落地；后续可考虑 credential reference 或系统钥匙串。
-- Windows/WSL `startup_commands` 和 `path_mappings` 仅保留为兼容/未来 backend 输入；若未来重新验证，文件写入必须限制在用户明确授权目录内。
-- 继续扩展 harness-check 或测试，检查目标 CLI 文档和实现是否同步。
-- 后续大改前先保护 legacy `seed-runner` 可验证路径，避免无意破坏原型。
+- 未在 Linux RR host 上实跑；代码与 mypy 目标兼容 Python 3.10，当前 RR host 实测环境是
+  macOS、Python 3.13.12、tmux 3.7b。
+- 已连接真实高延迟 Linux SSH target，验证登录、状态连续、延时前台命令和退出回本地 shell。
+  Windows target 未实跑；两者都只是 terminal 中的普通输入，不是 RR backend。
+- 不保证本机重启、tmux 被杀、SSH 断线或远端进程的存活与恢复。
+- transcript 不轮转、不压缩；长任务由使用者按文件系统容量自行管理并在明确需要时 purge。

@@ -21,10 +21,12 @@
 
 ## 对 Remote Runner 的额外完成标准
 
-- 不把 research、SEED、实验、运维、sshfs、tmux 或当前原型误写成长期边界。
-- 不声称目标 `remote-runner` CLI 已实现，除非代码和测试已落地。
-- 不让凭据进入输出、日志、报告、feature evidence 或 handoff。
-- API 文档必须区分目标合同和 legacy 原型合同。
+- 生产 Module 只有本地 tmux Terminal、Session/Bootstrap 和 State，不残留 remote/Windows/
+  batch/file/seed-runner 兼容分支。
+- transcript 由真实隔离 tmux 验证为 shell 启动前开始的 raw append-only bytes。
+- 不让原始输入或凭据进入返回、state、日志、报告、feature evidence 或 handoff。
+- `read/tail/show/send/key` 的字段、stdout/stderr、退出码与 CLI 合同有精确契约测试。
+- 默认测试不操作默认 tmux server、真实 RR state 或业务 Session。
 
 ## 失败偏置
 

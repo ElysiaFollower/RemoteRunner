@@ -1,49 +1,69 @@
 # Core Lighthouse
 
-## 不可变目标
-
-Remote Runner 的不可变目标是：
+## Immutable Goal
 
 ```text
-本地轻量工具 -> 远程机器配置 -> 可用会话 -> 远程目录命令执行 -> 显式文件传输 -> 结构化输出/日志/产物 -> 上层工作流
+Agent or human -> one persistent local shell -> visible input/output -> durable raw transcript
 ```
 
-任何架构、API 或实现选择都必须服务这条链路。远程交互接口是核心，不是 research 或 SEED 的附属能力。
+Remote Runner exists to create a clear information environment, not to compensate for an allegedly
+incapable Agent. Every operation must remain understandable as normal terminal use.
 
-## 不可混淆的边界
+## Invariants
 
-- Remote Runner 不是 SEEDRunner 改名。SEEDRunner 是原型，SEED 是 profile。
-- Remote Runner 不是 Research Runner。科研是重要应用场景，但不是产品边界。
-- Remote Runner 不是 SSH wrapper。SSH 是 backend，价值在可用、可恢复、可审计的远程会话接口。
-- Remote Runner 不是密码管理器。MVP 可以使用本地明文配置，但不得在正常工作流中暴露凭据。
-- Remote Runner 不是调度平台。Slurm、Docker、Kubernetes、tmux、sshfs、rsync 都是可替换实现。
-- Remote Runner 不是挂载工具。mount/sshfs 只属于 legacy 原型或未来可选 backend，不是核心机制。
-- Remote Runner 第一层不是报告生成或运维平台。报告、runbook 和验收必须建立在可靠命令记录、日志和产物之上。
+1. A Session is one local tmux pane and one real shell.
+2. The transcript is the pane's raw append-only output stream and the authoritative interaction
+   history.
+3. The recorder is active before the real shell starts, so the initial prompt cannot be missed.
+4. `send` means one UTF-8 text line plus Enter; `key` means one explicit terminal key.
+5. RR never stores or returns raw input. Normal commands appear through TTY echo; passwords do not.
+6. `read` and `tail` are stateless byte-range observations. No hidden reader cursor exists.
+7. State contains direct facts only. RR never infers busy, prompt, completion, exit status, or remote
+   process survival.
+8. One Session has one current operator. Parallel work uses independent Sessions.
+9. A short writer lock prevents interleaved input; bootstrap holds it for its full synchronous run.
+10. Human attach is first-class. Human and Agent activity shares the same pane and transcript.
+11. Destroy preserves history; purge is the only deletion operation and requires exact UUID
+    confirmation.
+12. A missing tmux pane or transcript recorder marks a Session lost; RR never creates a replacement
+    that masquerades as the old shell.
 
-## 分层
+## Responsibility Split
 
-1. 机器层：本地登记远程机器，支持查询、展示、诊断和删除。
-2. 会话层：提供单操作者持久终端流；原样发送输入、append-only 记录输入输出、按显式 cursor 无损读取或按调用者要求查看有界 tail，并可用 `Ctrl-C` 恢复前台 shell。会话层不推断 busy、prompt 或命令完成。
-3. 命令/作业层：在不把 live terminal 变成隐藏 RPC 通道的前提下返回结构化结果并保存完整日志；需要 wrapper、退出码和 batch 生命周期时使用独立 job/run 边界。
-4. 文件与产物层：显式上传、下载、列出文件，记录 transfer history 和 artifact manifest。
-5. Profile 层：operations、SEED、paper reproduction、model training、benchmark 等领域流程。
+- The **Session Module** presents the small public Interface and owns lifecycle truth.
+- The **tmux Terminal Module** hides process invocation details behind one deep local-terminal
+  implementation.
+- The **State Module** owns versioned durable records and file locks.
+- An **Instance bootstrap Module** is user code above the Session Interface. It may automate SSH or
+  login steps, but RR core does not understand them.
 
-低层不稳定时，不允许把复杂度堆到高层 prompt、报告模板或运维脚本上。
+This shape concentrates terminal mechanics and state mutation for high Locality. No speculative
+Adapter seam exists because the product has only one supported terminal implementation.
 
-## MVP 安全承诺
+## Transparency Rules
 
-MVP 的安全承诺是精确且有限的：
+- No hidden shell wrappers, markers, injected exit-code probes, prompt parsers, output summaries,
+  automatic retries, background bootstrap input, or implicit remote tmux.
+- The Session state exposes the absolute transcript path, tmux Session name, and pane ID.
+- Tool failures use structured stderr errors. A command failing inside the shell remains ordinary
+  transcript content.
+- Input failures are not automatically retried because duplicate terminal input can execute twice.
 
-- 正常工作流不需要反复处理 SSH 凭据和连接细节。
-- 工具不把密码打印到 stdout、stderr、日志、报告或 handoff。
-- 配置默认放在用户 home 下的本地状态目录，而不是项目仓库。
+## Platform and Persistence Boundary
 
-MVP 不承诺抵御拥有同一系统用户 shell 权限的恶意 Agent。更强隔离需要后续守护进程、权限策略、钥匙串或企业访问工具。
+The host must be macOS or Linux with tmux. A remote Linux, macOS, or Windows shell may be reached by
+typing SSH into the local shell.
 
-## 实现约束
+RR guarantees persistence across separate RR CLI invocations while the local tmux pane survives. It
+does not guarantee survival across host reboot, tmux deletion, SSH disconnection, or remote machine
+failure. Remote persistence mechanisms are explicit Agent decisions and belong in the Skill, not
+the core.
 
-- 当前原型可以继续作为兼容层存在。
-- 当前 MVP 支持 Linux/SSH + tmux、direct Windows OpenSSH + windows-agent/pwsh、本机 tmux + OpenSSH PTY 三条持久 session backend；Windows/WSL `startup_commands` 只作为兼容历史和未来 backend 输入。
-- 大规模迁移前必须保持 legacy `seed-runner` 行为可验证。
-- 新 `remote-runner` API 落地时，应优先增加兼容入口或迁移文档，而不是直接破坏已有测试。
-- 公共命令必须面向非交互使用，优先提供 `--json`。
+## Rejected Designs
+
+- separate local-tmux, remote-tmux, and Windows-pipe Session implementations;
+- machine/backend enums that bundle authentication, operating system, files, and terminal behavior;
+- per-operation SSH control connections as the terminal abstraction;
+- automatic remote tmux creation after SSH;
+- batch exec or file protocols injected into the live pane;
+- compatibility aliases or legacy state migration in V4.

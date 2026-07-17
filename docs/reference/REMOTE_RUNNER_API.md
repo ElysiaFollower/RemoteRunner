@@ -1,757 +1,232 @@
-# Remote Runner API Contract v0
+# Remote Runner CLI Contract V4
 
-This document describes the current target user- and agent-facing CLI contract for
-`remote-runner`. The repository still contains the legacy `seed-runner` prototype; see
-`SEED_RUNNER_API.md` for that older API.
+All commands except `session read`, `session tail`, and interactive `session attach` return one
+compact JSON object on stdout. RR failures write one compact JSON object to stderr and exit nonzero.
 
-## Design Goals
+## State directory
 
-- Local CLI first.
-- Non-interactive use by default, so humans, scripts, and agents can share the same interface.
-- JSON output for every resource/query/action command.
-- No credentials in stdout, stderr, logs, reports, or JSON payloads.
-- Recoverable state: machines, sessions, commands, logs, transfers, and artifacts can be queried after an interruption.
-- Backend flexibility: SSH, tmux, rsync, SFTP, Slurm, Docker, or other mechanisms are implementation details.
-
-## Platform Support
-
-The current MVP supports three persistent session backends:
-
-- Linux machines reachable over SSH/SFTP with `tmux` available on the remote host
-  (`platform=linux`, `backend=ssh-tmux`, `shell=bash`).
-- Direct Windows OpenSSH machines with SFTP, Python 3, and PowerShell 7 available
-  (`platform=windows`, `backend=windows-agent`, `shell=pwsh`).
-- Interactive OpenSSH aliases that need a human-driven PTY login, with local `tmux` available on
-  the user's machine (`platform=linux` or `mac`, `backend=openssh-pty`, `auth_type=manual`).
-
-The Windows agent backend currently supports wait-mode session commands, transcript reads, explicit
-file transfer, and `run once`. It does not yet support background session commands or `cmd.exe` as a
-first-class shell. Windows + WSL via `startup_commands` remains a compatibility path, not the direct
-Windows backend. See [Platform Support](../platform-support.md).
-
-The `openssh-pty` backend is for machines where `ssh -tt <alias>` is the stable user-facing entry
-point but standard SSH exec/SFTP is unavailable or unreliable. It starts a local tmux session running
-`ssh -tt <alias>`, lets the user attach and complete password, OTP, jump-host, or gateway prompts,
-then controls the same interactive shell through local tmux. It supports `session create/attach`,
-`session send/read/tail/interrupt`, and `session destroy`. It rejects `file put/get/list`, `run once`,
-`session exec`, background commands, and unattended authentication. Remote Runner will not tunnel
-file or command protocols through the human-visible terminal.
-
-## Global Options
-
-All commands should eventually support:
+The default is `~/.remote-runner`. Override it with `REMOTE_RUNNER_STATE_DIR` or the global option:
 
 ```bash
---json
---timeout <seconds>
---state-dir <path>
+remote-runner --state-dir /path/to/state session list
 ```
 
-When `--json` is present, stdout must contain one JSON object. Errors should return non-zero exit
-status and write one JSON object to stderr.
+The directory must be empty or contain the exact V4 schema. Legacy state is rejected without
+mutation.
 
-## Machine Commands
+## Instance
 
-### Add Machine
+### Add
 
 ```bash
-remote-runner machine add --json
-```
-
-Default MVP behavior is interactive when fields are omitted. The user supplies machine ID, host or
-IP, port, user, authentication method, credential reference or password, and default working
-directory. The user may also supply ordered startup commands that run immediately after SSH login
-and before the default cwd/user command. Prompts are written to stderr so `--json` stdout remains
-one JSON object.
-
-Non-interactive flags remain available, but password values should not be encouraged as command-line
-flags because shell history is easy to leak. The recommended password path is hidden interactive
-input.
-
-Same-name replacement is explicit:
-
-```bash
-remote-runner machine add --replace --confirm-replace lab-gpu-01 --json
-```
-
-Interactive replacement warns on stderr when the machine already exists and requires typing the
-exact machine ID before overwriting the machine record. Replacement preserves prior sessions, logs,
-transfers, and artifacts.
-
-Minimum stored fields:
-
-```json
-{
-  "machine_id": "lab-gpu-01",
-  "host": "192.0.2.10",
-  "port": 22,
-  "user": "ely",
-  "auth_type": "key",
-  "key_path": "~/.ssh/id_ed25519",
-  "default_cwd": "/home/ely",
-  "platform": "linux",
-  "backend": "ssh-tmux",
-  "shell": "bash",
-  "startup_commands": [],
-  "path_mappings": []
-}
-```
-
-For a direct Windows OpenSSH machine using the Windows agent backend:
-
-```json
-{
-  "machine_id": "lab-win-01",
-  "host": "192.0.2.20",
-  "port": 22,
-  "user": "example",
-  "auth_type": "key",
-  "key_path": "~/.ssh/id_ed25519",
-  "default_cwd": "C:/Users/example",
-  "platform": "windows",
-  "backend": "windows-agent",
-  "shell": "pwsh",
-  "startup_commands": [],
-  "path_mappings": []
-}
-```
-
-For an interactive OpenSSH alias using local tmux:
-
-```bash
-remote-runner machine add \
-  --machine-id lab-interactive-01 \
-  --backend openssh-pty \
-  --ssh-alias lab-interactive-01 \
-  --auth-type manual \
-  --platform linux \
-  --default-cwd /home/example \
-  --json
-```
-
-Stored fields do not include the gateway host, remote user, password, or key material:
-
-```json
-{
-  "machine_id": "lab-interactive-01",
-  "host": "localhost",
-  "port": 0,
-  "user": "",
-  "auth_type": "manual",
-  "ssh_alias": "lab-interactive-01",
-  "default_cwd": "/home/example",
-  "platform": "linux",
-  "backend": "openssh-pty",
-  "shell": "bash",
-  "startup_commands": [],
-  "path_mappings": []
-}
-```
-
-Existing machines can be reclassified without re-entering credentials:
-
-```bash
-remote-runner machine configure-platform lab-win-01 \
-  --platform windows \
-  --json
-```
-
-For a compatibility Windows OpenSSH machine that should enter WSL before Linux commands:
-
-```bash
-remote-runner machine configure-startup lab-win-01 \
-  --startup-command wsl \
-  --default-cwd /mnt/c/Users/example/Desktop/SSHRunner \
-  --json
-```
-
-`configure-startup` updates only startup commands and the optional default cwd. It must preserve
-credentials and existing sessions, logs, transfers, and artifacts.
-
-Some machines expose different path namespaces for command execution and SFTP. For example, a
-Windows OpenSSH host may enter WSL for commands, where the working directory is
-`/mnt/c/Users/.../SSHRunner`, while SFTP sees the same directory as
-`C:/Users/.../SSHRunner`. Configure an explicit prefix mapping:
-
-```bash
-remote-runner machine configure-path-map lab-win-01 \
-  --command-prefix /mnt/c/Users/example/Desktop/SSHRunner \
-  --file-prefix C:/Users/example/Desktop/SSHRunner \
-  --json
-```
-
-`file put/get/list` apply this mapping before SFTP. Transfer records and artifact manifests keep
-the original user-supplied remote path, not the backend-specific path. This compatibility path is
-separate from the direct Windows `windows-agent` backend.
-
-### List Machines
-
-```bash
-remote-runner machine list --json
+remote-runner instance add --name gpu-a --bootstrap ~/.config/rr/gpu_a.py
 ```
 
 ```json
-{
-  "machines": [
-    {
-      "machine_id": "lab-gpu-01",
-      "host": "192.0.2.10",
-      "port": 22,
-      "user": "ely",
-      "auth_type": "key",
-      "default_cwd": "/home/ely",
-      "startup_commands": [],
-      "path_mappings": [],
-      "platform": "linux",
-      "backend": "ssh-tmux",
-      "shell": "bash"
-    }
-  ],
-  "summary": {
-    "machine_count": 1
-  }
-}
+{"instance_name":"gpu-a","bootstrap_path":"/abs/gpu_a.py","created_at":"...","updated_at":"..."}
 ```
 
-Credentials must be redacted.
+Use `--replace` to point an existing Instance at a different hook explicitly.
 
-### Show Machine
+### List/show/remove
 
 ```bash
-remote-runner machine show lab-gpu-01 --json
+remote-runner instance list
+remote-runner instance show --instance gpu-a
+remote-runner instance remove --instance gpu-a
 ```
 
-Returns one machine record with credential fields redacted or represented as references.
+An Instance is a bootstrap profile only. It contains no host, backend, platform, shell, or hidden
+transport.
 
-### Doctor Machine
-
-```bash
-remote-runner machine doctor lab-gpu-01 --json
-```
-
-```json
-{
-  "machine_id": "lab-gpu-01",
-  "reachable": true,
-  "auth_ok": true,
-  "default_cwd_ok": true,
-  "checked_at": "2026-05-07T10:00:00Z",
-  "errors": []
-}
-```
-
-Diagnostics should be clear enough for a human to fix config quickly, while avoiding credential leaks.
-
-### Remove Machine
-
-```bash
-remote-runner machine remove lab-gpu-01 --json
-```
-
-Returns the removed machine ID and whether related inactive sessions were retained or deleted.
-
-### Restart Tmux Server
-
-```bash
-remote-runner machine restart-tmux-server lab-gpu-01 --json
-```
-
-Current Linux/tmux backend maintenance command. This command uses direct SSH against the machine; it
-does not run inside a Remote Runner session, because killing the tmux server from inside its own
-tmux-backed session prevents the command from completing cleanly.
-
-The command must be conservative:
-
-- Refuse when local state contains active Remote Runner tmux sessions for that machine. The user
-  must destroy those sessions explicitly first.
-- Refuse when remote `tmux list-sessions` reports any remaining tmux session, including sessions
-  not managed by Remote Runner. This avoids killing unrelated user workloads.
-- Run `tmux kill-server` only when no active Remote Runner tmux session and no remote tmux session
-  remain.
-- Return `not_running` as a successful no-op when no remote tmux server exists.
-
-Example response:
-
-```json
-{
-  "machine_id": "lab-gpu-01",
-  "backend": "tmux",
-  "checked_active_session_count": 0,
-  "tmux_server_status": "restarted",
-  "old_tmux_server_pid": "1205436"
-}
-```
-
-## Session Commands
-
-### Create Session
+## Session create
 
 ```bash
 remote-runner session create \
-  --machine lab-gpu-01 \
-  --cwd /home/ely/project \
-  --name train-eval \
-  --json
+  --name project \
+  --cwd /path/to/project \
+  --shell /bin/zsh
 ```
+
+Optional bootstrap:
+
+```bash
+remote-runner session create \
+  --name gpu-work \
+  --instance gpu-a \
+  --bootstrap-timeout 60
+```
+
+If `--name` is omitted, RR generates a short `shell-xxxxxx` name. Names start with a letter or number,
+contain at most 64 letters, numbers, `.`, `_`, or `-`, and are unique across active/lost Sessions.
+
+Success returns the same state shape as `session show`. Bootstrap failure or timeout is an RR error,
+but its payload includes the preserved Session name, ID, and diagnostic path.
+
+## Session show/list
+
+```bash
+remote-runner session show --session project
+remote-runner session list
+remote-runner session list --all
+```
+
+`--session` resolves an exact ID first, otherwise an active/lost name. Destroyed history is queried
+by exact ID. `--all` includes destroyed Sessions.
+
+State fields:
 
 ```json
 {
-  "session_id": "sess_abc123",
-  "name": "train-eval",
-  "machine_id": "lab-gpu-01",
-  "cwd": "/home/ely/project",
-  "status": "active",
-  "backend": "tmux",
-  "transcript_mode": "append-only",
-  "created_at": "2026-05-07T10:00:00Z",
-  "log_dir_local": "/Users/ely/.remote-runner/logs/sess_abc123",
-  "transcript_file_local": "/Users/ely/.remote-runner/logs/sess_abc123/transcript.txt"
+  "session_id":"sess_<uuid>",
+  "session_name":"project",
+  "session_status":"active",
+  "tmux_session_name":"rr-project-<short-id>",
+  "tmux_pane_id":"%1",
+  "initial_cwd":"/path/to/project",
+  "local_shell_path":"/bin/zsh",
+  "instance_name":null,
+  "bootstrap_status":"not_requested",
+  "created_at":"...",
+  "lost_at":null,
+  "destroyed_at":null,
+  "last_rr_input_at":"...",
+  "time_since_last_rr_input_ms":123,
+  "last_output_at":"...",
+  "time_since_last_output_ms":45,
+  "transcript_path":"/absolute/path/transcript.log",
+  "transcript_end_cursor":8192
 }
 ```
 
-For `openssh-pty`, `session create` starts a local tmux session, connects an append-only transcript
-recorder, then visibly enters `exec ssh -tt <ssh_alias>` in that pane. It returns
-`local_attach_command`. The user must attach once and complete the interactive login:
+Bootstrap Sessions additionally contain `bootstrap_started_at`, `bootstrap_ended_at`, and
+`bootstrap_log_path`.
+
+`initial_cwd` and `local_shell_path` describe how RR created the local terminal. They deliberately
+do not claim to be the shell's current directory or the program currently running in the pane.
+
+## Session send
 
 ```bash
-remote-runner session create --machine lab-interactive-01 --name gateway-shell --cwd /home/example --json
-remote-runner session attach --session gateway-shell
+remote-runner session send --session project --input 'pwd'
 ```
-
-Detach from the local tmux session with `Ctrl-b d` after the target shell is ready. The OpenSSH PTY
-stays alive in local tmux, and later `session send/read/tail/interrupt/destroy` commands act on that same
-interactive shell. For this backend, the recorded `cwd` is metadata only: the live shell remains in
-whatever directory the user left it. Use a visible `session send --input 'cd ...'` to change it.
-
-When a session has a readable `--name`, the local tmux session name is derived from it, for example
-`--name a100-work` yields `tmux attach-session -t rr_a100-work`. If that local tmux name is already
-in use, Remote Runner appends a short generated suffix; unnamed sessions still use the immutable
-session id to avoid collisions.
-
-If `--cwd` is omitted, the session record uses the machine's `default_cwd`. A session is the
-persistent remote shell context for this work area; backend details such as tmux or the Windows
-agent are implementation details, not a separate top-level resource. In the current MVP, persistent
-backends are Linux/SSH + tmux, direct Windows OpenSSH + windows-agent/pwsh, and local OpenSSH PTY
-bridging.
-
-`--name` is optional. When provided, it is a readable short label that may contain only letters,
-digits, `.`, `_`, and `-`; names beginning with `sess_` are rejected to avoid confusion with
-generated IDs. `session_id` remains the immutable primary key and log directory identifier. The
-existing `--session` parameter on session and file commands accepts either an exact `session_id` or
-a unique readable name. If a name matches multiple non-destroyed sessions, the command fails with an
-ambiguity error instead of guessing. Destroyed sessions preserve their historical name but do not
-block reuse on the same machine.
-
-Current Linux/tmux implementation note: `session create` opens a remote tmux-backed shell through
-SSH, and later `session exec/send/read/tail/interrupt/destroy` calls use fresh SSH operations to control that
-backend shell. It does not persistently log in a user account in Remote Runner itself, but the
-remote shell inherits the Unix identity, supplementary groups, environment, and tmux server context
-available to the process that ultimately spawns it. `tmux new-session` creates a new tmux session,
-but if the user's tmux server already exists, the new shell may be forked by that existing tmux
-server rather than directly by the fresh SSH login process. If server-side group membership or login
-policy changes, `session destroy && session create` is the public Remote Runner restart path, but it
-is not a guaranteed authorization refresh while an existing tmux server with old process credentials
-continues serving new tmux sessions.
-
-Current Windows agent implementation note: `session create` uploads an embedded Python agent under
-the remote cwd and starts it with a user-level Windows Scheduled Task. The agent owns a persistent
-PowerShell 7 (`pwsh`) child process and records transcript output under the remote session state
-directory. `session exec --mode wait`, `session send/read/tail/destroy`, file transfer, and `run once`
-are supported. `session exec --mode background` is not yet supported on this backend.
-
-### List Sessions
-
-```bash
-remote-runner session list --json
-```
-
-Returns active and recoverable sessions with machine ID, cwd, status, creation time, command count,
-and log directory.
-
-### Show Session
-
-```bash
-remote-runner session show --session sess_abc123 --json
-remote-runner session show --session train-eval --json
-```
-
-Returns the session record, last command, last exit code, command count, and log locations.
-
-### Execute Command
-
-```bash
-remote-runner session exec \
-  --session sess_abc123 \
-  --cmd "pytest -q" \
-  --timeout 300 \
-  --json
-```
-
-This is the default synchronous structured path. On `ssh-tmux`, `--mode wait` runs through an
-independent direct-SSH batch channel; it does not type into the pane and does not observe or mutate
-the terminal's cwd, exports, aliases, functions, or jobs. On `windows-agent`, the explicit agent
-request/result protocol owns structured PowerShell execution and retains that backend's documented
-state.
-
-Commands that close the shell, such as `exit` or `logout`, are session lifecycle operations. Use
-`session destroy` for intentional teardown. Use `run once` or a future job/batch layer for
-upload-run-download workflows or multi-step scripts that naturally end with process-level `exit`
-semantics.
-
-This structured compatibility API is currently available on `ssh-tmux` and `windows-agent`.
-`openssh-pty` rejects it before writing anything to the pane. A human-visible PTY must not be used
-as an in-band RPC channel by injecting hidden `eval`, marker, or exit-code wrappers; use
-`session send/read/tail/interrupt` for that backend and `run once` for structured batch work.
-
-Optional cwd override. On `ssh-tmux`, this selects the independent batch process cwd and does not
-change the persistent terminal's directory:
-
-```bash
-remote-runner session exec \
-  --session sess_abc123 \
-  --cwd /home/ely/project/subdir \
-  --cmd "make test" \
-  --json
-```
-
-Return shape:
 
 ```json
-{
-  "session_id": "sess_abc123",
-  "command_id": "cmd_abc123",
-  "machine_id": "lab-gpu-01",
-  "cwd": "/home/ely/project",
-  "cwd_applied": true,
-  "command": "pytest -q",
-  "mode": "wait",
-  "status": "completed",
-  "exit_code": 0,
-  "stdout": "...",
-  "stderr": "",
-  "stdout_truncated": false,
-  "stderr_truncated": false,
-  "started_at": "2026-05-07T10:00:00Z",
-  "ended_at": "2026-05-07T10:00:08Z",
-  "duration_ms": 8123,
-  "log_file_local": "/Users/ely/.remote-runner/logs/sess_abc123/cmd_001.log"
-}
+{"session_name":"project","read_from_cursor":8192}
 ```
 
-Behavior requirements:
+The cursor is the transcript end observed immediately before input. RR sends the exact UTF-8 text,
+then Enter. Newline or carriage return inside the input is rejected.
 
-- Preserve logs even when `exit_code` is non-zero.
-- Do not destroy the session on command failure.
-- Return a clear busy/timeout state when a command cannot be accepted.
-- Allow stdout/stderr truncation in JSON only if the full content is available through
-  `log_file_local` or a recoverable remote log reference.
-- Do not require sshfs, FUSE, reverse SSH, or mount setup.
-- `session exec` defaults to synchronous wait mode; long-running jobs should use
-  `--mode background` on backends that support it. The current Windows agent rejects background
-  mode, while `openssh-pty` rejects `session exec` entirely.
-- `ssh-tmux session exec` uses isolated direct SSH execution. It must never source wrappers, inject
-  markers, or write command/file protocols into the live tmux pane.
-- Persistent shell state is controlled only through `session send/read/tail/interrupt`; lifecycle
-  teardown goes through `session destroy`.
-- `cwd_applied=false` means the `cwd` field is only the recorded session cwd, not a directory that
-  Remote Runner injected before the command.
-
-### Background Command Start
+For input that must not appear in process arguments:
 
 ```bash
-remote-runner session exec \
-  --session sess_abc123 \
-  --cmd "docker compose up" \
-  --mode background \
-  --json
+printf %s "$VALUE" | remote-runner session send --session project --stdin
 ```
 
-On `ssh-tmux`, background start uses the independent SSH background transport and returns without
-writing the live pane. The
-response includes `command_id`, `status=running`, `remote_state_dir`, remote log/status file
-references, timestamps, and `log_file_local` for the local summary record.
+`--stdin` accepts one optional trailing LF or CRLF as the line delimiter; any other newline is
+rejected. RR never returns or stores the input. Whether it appears in the transcript is controlled
+by normal TTY echo.
 
-Background commands persist their own remote state under the session cwd in
-`.remote-runner/commands/<command_id>/`. The CLI can be restarted later and still recover the
-command state from local session records plus those remote files.
-
-### Session Commands
+## Session key
 
 ```bash
-remote-runner session command list --session sess_abc123 --json
-remote-runner session command show --session sess_abc123 --command-id cmd_abc123 --json
-remote-runner session command result --session sess_abc123 --command-id cmd_abc123 --json
-remote-runner session command wait --session sess_abc123 --command-id cmd_abc123 --timeout 20 --json
-remote-runner session command stop --session sess_abc123 --command-id cmd_abc123 --json
+remote-runner session key --session project C-c
+remote-runner session key --session project C-d
+remote-runner session key --session project Tab
 ```
 
-`show` and `result` are aliases. They return the current command status, bounded stdout/stderr
-excerpts, truncation flags, exit code when available, timestamps, local log path, and remote state
-references when the command was started in background mode.
+The response has the same two fields as `send`. Supported key names are ordinary alphanumeric keys,
+`C-`/`M-`/`S-` variants, Space, Tab, Enter, Escape, BSpace, DC, Home, End, arrows, PageUp/PageDown, and
+F1-F12. There is no separate `interrupt` command.
 
-`wait` only limits the wait call itself. It does not kill the remote command on timeout. The
-returned JSON includes `wait_timed_out` so callers can distinguish "still running" from
-"finished".
+## Session read
 
-`stop` sends a stop request for a background command. Repeating `stop` on a finished command must
-return a clear result without losing logs or state.
-
-### Session Input and Transcript
+Raw default:
 
 ```bash
-remote-runner session send \
-  --session sess_abc123 \
-  --input "python" \
-  --json
-
-remote-runner session read --session sess_abc123 --json
-remote-runner session read --session sess_abc123 --since 1200 --max-bytes 65536 --json
-remote-runner session read --session sess_abc123 --since 1200 --plain
-remote-runner session tail --session sess_abc123 --bytes 8192 --json
-remote-runner session tail --session sess_abc123 --bytes 8192 --plain
-remote-runner session interrupt --session sess_abc123 --json
+remote-runner session read --session project --from 8192 --max-bytes 65536
 ```
 
-`session send` returns a compact acknowledgement and does not wait for the foreground process:
+Structured range:
+
+```bash
+remote-runner session read --session project --from 8192 --max-bytes 65536 --json
+```
 
 ```json
-{
-  "session_id": "sess_abc123",
-  "status": "active",
-  "input_sent": true,
-  "input": "python train.py",
-  "enter": true,
-  "last_input_at": "2026-07-16T10:00:00Z",
-  "last_output_at": "2026-07-16T09:59:58Z",
-  "output_idle_ms": 2100,
-  "start_cursor": 1200,
-  "last_cursor": 1200
-}
+{"output":"...","next_read_cursor":9000,"transcript_end_cursor":12000}
 ```
 
-`session read --since 1200 --max-bytes 65536 --json` returns an explicit lossless range:
+`output` is a UTF-8 replacement view in JSON. Cursor values always address raw bytes; the raw default
+and `transcript_path` preserve exact bytes.
+
+## Session tail
+
+```bash
+remote-runner session tail --session project --bytes 8192
+remote-runner session tail --session project --bytes 8192 --json
+```
 
 ```json
-{
-  "session_id": "sess_abc123",
-  "status": "active",
-  "transcript": "python train.py\r\nepoch=1 loss=2.1\r\n",
-  "last_input_at": "2026-07-16T10:00:00Z",
-  "last_output_at": "2026-07-16T10:00:03Z",
-  "output_idle_ms": 400,
-  "start_cursor": 1200,
-  "next_cursor": 1235,
-  "last_cursor": 1235,
-  "since": 1200,
-  "cursor": 1235,
-  "transcript_truncated": false
-}
+{"output":"...","output_start_cursor":3810,"transcript_end_cursor":12002}
 ```
 
-All transcript cursors are UTF-8 byte offsets. `start_cursor` is the first returned byte,
-`next_cursor` is the byte immediately after the returned text, and `last_cursor` is the observed end
-of the complete preserved transcript. `cursor` is a compatibility alias for `next_cursor`; `since`
-is an alias for `start_cursor`. When a bounded read cannot return the whole requested suffix,
-`next_cursor < last_cursor` and `transcript_truncated=true`. The next lossless read must use
-`next_cursor`; it is never advanced across bytes that were not returned.
+Neither read nor tail changes hidden state, waits, cleans output, or interprets the prompt.
 
-`session tail` is an explicit request to view only the newest bounded window. Its JSON has the same
-range fields plus `history_before`; earlier transcript bytes remain in the append-only file. Neither
-read nor tail summarizes, compresses, or interprets terminal output. `--plain` writes only the
-`transcript` value and no JSON metadata.
-
-`last_input_at` is the time Remote Runner last accepted input through `session send`; input typed by
-a human while attached cannot be timestamped by this field. `last_output_at` is the modification
-time observed for the append-only transcript, and `output_idle_ms` is derived from it. These are
-observation facts, not evidence that a command is busy, complete, successful, or back at a prompt.
-
-### Attach Session
+## Session attach
 
 ```bash
-remote-runner session attach --session gateway-shell
+remote-runner session attach --session project
 ```
 
-`session attach` is currently for `openssh-pty` sessions. It attaches the current terminal to the
-local tmux session that is running `ssh -tt <ssh_alias>`, so the user can complete manual login
-prompts or inspect the live shell. Detach with `Ctrl-b d`; do not exit the remote shell unless the
-session should end.
+This process becomes `tmux attach-session`. Detach with the normal tmux key binding. A human may also
+read `tmux_session_name` from `show` and attach directly.
 
-`session send` accepts one terminal line, sends the exact supplied text to the same session shell,
-and presses Enter by default; use `--no-enter` for partial input. Embedded CR/LF is rejected rather
-than treating a pasted batch as one terminal action. The response echoes the accepted `input`, so
-callers can audit what was typed. Independent `ssh-tmux` batch work does not block terminal input;
-the `windows-agent` request/result state machine rejects send while it is busy. Routine terminal
-responses deliberately omit machine, cwd, log path, command counts, and other full session fields;
-call `session show` when those fields are needed.
-
-For tmux-backed sessions the transcript is an append-only stream recorded from pane output; it is
-not reconstructed by repeatedly merging `capture-pane` snapshots. Thus commands visible to a human
-in tmux are visible to the agent through the same transcript. A caller may use lossless
-`read --since <next_cursor>` for exact ranges or explicitly use `tail` for a bounded newest view. The
-local transcript file is preserved in Remote Runner state for recovery; callers are not required to
-consume every byte during routine monitoring.
-
-Treat one session as one current operator's terminal. Before sending a new shell command, an Agent
-should inspect tail and confirm that the previous command has finished and the shell prompt has
-returned. Input requested by an interactive foreground program is not a new shell command. Parallel
-Agents use independent sessions rather than sharing one terminal.
-
-On tmux-backed sessions, `session interrupt` sends `Ctrl-C` to the current foreground process and
-keeps the terminal alive. It is the recovery operation for a hung foreground command; it does not
-create a command record or replace the shell. `windows-agent` does not currently expose a reliable
-console interrupt through its piped PowerShell transport and therefore rejects this operation.
-
-Compatibility note for the V3 observation contract: terminal cursors changed from decoded-character
-counts to UTF-8 byte offsets, and compact `send/read/interrupt` responses no longer contain the full
-session object. ASCII cursors retain the same numeric value. Consumers holding a cursor across an
-upgrade after non-ASCII output should obtain a fresh `tail` or `read` response before continuing;
-consumers needing `transcript_file_local`, machine, cwd, or log paths must use `session show`.
-
-### Logs
+## Session destroy/purge
 
 ```bash
-remote-runner session logs --session sess_abc123 --json
+remote-runner session destroy --session project
 ```
 
-Returns ordered command log metadata and paths. A future text mode may print combined logs.
-
-### Destroy Session
+Destroy kills tmux if present, marks history destroyed, and releases the public name. It preserves
+state and transcript.
 
 ```bash
-remote-runner session destroy --session sess_abc123 --json
+remote-runner session purge \
+  --session-id sess_<uuid> \
+  --confirm sess_<uuid>
 ```
 
-Returns final status and preserved log/transcript locations. Destroying a session stops the remote
-backend shell but preserves local session records, command logs, transfer records, artifacts, and
-transcript path.
+Purge only accepts a destroyed exact ID. On success it returns the purged ID.
 
-There is currently no separate `session restart` or `session refresh-auth` command. Restart is
-modeled as explicit `session destroy` followed by `session create`.
+## Bootstrap hook Interface
 
-## File Transfer Commands
+```python
+import os
+import time
 
-### Put
-
-```bash
-remote-runner file put --session sess_abc123 --local ./input.txt --remote /home/ely/project/input.txt --json
+def bootstrap(session):
+    anchor = session.send("ssh gpu-a")["read_from_cursor"]
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        observed = session.read(anchor, 65536)
+        if b"password:" in observed.output:
+            session.send(os.environ["GPU_PASSWORD"])
+            return
+        time.sleep(0.1)
+    raise RuntimeError("SSH password prompt did not appear")
 ```
 
-Uploads a local file or directory to the remote path through SSH/SFTP or another explicit transfer
-backend. It must not require a mount.
+The object exposes `session_id`, `session_name`, `send`, `key`, `read`, `tail`, and `show`. It does not
+provide prompt matching or SSH semantics.
 
-### Get
-
-```bash
-remote-runner file get --session sess_abc123 --remote /home/ely/project/output.txt --local ./output.txt --json
-```
-
-Downloads a remote file or directory to the local path.
-
-Backend boundary: `ssh-tmux` and `windows-agent` use the independent SFTP file backend and support
-files and directories. `openssh-pty` rejects file operations because it has no independent file
-transport; it does not tunnel base64 or other transfer protocols through the live pane.
-
-### List
-
-```bash
-remote-runner file list --session sess_abc123 --remote /home/ely/project --json
-```
-
-Lists remote file metadata for the path.
-
-Transfer responses and persisted records should include direction, source, destination, timestamps,
-status, size/hash when available, and error details when failed.
-
-## Local State
-
-Default MVP state root:
-
-```text
-~/.remote-runner/
-  machines.json
-  sessions/
-  logs/
-  transfers/
-  artifacts/
-  runs/
-```
-
-The storage implementation can later move to SQLite or a daemon. The CLI contract must remain the
-source of truth for humans, scripts, and agents.
-
-## Run Commands
-
-`run` commands sit above machine/session/file and provide a generic closed loop. They are not tied
-to research, SEED, operations, training, or any other profile.
-
-### Run Once
-
-```bash
-remote-runner run once \
-  --machine lab-gpu-01 \
-  --cwd /home/ely/project \
-  --input ./input.json=/home/ely/project/input.json \
-  --cmd "python train.py --input input.json --output output.txt" \
-  --artifact /home/ely/project/output.txt=./output.txt \
-  --json
-```
-
-`--input` uses `LOCAL=REMOTE`; `--artifact` uses `REMOTE=LOCAL`. Both flags may be repeated. The
-delimiter is `=` so Windows-style paths can still contain `:`.
-
-Default behavior creates a session, uploads inputs, executes the command, downloads artifacts, saves
-a run manifest, destroys the session, and preserves logs/state. Use `--keep-session` to leave the
-created session active.
-
-Minimum run manifest fields:
+## RR error shape
 
 ```json
-{
-  "run_id": "run_abc123",
-  "machine_id": "lab-gpu-01",
-  "session_id": "sess_abc123",
-  "cwd": "/home/ely/project",
-  "command": "python train.py",
-  "status": "succeeded",
-  "started_at": "2026-05-11T10:00:00Z",
-  "ended_at": "2026-05-11T10:00:08Z",
-  "inputs": [],
-  "command_result": {},
-  "artifacts": [],
-  "destroy_session_result": {}
-}
+{"error":{"code":"session_lost","message":"..."},"session_name":"project","session_id":"..."}
 ```
 
-Non-zero command exit codes mark the run as `failed` but must preserve command logs and the run
-manifest.
-
-### List Runs
-
-```bash
-remote-runner run list --json
-```
-
-Returns recoverable run summaries with run ID, machine ID, session ID, cwd, command, status,
-timestamps, exit code, input count, and artifact count.
-
-### Show Run
-
-```bash
-remote-runner run show run_abc123 --json
-```
-
-Returns the full run manifest.
-
-## Future Profile Layer
-
-Profile commands are intentionally above the generic run layer. Future commands may include:
-
-```bash
-remote-runner run verify
-remote-runner artifact push
-remote-runner artifact pull
-remote-runner report evidence
-```
-
-These may support operations, SEED, research, training, benchmark, or other workflows. They should
-not redefine the machine/session/file/run primitives.
+Stable codes cover usage, state, tmux, Session lifecycle, input uncertainty, transcript access, and
+bootstrap failures. An unexpected internal error uses `internal_error` and may include a private
+`diagnostic_path`. A shell command's exit status is never an RR error.
