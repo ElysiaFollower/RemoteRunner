@@ -2,8 +2,9 @@
 
 ## Session
 
-One persistent local shell hosted by one tmux pane. A Session has an immutable Session ID, a
-human-readable active name, lifecycle state, and one Transcript.
+One persistent local shell hosted by one tmux pane. RR may create the pane or non-owningly register
+an existing single-pane tmux Session. A Session has an immutable Session ID, a human-readable active
+name, lifecycle state, origin, and one Transcript.
 
 ## Terminal
 

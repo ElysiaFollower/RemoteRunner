@@ -1,5 +1,6 @@
 """The single terminal implementation: a local tmux pane and raw transcript."""
 
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import pwd
@@ -17,6 +18,13 @@ from remote_runner.errors import TmuxError
 KEY_PATTERN = re.compile(
     r"^(?:C-|M-|S-)?(?:[A-Za-z0-9]|Space|Tab|Enter|Escape|BSpace|DC|Home|End|Up|Down|Left|Right|PageUp|PageDown|F(?:[1-9]|1[0-2]))$"
 )
+MANAGED_PANE_OPTION = "@remote_runner_session_id"
+
+
+@dataclass(frozen=True)
+class ExistingPane:
+    pane_id: str
+    current_path: str
 
 
 class TmuxTerminal:
@@ -119,6 +127,123 @@ class TmuxTerminal:
             self.cleanup_startup(transcript_path.parent)
             raise
 
+    def inspect_existing(self, tmux_session_name: str) -> ExistingPane:
+        """Resolve one exact tmux Session without choosing an ambiguous pane."""
+        self.ensure_supported()
+        if not tmux_session_name:
+            raise TmuxError("invalid_tmux_session_name", "tmux Session name must not be empty")
+        sessions = self._run(["list-sessions", "-F", "#{session_name}"], check=False)
+        exact_names = sessions.stdout.decode("utf-8", errors="replace").splitlines()
+        if sessions.returncode != 0 or tmux_session_name not in exact_names:
+            raise TmuxError(
+                "tmux_session_not_found",
+                f"No exact local tmux Session named '{tmux_session_name}' was found",
+                context={"tmux_session_name": tmux_session_name},
+            )
+        listed = self._run(
+            ["list-panes", "-t", tmux_session_name, "-F", "#{pane_id}"],
+            check=False,
+        )
+        if listed.returncode != 0:
+            raise TmuxError(
+                "tmux_session_changed",
+                f"tmux Session '{tmux_session_name}' changed while it was being inspected",
+                context={"tmux_session_name": tmux_session_name},
+            )
+        pane_ids = listed.stdout.decode("utf-8", errors="replace").splitlines()
+        if len(pane_ids) != 1 or not pane_ids[0].startswith("%"):
+            raise TmuxError(
+                "tmux_session_not_single_pane",
+                (
+                    f"tmux Session '{tmux_session_name}' must contain exactly one pane "
+                    "before it can be registered"
+                ),
+                context={"tmux_session_name": tmux_session_name},
+            )
+        pane_id = pane_ids[0]
+        current_path = (
+            self._run(["display-message", "-p", "-t", pane_id, "#{pane_current_path}"])
+            .stdout.decode("utf-8", errors="replace")
+            .rstrip("\n")
+        )
+        return ExistingPane(pane_id=pane_id, current_path=current_path)
+
+    def register_existing(
+        self,
+        *,
+        tmux_session_name: str,
+        expected_pane_id: str,
+        session_id: str,
+        transcript_path: Path,
+    ) -> None:
+        """Start RR recording without taking ownership of the existing tmux lifecycle."""
+        pane = self.inspect_existing(tmux_session_name)
+        if pane.pane_id != expected_pane_id:
+            raise TmuxError(
+                "tmux_session_changed",
+                f"tmux Session '{tmux_session_name}' changed while it was being registered",
+                context={"tmux_session_name": tmux_session_name},
+            )
+        existing_owner = self.managed_session_id(pane.pane_id)
+        if existing_owner:
+            raise TmuxError(
+                "tmux_pane_already_managed",
+                "The tmux pane is already marked as managed by a Remote Runner Session",
+                context={"tmux_pane_id": pane.pane_id, "session_id": existing_owner},
+            )
+        if self.recorder_exists(pane.pane_id):
+            raise TmuxError(
+                "tmux_pane_already_piped",
+                "The tmux pane already has a pipe-pane recorder; Remote Runner will not replace it",
+                context={"tmux_pane_id": pane.pane_id},
+            )
+
+        transcript_path.touch(mode=0o600, exist_ok=True)
+        os.chmod(transcript_path, 0o600)
+        marker_set = False
+        try:
+            self._run(["set-option", "-p", "-t", pane.pane_id, MANAGED_PANE_OPTION, session_id])
+            marker_set = True
+            if self.recorder_exists(pane.pane_id):
+                raise TmuxError(
+                    "tmux_pane_already_piped",
+                    "The tmux pane gained a pipe-pane recorder while it was being registered",
+                    context={"tmux_pane_id": pane.pane_id},
+                )
+            pipe_command = f"cat >> {shlex.quote(str(transcript_path))}"
+            self._run(["pipe-pane", "-O", "-t", pane.pane_id, pipe_command])
+            if not self.registered_is_healthy(pane.pane_id, session_id):
+                raise TmuxError(
+                    "tmux_register_failed",
+                    "The existing tmux pane did not retain its Remote Runner recorder",
+                    context={"tmux_pane_id": pane.pane_id},
+                )
+        except Exception:
+            if marker_set and self.managed_session_id(pane.pane_id) == session_id:
+                self._run(["pipe-pane", "-t", pane.pane_id], check=False)
+                self._clear_managed_session_id(pane.pane_id)
+            raise
+
+    def unregister_existing(self, pane_id: str, session_id: str) -> None:
+        """Remove only the recorder whose pane marker still belongs to this RR Session."""
+        if not self.pane_exists(pane_id):
+            return
+        owner = self.managed_session_id(pane_id)
+        recorder_exists = self.recorder_exists(pane_id)
+        if owner is None and not recorder_exists:
+            return
+        if owner != session_id:
+            raise TmuxError(
+                "tmux_registration_ownership_changed",
+                (
+                    "The registered tmux pane no longer carries this Session's ownership marker; "
+                    "Remote Runner will not stop an unowned recorder"
+                ),
+                context={"tmux_pane_id": pane_id, "session_id": session_id},
+            )
+        self._run(["pipe-pane", "-t", pane_id], check=False)
+        self._clear_managed_session_id(pane_id)
+
     def send_line(self, pane_id: str, text: str) -> None:
         if "\n" in text or "\r" in text:
             raise TmuxError(
@@ -166,6 +291,25 @@ class TmuxTerminal:
     def is_healthy(self, pane_id: str) -> bool:
         return self.pane_exists(pane_id) and self.recorder_exists(pane_id)
 
+    def registered_is_healthy(self, pane_id: str, session_id: str) -> bool:
+        return self.is_healthy(pane_id) and self.managed_session_id(pane_id) == session_id
+
+    def managed_session_id(self, pane_id: str) -> Optional[str]:
+        result = self._run(
+            ["show-options", "-p", "-v", "-t", pane_id, MANAGED_PANE_OPTION],
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        value = result.stdout.decode("utf-8", errors="replace").strip()
+        return value or None
+
+    def _clear_managed_session_id(self, pane_id: str) -> None:
+        self._run(
+            ["set-option", "-p", "-u", "-t", pane_id, MANAGED_PANE_OPTION],
+            check=False,
+        )
+
     def finish_startup(self, pane_id: str, session_dir: Path, timeout: float = 5.0) -> bool:
         pending, release = self._startup_paths(session_dir)
         if pending.exists():
@@ -196,6 +340,10 @@ class TmuxTerminal:
         return result.returncode == 0
 
     def pane_id_for_session(self, tmux_session_name: str) -> Optional[str]:
+        sessions = self._run(["list-sessions", "-F", "#{session_name}"], check=False)
+        exact_names = sessions.stdout.decode("utf-8", errors="replace").splitlines()
+        if sessions.returncode != 0 or tmux_session_name not in exact_names:
+            return None
         result = self._run(
             ["list-panes", "-t", tmux_session_name, "-F", "#{pane_id}"],
             check=False,

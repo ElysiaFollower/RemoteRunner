@@ -32,6 +32,10 @@ systems, prompts, jobs, or command completion.
 - `session create` creates one local tmux pane and starts the chosen login shell.
 - `pipe-pane` must write to a private append-only transcript before the real shell emits its first
   byte.
+- `session register` accepts one exact existing local tmux Session name only when it contains exactly
+  one pane and has no existing `pipe-pane` or RR registration marker.
+- Registration is non-owning. It installs the same recorder without restarting the pane; transcript
+  history begins at successful registration and never uses `capture-pane` as reconstructed raw data.
 - State and transcript files must default to user-only permissions.
 - The Session must persist across independent RR CLI invocations while tmux remains alive.
 
@@ -69,7 +73,8 @@ State must include:
 
 - identity: `session_id`, `session_name`;
 - lifecycle: `session_status`, `created_at`, `lost_at`, `destroyed_at`;
-- terminal location: `tmux_session_name`, `tmux_pane_id`, `initial_cwd`, `local_shell_path`;
+- terminal location: `tmux_session_origin`, `tmux_session_name`, `tmux_pane_id`, `initial_cwd`,
+  `local_shell_path`;
 - bootstrap provenance: `instance_name`, `bootstrap_status` and timestamps when applicable;
 - observation: `last_rr_input_at`, `time_since_last_rr_input_ms`, `last_output_at`,
   `time_since_last_output_ms`, `transcript_path`, `transcript_end_cursor`.
@@ -85,8 +90,11 @@ exit-code field is permitted.
 - If the stored pane or its transcript recorder disappears, `show` marks the Session lost.
   `send/key/attach` return
   `session_lost`; `read/tail` remain available.
-- `destroy` kills an existing tmux Session if present, marks history destroyed, and is idempotent for
-  already-missing tmux.
+- `destroy` kills an RR-created tmux Session if present. For a registered Session it stops only the
+  matching RR recorder/marker and preserves the external tmux. Both mark history destroyed and are
+  idempotent for missing panes.
+- If a registered pane still has a recorder but its RR ownership marker changed, destroy fails rather
+  than stopping a recorder RR can no longer prove it owns.
 - `purge` accepts only a destroyed exact Session ID and requires the same ID as confirmation.
 
 ## 4. Instance/bootstrap Requirements
@@ -137,8 +145,8 @@ exit-code field is permitted.
 - Default tests use an isolated tmux server socket and temporary state; no default/business tmux is
   created, locked, typed into, or destroyed.
 - Real tmux tests cover initial-byte capture, state continuity, raw ANSI/CR bytes, RR input, external
-  human input, no-echo secret input, Ctrl-C via `key`, lost/destroy/reuse/purge, and large bounded
-  reads.
+  human input, no-echo secret input, Ctrl-C via `key`, lost/destroy/reuse/purge, existing tmux
+  registration/ownership rejection, and large bounded reads.
 - Bootstrap tests cover success, failure, timeout, diagnostic preservation, and no post-return
   background input.
 - CLI tests cover raw/JSON output, exact response keys, structured stderr errors, help, and absence of

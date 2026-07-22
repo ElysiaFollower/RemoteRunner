@@ -23,6 +23,16 @@ remote-runner session list
 remote-runner session create --name <readable-name>
 ```
 
+To continue through an existing single-pane local tmux Session:
+
+```bash
+remote-runner session register --tmux-session <tmux-name> --name <readable-name>
+```
+
+Registration is non-owning and records only future terminal output. It refuses multi-pane targets or
+an existing `pipe-pane`. If the initial tail is empty, do not pretend the old screen history was
+captured; coordinate with the current operator before sending input.
+
 For a configured login profile:
 
 ```bash
@@ -41,7 +51,7 @@ fails, use the returned Session ID, transcript, and diagnostic path to take over
 remote-runner session show --session <name>
 ```
 
-Check `session_status`, `time_since_last_rr_input_ms`, `time_since_last_output_ms`,
+Check `session_status`, `tmux_session_origin`, `time_since_last_rr_input_ms`, `time_since_last_output_ms`,
 `transcript_end_cursor`, and `transcript_path`. These are direct facts, not command status.
 
 2. Inspect the newest raw terminal output:
@@ -129,5 +139,6 @@ remote-runner session destroy --session <name-or-id>
 remote-runner session create --name <name>
 ```
 
-Destroy preserves history and releases the name. Purge only when permanent deletion is explicitly
-required and the exact destroyed Session ID is available.
+Destroy preserves history and releases the name. It kills tmux only for an RR-created Session; a
+registered external tmux remains alive after its RR recorder is removed. Purge only when permanent
+deletion is explicitly required and the exact destroyed Session ID is available.

@@ -166,3 +166,54 @@ def test_cli_help_exposes_only_instance_and_session_resources(cli_env: Dict[str,
     assert b"session" in result.stdout
     assert b"machine" not in result.stdout
     assert b"artifact" not in result.stdout
+
+    session_help = run_cli(["session", "--help"], environment=cli_env)
+    assert session_help.returncode == 0
+    assert b"register" in session_help.stdout
+
+
+def test_cli_registers_existing_tmux_and_destroy_leaves_it_running(
+    rr_env: Dict[str, Any], cli_env: Dict[str, str], wait_for_output
+) -> None:
+    terminal = rr_env["terminal"]
+    created = terminal._run(
+        [
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            "cli-external",
+            rr_env["shell"],
+        ]
+    )
+    pane_id = created.stdout.decode().strip()
+
+    registered = run_cli(
+        [
+            "session",
+            "register",
+            "--tmux-session",
+            "cli-external",
+            "--name",
+            "cli-registered",
+        ],
+        environment=cli_env,
+    )
+    assert registered.returncode == 0
+    state = json.loads(registered.stdout)
+    assert state["tmux_session_origin"] == "registered"
+    assert state["tmux_pane_id"] == pane_id
+
+    sent = run_cli(
+        ["session", "send", "--session", "cli-registered", "--input", "printf 'CLI_REG\\n'"],
+        environment=cli_env,
+    )
+    assert sent.returncode == 0
+    wait_for_output(rr_env["manager"], "cli-registered", b"CLI_REG")
+
+    destroyed = run_cli(["session", "destroy", "--session", "cli-registered"], environment=cli_env)
+    assert destroyed.returncode == 0
+    assert terminal.session_exists("cli-external")
+    assert not terminal.recorder_exists(pane_id)

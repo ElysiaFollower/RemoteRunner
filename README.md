@@ -2,11 +2,11 @@
 
 Remote Runner gives agents and humans the same persistent local shell.
 
-Each Session is one local tmux pane. Remote Runner installs `pipe-pane` before starting the shell,
-writes the pane's raw output to an append-only transcript, and exposes a small interface for text,
-keys, ranges, state, attach, and lifecycle. SSH is an ordinary command typed into that shell; Remote
-Runner does not hide remote login, create remote tmux sessions, infer prompts, or run batch protocols
-through the terminal.
+Each Session is one local tmux pane. Remote Runner can create that pane or register one existing
+single-pane tmux Session. It writes raw output to an append-only transcript and exposes a small
+interface for text, keys, ranges, state, attach, and lifecycle. SSH is an ordinary command typed into
+that shell; Remote Runner does not hide remote login, create remote tmux sessions, infer prompts, or
+run batch protocols through the terminal.
 
 ## Requirements
 
@@ -46,6 +46,16 @@ remote-runner session send --session project --input 'pwd'
 remote-runner session tail --session project
 remote-runner session key --session project C-c
 ```
+
+To use an existing single-pane local tmux without giving RR ownership of it:
+
+```bash
+remote-runner session register --tmux-session existing-name --name project
+```
+
+Registration refuses multi-pane Sessions and panes that already have `pipe-pane`. Its transcript
+starts at registration; RR does not reconstruct prior scrollback. Destroying this registered RR
+Session stops its recorder and preserves the original tmux Session.
 
 `tail` and `read` write raw terminal bytes by default. Add `--json` only when cursor metadata is
 needed:

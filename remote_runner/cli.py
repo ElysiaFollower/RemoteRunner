@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     session_create.add_argument("--bootstrap-timeout", type=float, default=60.0)
     session_create.set_defaults(handler=_session_create)
 
+    session_register = session_commands.add_parser(
+        "register", help="Register one existing local tmux Session"
+    )
+    session_register.add_argument("--tmux-session", required=True)
+    session_register.add_argument("--name")
+    session_register.set_defaults(handler=_session_register)
+
     session_list = session_commands.add_parser("list", help="List Sessions")
     session_list.add_argument("--all", action="store_true", help="Include destroyed Sessions")
     session_list.set_defaults(handler=_session_list)
@@ -109,7 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_session_ref(session_attach)
     session_attach.set_defaults(handler=_session_attach)
 
-    session_destroy = session_commands.add_parser("destroy", help="Stop tmux and preserve history")
+    session_destroy = session_commands.add_parser(
+        "destroy", help="End the RR Session and preserve history"
+    )
     _add_session_ref(session_destroy)
     session_destroy.set_defaults(handler=_session_destroy)
 
@@ -144,6 +153,13 @@ def _session_create(args: argparse.Namespace, context: "CliContext") -> Dict[str
         shell=args.shell,
         instance_name=args.instance,
         bootstrap_timeout=args.bootstrap_timeout,
+    )
+
+
+def _session_register(args: argparse.Namespace, context: "CliContext") -> Dict[str, Any]:
+    return context.sessions.register(
+        tmux_session_name=args.tmux_session,
+        name=args.name,
     )
 
 

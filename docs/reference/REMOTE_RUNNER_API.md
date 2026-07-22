@@ -63,6 +63,23 @@ contain at most 64 letters, numbers, `.`, `_`, or `-`, and are unique across act
 Success returns the same state shape as `session show`. Bootstrap failure or timeout is an RR error,
 but its payload includes the preserved Session name, ID, and diagnostic path.
 
+## Session register
+
+```bash
+remote-runner session register \
+  --tmux-session existing-local-name \
+  --name project
+```
+
+`--tmux-session` is an exact local tmux Session name. It must contain exactly one pane and must not
+already have `pipe-pane` or another RR registration marker. `--name` is optional and defaults to the
+tmux name when that name satisfies RR's name rules.
+
+Registration does not restart or take lifecycle ownership of the pane. The transcript begins empty
+and records raw output emitted after registration; RR never substitutes `capture-pane` scrollback for
+raw history. `initial_cwd` is the pane path observed at registration and `local_shell_path` is null
+because RR did not start the shell.
+
 ## Session show/list
 
 ```bash
@@ -81,6 +98,7 @@ State fields:
   "session_id":"sess_<uuid>",
   "session_name":"project",
   "session_status":"active",
+  "tmux_session_origin":"created",
   "tmux_session_name":"rr-project-<short-id>",
   "tmux_pane_id":"%1",
   "initial_cwd":"/path/to/project",
@@ -102,8 +120,10 @@ State fields:
 Bootstrap Sessions additionally contain `bootstrap_started_at`, `bootstrap_ended_at`, and
 `bootstrap_log_path`.
 
-`initial_cwd` and `local_shell_path` describe how RR created the local terminal. They deliberately
-do not claim to be the shell's current directory or the program currently running in the pane.
+`tmux_session_origin` is `created` or `registered`. For created Sessions, `initial_cwd` and
+`local_shell_path` describe how RR created the terminal. For registered Sessions, `initial_cwd` is
+the path observed at registration and `local_shell_path` is null. None of these fields claims to be
+the shell's current directory or the program currently running in the pane.
 
 ## Session send
 
@@ -189,8 +209,10 @@ read `tmux_session_name` from `show` and attach directly.
 remote-runner session destroy --session project
 ```
 
-Destroy kills tmux if present, marks history destroyed, and releases the public name. It preserves
-state and transcript.
+Destroy kills an RR-created tmux if present. For a registered Session, it stops RR's recorder and
+marker but leaves the external tmux alive. Both forms mark history destroyed, release the public
+name, and preserve state and transcript. If the pane's ownership marker was changed while a recorder
+still exists, destroy refuses to stop that unowned recorder.
 
 ```bash
 remote-runner session purge \

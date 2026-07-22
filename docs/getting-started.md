@@ -19,6 +19,16 @@ remote-runner session show --session work
 
 Use a name another person can understand. `show` returns the exact tmux name and transcript path.
 
+To continue from an existing single-pane local tmux Session:
+
+```bash
+remote-runner session register --tmux-session existing-name --name work
+```
+
+RR refuses an ambiguous multi-pane target or an existing `pipe-pane`. The transcript begins at
+registration rather than reconstructing earlier screen history. Later `session destroy` removes the
+RR recorder but deliberately leaves this external tmux Session running.
+
 ## 3. Observe before typing
 
 ```bash

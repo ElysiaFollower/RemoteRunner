@@ -16,7 +16,7 @@ next. Remote Runner does not interpret commands or pretend terminal interaction 
 
 Remote Runner owns:
 
-- local tmux Session creation and lifecycle;
+- local tmux Session creation, non-owning registration, and lifecycle;
 - exact line and named-key input;
 - raw `pipe-pane` transcript capture;
 - byte-range `read`, bounded `tail`, and transparent state;
@@ -35,8 +35,9 @@ ordinary visible shell operations chosen by the Agent or by an inspectable boots
 
 ## Domain Terms
 
-- **Session**: one persistent local shell hosted by one tmux pane. It has an immutable UUID, an
-  active human-readable name, lifecycle state, and one transcript.
+- **Session**: one persistent local shell hosted by one tmux pane. RR either creates the tmux or
+  registers an existing single-pane tmux without owning its lifecycle. The Session has an immutable
+  UUID, an active human-readable name, lifecycle state, origin, and one transcript.
 - **Session name**: the public active/lost lookup key. It is unique while reserved and reusable after
   destroy.
 - **Session ID**: an immutable UUID used for state and historical lookup. It is never reused.
@@ -52,8 +53,8 @@ ordinary visible shell operations chosen by the Agent or by an inspectable boots
 
 1. **Session Module**: identity, lifecycle, name resolution, bootstrap orchestration, and the public
    Interface.
-2. **tmux Terminal Module**: one local tmux implementation for creating a pane, sending input,
-   attaching, probing existence, and destroying it.
+2. **tmux Terminal Module**: one local tmux implementation for creating or registering a pane,
+   recording and sending input, attaching, probing existence, and applying origin-aware cleanup.
 3. **State Module**: versioned JSON state, UUID-keyed history, locks, transcript paths, and direct
    observations.
 

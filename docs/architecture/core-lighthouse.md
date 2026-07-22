@@ -11,10 +11,11 @@ incapable Agent. Every operation must remain understandable as normal terminal u
 
 ## Invariants
 
-1. A Session is one local tmux pane and one real shell.
+1. A Session is one local tmux pane and one real shell, whether RR created it or registered it.
 2. The transcript is the pane's raw append-only output stream and the authoritative interaction
    history.
-3. The recorder is active before the real shell starts, so the initial prompt cannot be missed.
+3. For RR-created panes, the recorder is active before the real shell starts. For registered panes,
+   recording starts at registration and never fabricates earlier raw history from a screen snapshot.
 4. `send` means one UTF-8 text line plus Enter; `key` means one explicit terminal key.
 5. RR never stores or returns raw input. Normal commands appear through TTY echo; passwords do not.
 6. `read` and `tail` are stateless byte-range observations. No hidden reader cursor exists.
@@ -27,6 +28,8 @@ incapable Agent. Every operation must remain understandable as normal terminal u
     confirmation.
 12. A missing tmux pane or transcript recorder marks a Session lost; RR never creates a replacement
     that masquerades as the old shell.
+13. RR owns the lifecycle only of tmux Sessions it creates. Destroying a registered Session removes
+    RR's recorder and state relationship but preserves the external tmux Session.
 
 ## Responsibility Split
 

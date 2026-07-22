@@ -29,6 +29,17 @@
       "verification": "完整 V4 门禁 && cutover preflight && stable main fast-forward && distribution/import/CLI/Skill hash audit && default-state local tmux smoke && ./scripts/harness-check.sh && git diff --check",
       "evidence": "2026-07-17: 授权后重新运行完整门禁，34 passed、Black 16 files、Flake8、mypy 9 source files、harness/init/diff 与 Skill validation 全部通过。正式预检发现 global Skill 在准备后被外部维护从 c7cc97f 改为 4a6d760；停止切换并只读审计，确认变化仍只服务已删除的旧 machine/backend/run/file API，随后把该实际版本原样备份。旧 state 未读取、未迁移，改名归档到 /Users/ely/.remote-runner.pre-v4-20260717T113718Z；旧 global Skill 备份到 /Users/ely/.agents/backups/remote-runner/20260717T113718Z/SKILL.md。main 从 f65ee33 整分支 fast-forward 到 0799092；seed-runner 0.1.0 已卸载，remote-runner 0.4.0 editable 安装指向 stable 主仓库；canonical Skill 以 SHA-256 c2130e7 原子发布。默认 state/default tmux 的 production smoke 看到初始 prompt、命令输出 RR_V4_PRODUCTION_SMOKE=42 和恢复后的 prompt；show 状态正确，测试 Session 随后 destroy/purge，session list 为空。切换后完整门禁再次通过，distribution/import/CLI/Skill/backup/state 一致性审计通过。",
       "notes": "任务合同：plans/archive/2026-07-17-local-terminal-v4-cutover.md。旧 state 与旧 Skill 备份保留，未自动删除。当前无 active WIP。Linux RR host/Python 3.10 仍未单独实跑；真实 Linux SSH target 已在切换前验证。"
+    },
+    {
+      "id": "F-032",
+      "priority": "P1",
+      "area": "local-terminal",
+      "title": "非拥有式注册既有本地 tmux",
+      "behavior": "给定精确的单 pane 本地 tmux Session 名称，从注册时刻开始接入 RR transcript 与 Session Interface；RR destroy 只注销 recorder，不终止外部 tmux。",
+      "status": "passing",
+      "verification": "python3 -m pytest -q && python3 -m black --check remote_runner tests && python3 -m flake8 remote_runner tests --ignore=E203,W503,E501 && python3 -m mypy remote_runner && ./scripts/harness-check.sh && ./init.sh && git diff --check && Skill validation && isolated 0.5.0 wheel install smoke",
+      "evidence": "2026-07-22: tmux 3.7b 独立 socket 探针确认既有 pane 可启动 pipe-pane，停止 pipe 后原 tmux Session 保持存活。完整测试 40 passed，其中真实隔离 tmux 10 passed；Black 16 files、Flake8、mypy 9 source files、harness 0 warnings、init、diff 和 Skill validation 全部通过。把当前源码复制到临时目录构建 0.5.0 wheel，以非 editable 方式安装后从源码目录外完成 register/send/tail/destroy，确认 transcript 可见且 destroy 后外部 tmux 存活、pipe 已移除。测试覆盖精确名称、多 pane、已有 pipe/marker、重复注册、recorder/marker 丢失、既有 V4 record 和 created destroy 回归。",
+      "notes": "任务合同：plans/archive/2026-07-22-register-existing-tmux.md。实现保留在隔离 worktree /Users/ely/workspace/research/agent/RemoteRunner-register-tmux 的 codex/register-existing-tmux 分支；尚未同步 main、当前 editable runtime 或 global Skill，也未触碰默认 state/default tmux。"
     }
   ]
 }

@@ -78,6 +78,7 @@ class SessionManager:
             "session_id": session_id,
             "session_name": session_name,
             "session_status": "starting",
+            "tmux_session_origin": "created",
             "tmux_session_name": tmux_session_name,
             "tmux_pane_id": None,
             "initial_cwd": str(session_cwd),
@@ -123,6 +124,68 @@ class SessionManager:
                 bootstrap_path=str(instance["bootstrap_path"]),
                 timeout=bootstrap_timeout,
             )
+        return self.show(session_id)
+
+    def register(
+        self,
+        *,
+        tmux_session_name: str,
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self.terminal.ensure_supported()
+        session_id = f"sess_{uuid.uuid4().hex}"
+        session_name = name or tmux_session_name
+        self._validate_session_name(session_name)
+        pane = self.terminal.inspect_existing(tmux_session_name)
+        now = utc_now()
+        session: Dict[str, Any] = {
+            "schema_version": 1,
+            "session_id": session_id,
+            "session_name": session_name,
+            "session_status": "starting",
+            "tmux_session_origin": "registered",
+            "tmux_session_name": tmux_session_name,
+            "tmux_pane_id": pane.pane_id,
+            "initial_cwd": pane.current_path,
+            "local_shell_path": None,
+            "instance_name": None,
+            "bootstrap_status": "not_requested",
+            "bootstrap_started_at": None,
+            "bootstrap_ended_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "lost_at": None,
+            "destroyed_at": None,
+            "last_rr_input_at": None,
+        }
+
+        with self.store.state_lock():
+            self._assert_name_available(session_name)
+            self._assert_pane_available(pane.pane_id)
+            self.store.create_session(session)
+
+        registered = False
+        try:
+            self.terminal.register_existing(
+                tmux_session_name=tmux_session_name,
+                expected_pane_id=pane.pane_id,
+                session_id=session_id,
+                transcript_path=self.store.transcript_path(session_id),
+            )
+            registered = True
+            with self.store.state_lock():
+                session = self.store.load_session(session_id)
+                session["session_status"] = "active"
+                session["updated_at"] = utc_now()
+                self.store.save_session(session)
+        except BaseException:
+            try:
+                if registered:
+                    self.terminal.unregister_existing(pane.pane_id, session_id)
+            finally:
+                with self.store.state_lock():
+                    self.store.purge_session(session_id)
+            raise
         return self.show(session_id)
 
     def list(self, *, include_destroyed: bool = False) -> Dict[str, Any]:
@@ -217,7 +280,9 @@ class SessionManager:
             session = self._load_session(session_id)
             if session["session_status"] != "destroyed":
                 tmux_name = str(session["tmux_session_name"])
-                if self.terminal.session_exists(tmux_name):
+                if self._session_origin(session) == "registered":
+                    self.terminal.unregister_existing(str(session["tmux_pane_id"]), session_id)
+                elif self.terminal.session_exists(tmux_name):
                     self.terminal.destroy(tmux_name)
                 self.terminal.cleanup_startup(self.store.session_dir(session_id))
                 now = utc_now()
@@ -338,9 +403,7 @@ class SessionManager:
 
     def _require_live(self, session_id: str) -> Dict[str, Any]:
         session = self._refresh_liveness(session_id)
-        if session.get("session_status") == "active" and self.terminal.is_healthy(
-            str(session["tmux_pane_id"])
-        ):
+        if session.get("session_status") == "active" and self._session_is_healthy(session):
             return session
         if session.get("session_status") in {"active", "starting"}:
             session = self._mark_lost(session_id)
@@ -348,7 +411,7 @@ class SessionManager:
             "session_lost",
             (
                 f"Session '{session['session_name']}' no longer has its tmux pane and recorder; "
-                "destroy it and create a new Session"
+                "destroy it and create or register a new Session"
             ),
             context={
                 "session_name": session["session_name"],
@@ -359,6 +422,15 @@ class SessionManager:
     def _refresh_liveness(self, session_id: str) -> Dict[str, Any]:
         session = self._load_session(session_id)
         if session.get("session_status") == "starting":
+            if self._session_origin(session) == "registered":
+                if self._session_is_healthy(session):
+                    with self.store.state_lock():
+                        session = self._load_session(session_id)
+                        session["session_status"] = "active"
+                        session["updated_at"] = utc_now()
+                        self.store.save_session(session)
+                    return session
+                return self._mark_lost(session_id)
             age_ms = elapsed_ms(str(session["updated_at"])) or 0
             deadline = time.monotonic() + max(0.0, (5000 - age_ms) / 1000)
             while True:
@@ -382,17 +454,21 @@ class SessionManager:
                 if session.get("session_status") != "starting":
                     return self._refresh_liveness(session_id)
             return self._mark_lost(session_id)
-        if session.get("session_status") == "active" and not self.terminal.is_healthy(
-            str(session["tmux_pane_id"])
-        ):
+        if session.get("session_status") == "active" and not self._session_is_healthy(session):
             return self._mark_lost(session_id)
         return session
 
     def _mark_lost_if_missing(self, session_id: str) -> None:
         session = self._load_session(session_id)
         pane_id = session.get("tmux_pane_id")
-        if pane_id and not self.terminal.is_healthy(str(pane_id)):
+        if pane_id and not self._session_is_healthy(session):
             self._mark_lost(session_id)
+
+    def _session_is_healthy(self, session: Dict[str, Any]) -> bool:
+        pane_id = str(session["tmux_pane_id"])
+        if self._session_origin(session) == "registered":
+            return self.terminal.registered_is_healthy(pane_id, str(session["session_id"]))
+        return self.terminal.is_healthy(pane_id)
 
     def _mark_lost(self, session_id: str) -> Dict[str, Any]:
         with self.store.state_lock():
@@ -429,6 +505,7 @@ class SessionManager:
             "session_id": session_id,
             "session_name": session["session_name"],
             "session_status": session["session_status"],
+            "tmux_session_origin": self._session_origin(session),
             "tmux_session_name": session["tmux_session_name"],
             "tmux_pane_id": session["tmux_pane_id"],
             "initial_cwd": session["initial_cwd"],
@@ -574,6 +651,25 @@ class SessionManager:
                     f"A live Session named '{name}' already exists",
                     context={"session_name": name},
                 )
+
+    def _assert_pane_available(self, pane_id: str) -> None:
+        for session in self.store.list_sessions():
+            if (
+                session.get("tmux_pane_id") == pane_id
+                and session.get("session_status") != "destroyed"
+            ):
+                raise RemoteRunnerError(
+                    "tmux_pane_already_registered",
+                    "The tmux pane already belongs to a live Remote Runner Session",
+                    context={
+                        "tmux_pane_id": pane_id,
+                        "session_id": session["session_id"],
+                    },
+                )
+
+    @staticmethod
+    def _session_origin(session: Dict[str, Any]) -> str:
+        return str(session.get("tmux_session_origin", "created"))
 
     def _load_session(self, session_id: str) -> Dict[str, Any]:
         return self.store.load_session(session_id)

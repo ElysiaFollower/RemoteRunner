@@ -9,6 +9,7 @@ STATE_KEYS = {
     "session_id",
     "session_name",
     "session_status",
+    "tmux_session_origin",
     "tmux_session_name",
     "tmux_pane_id",
     "initial_cwd",
@@ -35,6 +36,7 @@ def test_create_exposes_only_terminal_state(rr_env: Dict[str, Any], wait_for_out
 
     assert set(state) == STATE_KEYS
     assert state["session_status"] == "active"
+    assert state["tmux_session_origin"] == "created"
     assert state["session_name"] == "clear-shell"
     assert state["session_id"].startswith("sess_")
     assert state["tmux_session_name"].startswith("rr-clear-shell-")
@@ -197,6 +199,20 @@ def test_starting_state_recovers_the_existing_tmux_pane(rr_env: Dict[str, Any]) 
     assert recovered["session_status"] == "active"
     assert recovered["tmux_pane_id"] == created["tmux_pane_id"]
     assert recovered["local_shell_path"] == str(Path(rr_env["shell"]).resolve())
+
+
+def test_existing_v4_created_record_without_origin_remains_created(rr_env: Dict[str, Any]) -> None:
+    manager = rr_env["manager"]
+    store = rr_env["store"]
+    terminal = rr_env["terminal"]
+    created = manager.create(name="pre-origin-field", shell=rr_env["shell"])
+    stored = store.load_session(created["session_id"])
+    stored.pop("tmux_session_origin")
+    store.save_session(stored)
+
+    assert manager.show("pre-origin-field")["tmux_session_origin"] == "created"
+    manager.destroy("pre-origin-field")
+    assert not terminal.session_exists(created["tmux_session_name"])
 
 
 def test_invalid_timeout_and_session_id_fail_without_creating_a_session(

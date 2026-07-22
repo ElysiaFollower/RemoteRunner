@@ -8,6 +8,10 @@ Local Terminal V4 已完成本机生产切换：公共 Interface 小而一致，
 Terminal，旧 backend 与兼容分支已删除。当前不以“旧测试数量”冒充质量；证据来自新合同的
 边界测试、真实隔离 tmux、安装后 smoke 和默认生产环境 smoke。
 
+F-032 的 0.5.0 候选在不增加 backend 的前提下加入既有本地 tmux 注册。它是非拥有式关系：
+RR 只拥有自己安装的 recorder 和 pane marker，外部 tmux 生命周期仍归使用者。候选版本已在隔离
+worktree 完成验证，尚未替换当前 0.4.0 生产安装与 global Skill。
+
 ## 已验证的高风险边界
 
 - recorder 先于真实 shell 启动，启动门闩可在中断窗口恢复，不遗漏首字节。
@@ -19,6 +23,10 @@ Terminal，旧 backend 与兼容分支已删除。当前不以“旧测试数量
 - state fresh initialization 经并发压力测试；旧/异版本 state 拒绝且不改动原目录。
 - destroy 保留历史并释放名称；purge 要求 destroyed exact UUID 双重确认。
 - wheel 在临时 venv 中以非 editable 方式安装，并通过隔离 tmux create/send/tail/destroy。
+- 既有 tmux 注册只接受精确名称和单 pane；已有 pipe/marker、重复 live owner 均在修改 pane 前拒绝。
+- 注册 transcript 不伪造历史，只记录成功注册后的 raw output；destroy 保留外部 tmux。
+- registered liveness 同时核对 pane、recorder 和 Session marker；marker 异常时不停止无法证明归属的
+  recorder。
 
 ## 有意不承诺
 

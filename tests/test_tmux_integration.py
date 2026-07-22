@@ -9,6 +9,36 @@ import termios
 import time
 from typing import Any, Dict
 
+import pytest
+
+from remote_runner.errors import RemoteRunnerError, TmuxError
+
+
+def create_external_tmux(rr_env: Dict[str, Any], name: str) -> str:
+    terminal = rr_env["terminal"]
+    created = terminal._run(
+        [
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            name,
+            "-c",
+            str(rr_env["state_dir"].parent),
+            rr_env["shell"],
+        ]
+    )
+    pane_id = created.stdout.decode().strip()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        visible = terminal._run(["capture-pane", "-p", "-t", pane_id], check=False)
+        if b"RR_INITIAL_OUTPUT" in visible.stdout:
+            return pane_id
+        time.sleep(0.02)
+    pytest.fail("external tmux shell did not become ready")
+
 
 def test_recorder_starts_before_shell_and_preserves_raw_bytes(
     rr_env: Dict[str, Any], wait_for_output
@@ -19,7 +49,7 @@ def test_recorder_starts_before_shell_and_preserves_raw_bytes(
     assert initial.startswith(b"RR_INITIAL_OUTPUT")
 
     manager.send("raw-stream", "printf '\\033[31mRED\\033[0m\\rOVER\\n'")
-    raw = wait_for_output(manager, "raw-stream", b"OVER")
+    raw = wait_for_output(manager, "raw-stream", b"\x1b[31mRED\x1b[0m\rOVER")
     assert b"\x1b[31mRED\x1b[0m\rOVER" in raw
     assert created["transcript_end_cursor"] <= len(raw)
 
@@ -154,3 +184,134 @@ def test_startup_gate_can_recover_after_recorder_install(rr_env: Dict[str, Any])
     assert b"RR_INITIAL_OUTPUT" in transcript.read_bytes()
     assert not pending.exists()
     assert not release.exists()
+
+
+def test_register_existing_tmux_captures_future_output_and_destroy_preserves_tmux(
+    rr_env: Dict[str, Any], wait_for_output
+) -> None:
+    manager = rr_env["manager"]
+    terminal = rr_env["terminal"]
+    pane_id = create_external_tmux(rr_env, "external-shell")
+
+    registered = manager.register(tmux_session_name="external-shell", name="adopted")
+
+    assert registered["tmux_session_origin"] == "registered"
+    assert registered["tmux_session_name"] == "external-shell"
+    assert registered["tmux_pane_id"] == pane_id
+    assert registered["local_shell_path"] is None
+    assert manager.tail("adopted").output == b""
+    assert terminal.managed_session_id(pane_id) == registered["session_id"]
+
+    manager.send("adopted", "printf 'REGISTERED_VISIBLE\\n'")
+    transcript = wait_for_output(manager, "adopted", b"REGISTERED_VISIBLE")
+    assert b"printf 'REGISTERED_VISIBLE" in transcript
+
+    destroyed = manager.destroy("adopted")
+    assert destroyed["session_status"] == "destroyed"
+    assert terminal.session_exists("external-shell")
+    assert not terminal.recorder_exists(pane_id)
+    assert terminal.managed_session_id(pane_id) is None
+
+    repeated = manager.register(tmux_session_name="external-shell", name="adopted")
+    assert repeated["session_id"] != registered["session_id"]
+
+
+def test_register_rejects_ambiguous_or_already_observed_tmux_without_mutation(
+    rr_env: Dict[str, Any],
+) -> None:
+    manager = rr_env["manager"]
+    terminal = rr_env["terminal"]
+    first_pane = create_external_tmux(rr_env, "many-panes")
+    terminal._run(["split-window", "-d", "-t", first_pane, rr_env["shell"]])
+
+    with pytest.raises(TmuxError) as multiple:
+        manager.register(tmux_session_name="many-panes")
+    assert multiple.value.code == "tmux_session_not_single_pane"
+
+    piped_pane = create_external_tmux(rr_env, "already-piped")
+    other_transcript = rr_env["state_dir"].parent / "other-transcript.log"
+    terminal._run(["pipe-pane", "-O", "-t", piped_pane, f"cat >> {other_transcript}"])
+    with pytest.raises(TmuxError) as piped:
+        manager.register(tmux_session_name="already-piped")
+    assert piped.value.code == "tmux_pane_already_piped"
+    assert terminal.recorder_exists(piped_pane)
+
+    marked_pane = create_external_tmux(rr_env, "already-marked")
+    terminal._run(
+        [
+            "set-option",
+            "-p",
+            "-t",
+            marked_pane,
+            "@remote_runner_session_id",
+            "sess_11111111111111111111111111111111",
+        ]
+    )
+    with pytest.raises(TmuxError) as marked:
+        manager.register(tmux_session_name="already-marked")
+    assert marked.value.code == "tmux_pane_already_managed"
+    assert not terminal.recorder_exists(marked_pane)
+
+    with pytest.raises(TmuxError) as prefix:
+        manager.register(tmux_session_name="already")
+    assert prefix.value.code == "tmux_session_not_found"
+    assert manager.list()["sessions"] == []
+
+
+def test_registered_tmux_cannot_be_registered_twice_and_lost_recorder_is_safe(
+    rr_env: Dict[str, Any],
+) -> None:
+    manager = rr_env["manager"]
+    terminal = rr_env["terminal"]
+    pane_id = create_external_tmux(rr_env, "one-owner")
+    registered = manager.register(tmux_session_name="one-owner", name="first-owner")
+
+    with pytest.raises(RemoteRunnerError) as duplicate:
+        manager.register(tmux_session_name="one-owner", name="second-owner")
+    assert duplicate.value.code == "tmux_pane_already_registered"
+
+    terminal._run(["pipe-pane", "-t", pane_id])
+    assert manager.show("first-owner")["session_status"] == "lost"
+    assert manager.destroy("first-owner")["session_status"] == "destroyed"
+    assert terminal.session_exists("one-owner")
+    assert terminal.managed_session_id(pane_id) is None
+    assert registered["session_id"] != ""
+
+
+def test_registered_destroy_refuses_to_stop_a_recorder_after_marker_tampering(
+    rr_env: Dict[str, Any],
+) -> None:
+    manager = rr_env["manager"]
+    terminal = rr_env["terminal"]
+    pane_id = create_external_tmux(rr_env, "marker-owner")
+    registered = manager.register(tmux_session_name="marker-owner")
+    terminal._run(
+        [
+            "set-option",
+            "-p",
+            "-t",
+            pane_id,
+            "@remote_runner_session_id",
+            "sess_22222222222222222222222222222222",
+        ]
+    )
+
+    assert manager.show("marker-owner")["session_status"] == "lost"
+    with pytest.raises(TmuxError) as changed:
+        manager.destroy("marker-owner")
+    assert changed.value.code == "tmux_registration_ownership_changed"
+    assert terminal.recorder_exists(pane_id)
+    assert terminal.session_exists("marker-owner")
+
+    terminal._run(
+        [
+            "set-option",
+            "-p",
+            "-t",
+            pane_id,
+            "@remote_runner_session_id",
+            registered["session_id"],
+        ]
+    )
+    assert manager.destroy("marker-owner")["session_status"] == "destroyed"
+    assert not terminal.recorder_exists(pane_id)
