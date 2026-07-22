@@ -56,3 +56,11 @@ git diff --check
   tmux 在 destroy 后仍存活，recorder 已移除。
 - 实现与发布材料已准备完毕，但仍隔离于开发 worktree；未修改 main、当前 editable runtime、
   默认 state/default tmux 或 global Skill。
+
+## 生产切换
+
+- 用户授权后 main 从 `14fae03` fast-forward 到 `30ba4d0`，系统 editable distribution 更新为
+  0.5.0，global Skill 原子同步为 SHA-256 `7dea116...`。
+- 默认环境 production smoke 完成 register/send/tail/show/destroy/purge；RR destroy 后外部 tmux
+  保持存活，最终清理后既有 tmux 与 state 集合逐项不变。
+- 切换后完整门禁与 global Skill validation 再次通过。

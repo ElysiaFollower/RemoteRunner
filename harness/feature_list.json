@@ -37,9 +37,9 @@
       "title": "非拥有式注册既有本地 tmux",
       "behavior": "给定精确的单 pane 本地 tmux Session 名称，从注册时刻开始接入 RR transcript 与 Session Interface；RR destroy 只注销 recorder，不终止外部 tmux。",
       "status": "passing",
-      "verification": "python3 -m pytest -q && python3 -m black --check remote_runner tests && python3 -m flake8 remote_runner tests --ignore=E203,W503,E501 && python3 -m mypy remote_runner && ./scripts/harness-check.sh && ./init.sh && git diff --check && Skill validation && isolated 0.5.0 wheel install smoke",
-      "evidence": "2026-07-22: tmux 3.7b 独立 socket 探针确认既有 pane 可启动 pipe-pane，停止 pipe 后原 tmux Session 保持存活。完整测试 40 passed，其中真实隔离 tmux 10 passed；Black 16 files、Flake8、mypy 9 source files、harness 0 warnings、init、diff 和 Skill validation 全部通过。把当前源码复制到临时目录构建 0.5.0 wheel，以非 editable 方式安装后从源码目录外完成 register/send/tail/destroy，确认 transcript 可见且 destroy 后外部 tmux 存活、pipe 已移除。测试覆盖精确名称、多 pane、已有 pipe/marker、重复注册、recorder/marker 丢失、既有 V4 record 和 created destroy 回归。",
-      "notes": "任务合同：plans/archive/2026-07-22-register-existing-tmux.md。实现保留在隔离 worktree /Users/ely/workspace/research/agent/RemoteRunner-register-tmux 的 codex/register-existing-tmux 分支；尚未同步 main、当前 editable runtime 或 global Skill，也未触碰默认 state/default tmux。"
+      "verification": "python3 -m pytest -q && python3 -m black --check remote_runner tests && python3 -m flake8 remote_runner tests --ignore=E203,W503,E501 && python3 -m mypy remote_runner && ./scripts/harness-check.sh && ./init.sh && git diff --check && Skill validation && isolated 0.5.0 wheel install smoke && default-state production registration smoke",
+      "evidence": "2026-07-22: tmux 3.7b 独立 socket 探针确认既有 pane 可启动 pipe-pane，停止 pipe 后原 tmux Session 保持存活。完整测试 40 passed，其中真实隔离 tmux 10 passed；Black 16 files、Flake8、mypy 9 source files、harness 0 warnings、init、diff 和 Skill validation 全部通过。把当前源码复制到临时目录构建 0.5.0 wheel，以非 editable 方式安装后从源码目录外完成 register/send/tail/destroy，确认 transcript 可见且 destroy 后外部 tmux 存活、pipe 已移除。测试覆盖精确名称、多 pane、已有 pipe/marker、重复注册、recorder/marker 丢失、既有 V4 record 和 created destroy 回归。用户授权后 main 从 14fae03 fast-forward 到 30ba4d0，editable distribution 更新为 0.5.0，global Skill 原子同步为 SHA-256 7dea116。默认 state/default tmux production smoke 完成 register/send/tail/show/destroy/purge，RR destroy 后外部 tmux 仍存活；测试对象清理后既有 tmux 和 state 集合均逐项不变。切换后完整门禁再次通过。",
+      "notes": "任务合同：plans/archive/2026-07-22-register-existing-tmux.md。生产实现位于 main；系统 editable runtime 与 global Skill 已同步。开发、wheel 和生产 smoke 均未修改或重启既有业务 tmux Session。"
     }
   ]
 }

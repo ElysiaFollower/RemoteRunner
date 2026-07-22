@@ -8,9 +8,9 @@ Local Terminal V4 已完成本机生产切换：公共 Interface 小而一致，
 Terminal，旧 backend 与兼容分支已删除。当前不以“旧测试数量”冒充质量；证据来自新合同的
 边界测试、真实隔离 tmux、安装后 smoke 和默认生产环境 smoke。
 
-F-032 的 0.5.0 候选在不增加 backend 的前提下加入既有本地 tmux 注册。它是非拥有式关系：
-RR 只拥有自己安装的 recorder 和 pane marker，外部 tmux 生命周期仍归使用者。候选版本已在隔离
-worktree 完成验证，尚未替换当前 0.4.0 生产安装与 global Skill。
+F-032 的 0.5.0 在不增加 backend 的前提下加入既有本地 tmux 注册。它是非拥有式关系：RR 只
+拥有自己安装的 recorder 和 pane marker，外部 tmux 生命周期仍归使用者。生产安装与 global
+Skill 已同步，默认环境 smoke 证明 destroy 不终止外部 tmux，清理后既有业务状态不变。
 
 ## 已验证的高风险边界
 
@@ -47,8 +47,9 @@ worktree 完成验证，尚未替换当前 0.4.0 生产安装与 global Skill。
   `c2130e7061e80d63f025432ed2fd4dad0c5c62d1cd62b871f180d153740fff2c`。
 - 准备改动后完整代码门禁再次通过，并重新构建 0.4.0 wheel，在临时 venv 非 editable 安装，
   用独立 state/tmux 完成 create/send/tail/show/destroy/purge。
-- main 已整分支 fast-forward；系统安装为 `remote-runner 0.4.0` editable，旧 `seed-runner`
-  metadata 已消失；global Skill hash 与 canonical 文件一致。
+- 初次 V4 cutover 时 main 已整分支 fast-forward，系统安装为 `remote-runner 0.4.0` editable；
+  F-032 cutover 后已升级为 0.5.0。旧 `seed-runner` metadata 已消失，global Skill hash 与当前
+  canonical 文件一致。
 - 默认 state/default tmux smoke 验证初始 prompt、透明输入、真实输出、prompt 恢复、show 元信息、
   destroy/purge 和空 Session 列表。旧 state 与旧 Skill 备份保留。执行证据与回退合同见
   `plans/archive/2026-07-17-local-terminal-v4-cutover.md`。
